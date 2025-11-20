@@ -56,7 +56,7 @@ test toCsv {
     var buffer: [1024]u8 = undefined;
     {
         // Load some values into the data structure
-        const file = try std.fs.cwd().openFile("data/lightnings/bin_chunks/XCALMA_00h-00min-00s.bin", .{ .mode = .read_only });
+        const file = try std.fs.cwd().openFile("data/lightnings/250712/bin/00h-00min-00s.bin", .{ .mode = .read_only });
         defer file.close();
         var file_reader = file.reader(&buffer);
         try data.fromBin(&file_reader.interface);
@@ -102,7 +102,7 @@ pub fn fromBin(self: *Data, r: *Reader) !void {
 }
 
 test "BIN format" {
-    const file = try std.fs.cwd().openFile("data/lightnings/bin_chunks/XCALMA_00h-00min-00s.bin", .{ .mode = .read_only });
+    const file = try std.fs.cwd().openFile("data/lightnings/250712/bin/00h-00min-00s.bin", .{ .mode = .read_only });
     defer file.close();
     var file_reader = file.reader(&.{});
 
@@ -147,7 +147,7 @@ pub const Body = extern struct {
         }
 
         pub fn id(self: Cluster) ?u32 {
-            return if (self.is_noise()) null else self.value;
+            return if (self.isNoise()) null else self.value;
         }
     };
 };

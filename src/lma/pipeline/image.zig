@@ -72,8 +72,8 @@ pub const palettes = struct {
 };
 
 pub fn toBMP(
-    comptime shape: Shape,
-    grid: *const shape.Grid(u8),
+    shape: Shape,
+    values: []const u8,
     palette: *const [256]Color,
     w: *std.Io.Writer,
 ) !void {
@@ -104,31 +104,34 @@ pub fn toBMP(
     }
 
     // Pixel Storage
-    for (grid) |*row| {
-        try w.writeAll(row);
-        try w.writeAll(&@as([padding]u8, @splat(0)));
+    for (0..shape.rows) |row| {
+        const start = shape.ravel(row, 0);
+        try w.writeAll(values[start..][0..shape.columns]);
+        std.debug.assert(padding == try w.splatByte(0, padding));
     }
     try w.flush();
 }
 
 test toBMP {
+    const gpa = std.testing.allocator;
     const file = try std.fs.cwd().createFile("test_image.bmp", .{});
     defer file.close();
 
     var buffer: [1024]u8 = undefined;
     var file_writer = file.writer(&buffer);
 
-    const shape: Shape = .{ .rows = 255, .columns = 255 };
-    var grid: shape.Grid(u8) = @splat(@splat(0));
+    const shape: Shape = .init(255, 255);
+    const values = try gpa.alloc(u8, shape.size);
+    defer gpa.free(values);
 
     var generator: std.Random.DefaultPrng = .init(0);
     const rng = generator.random();
     for (0..shape.rows) |row| {
         for (0..shape.columns) |col| {
-            grid[row][col] = if (col < 128) @intCast(row) else rng.int(u8);
+            const idx = shape.ravel(row, col);
+            values[idx] = if (col < 128) @intCast(row) else rng.int(u8);
         }
     }
-    // @compileLog(black2white);
 
-    try toBMP(shape, &grid, &palettes.heat, &file_writer.interface);
+    try toBMP(shape, values, &palettes.heat, &file_writer.interface);
 }

@@ -58,7 +58,7 @@ test toCsv {
     var buffer: [1024]u8 = undefined;
     {
         // Load some values into the data structure
-        const file = try std.fs.cwd().openFile("data/points/bin_output/XCALMA_250712_012000_0600.bin", .{ .mode = .read_only });
+        const file = try std.fs.cwd().openFile("data/points/250712/bin/01h-10min-00s.bin", .{ .mode = .read_only });
         defer file.close();
         var file_reader = file.reader(&buffer);
         try data.fromBin(&file_reader.interface);
@@ -104,7 +104,7 @@ pub fn fromBin(self: *Data, r: *Reader) !void {
 }
 
 test "BIN format" {
-    const file = try std.fs.cwd().openFile("data/points/bin_output/XCALMA_250712_012000_0600.bin", .{ .mode = .read_only });
+    const file = try std.fs.cwd().openFile("data/points/250712/bin/01h-10min-00s.bin", .{ .mode = .read_only });
     defer file.close();
     var file_reader = file.reader(&.{});
 
@@ -127,12 +127,12 @@ test "BIN format" {
     try std.testing.expect(std.mem.eql(u8, input, output));
 }
 
-pub fn fromDat(self: *Data, r: *Reader) !void {
-    try dat_file.parseOutput(self, null, r);
+pub fn fromDat(self: *Data, r: *Reader) !?usize {
+    return dat_file.parseOutput(self, null, r);
 }
 
 test fromDat {
-    const file = try std.fs.cwd().openFile("data/points/output/XCALMA_250712_012000_0600.dat", .{ .mode = .read_only });
+    const file = try std.fs.cwd().openFile("data/points/250712/output/XCALMA_250712_012000_0600.dat", .{ .mode = .read_only });
     defer file.close();
     var buffer: [1024]u8 = undefined;
 

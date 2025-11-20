@@ -107,11 +107,11 @@ test "BIN format" {
 }
 
 pub fn fromDat(self: *Data, r: *Reader) !void {
-    try dat_file.parseOutput(null, self, r);
+    _ = try dat_file.parseOutput(null, self, r);
 }
 
 test fromDat {
-    const file = try std.fs.cwd().openFile("data/points/output/XCALMA_250712_012000_0600.dat", .{ .mode = .read_only });
+    const file = try std.fs.cwd().openFile("data/points/250712/output/XCALMA_250712_012000_0600.dat", .{ .mode = .read_only });
     defer file.close();
     var buffer: [1024]u8 = undefined;
 

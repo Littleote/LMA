@@ -16,11 +16,11 @@ const Resolution = enum {
 
     pub fn shape(res: Resolution) lma.pipeline.grid.Shape {
         return switch (res) {
-            .micro => .{ .columns = 32, .rows = 32 },
-            .low => .{ .columns = 255, .rows = 255 },
-            .medium => .{ .columns = 512, .rows = 512 },
-            .high => .{ .columns = 1024, .rows = 1024 },
-            .extra => .{ .columns = 2048, .rows = 2048 },
+            .micro => .init(32, 32),
+            .low => .init(255, 255),
+            .medium => .init(512, 512),
+            .high => .init(1024, 1024),
+            .extra => .init(2048, 2048),
         };
     }
 };
@@ -43,7 +43,7 @@ pub fn main() !void {
             output: []const u8 = "img/demo/grid",
             scale: float = 500.0,
             resolution: Resolution = .medium,
-            @"half-life": float = 10.0,
+            @"half-life": float = 2.5,
             luminosity: float = 1.0,
             gif: bool = false,
 
@@ -110,20 +110,16 @@ pub fn main() !void {
     var image_output = try utils.forceOpen(output, "img", .{});
     defer image_output.close();
 
-    switch (options.options.resolution) {
-        inline else => |resolution| {
-            try makeImages(
-                resolution.shape(),
-                gpa,
-                &rotation,
-                &info,
-                scale,
-                decay,
-                input,
-                image_output,
-            );
-        },
-    }
+    try makeImages(
+        options.options.resolution.shape(),
+        gpa,
+        &rotation,
+        &info,
+        scale,
+        decay,
+        input,
+        image_output,
+    );
 
     {
         var disposable: std.heap.FixedBufferAllocator = .init(try gpa.alloc(u8, 65535));
@@ -147,10 +143,32 @@ pub fn main() !void {
             .cwd_dir = output,
         });
     }
+    {
+        var disposable: std.heap.FixedBufferAllocator = .init(try gpa.alloc(u8, 65535));
+        defer gpa.free(disposable.buffer);
+        _ = try std.process.Child.run(.{
+            .allocator = disposable.allocator(),
+            .argv = &.{
+                "ffmpeg",
+                "-framerate",
+                "60",
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                "img/c%d.bmp",
+                "-b:v",
+                "2M",
+                if (options.options.gif) "c_output.gif" else "c_output.mp4",
+            },
+            .cwd = options.options.output,
+            .cwd_dir = output,
+        });
+    }
 }
 
 pub fn makeImages(
-    comptime shape: lma.pipeline.grid.Shape,
+    shape: lma.pipeline.grid.Shape,
     gpa: Allocator,
     rotation: *const zlm.Mat3,
     info: *const lma.pipeline.grid.Info,
@@ -163,11 +181,18 @@ pub fn makeImages(
     var buffer: [1024]u8 = undefined;
     var array: std.ArrayList(zlm.Vec2) = try .initCapacity(gpa, 65_535);
     defer array.deinit(gpa);
-    const values = try gpa.create(shape.Grid(float));
-    defer gpa.destroy(values);
-    values.* = @splat(@splat(0));
-    const image = try gpa.create(shape.Grid(u8));
-    defer gpa.destroy(image);
+    const values = try gpa.alloc(float, shape.size);
+    defer gpa.free(values);
+    @memset(values, 0);
+    const order = try lma.pipeline.holes.makeOrderBuffer(gpa, shape);
+    defer gpa.free(order);
+    const map = try gpa.alloc(lma.pipeline.holes.Cluster, shape.size);
+    defer gpa.free(map);
+    const image = try gpa.alloc(u8, shape.size);
+    defer gpa.free(image);
+    var seed_index: std.ArrayList(usize) = .empty;
+    defer seed_index.deinit(gpa);
+
     for (0..count) |idx| {
         const time = idx * step;
         var data: lma.data.Clusters = .init(gpa);
@@ -204,13 +229,14 @@ pub fn makeImages(
             }
             lma.pipeline.grid.update.triangular(shape, info, values, array.items);
             if (@mod(iterator.epoch, snap) == 0) {
-                var hole_info = try lma.pipeline.holes.analyze(
-                    shape,
-                    gpa,
-                    values,
-                    .{ .min = scale / 200, .max = scale },
-                );
-                hole_info.deinit(gpa);
+                lma.pipeline.holes.sort(values, order);
+                try lma.pipeline.holes.findSeeds(gpa, shape, values, &seed_index);
+                const seed: lma.pipeline.holes.Seed = .init(seed_index.items, null);
+                var spill: lma.pipeline.holes.Spill = .init(gpa, shape, .{
+                    .relative = 1.2,
+                    .absolute = 8.0 / scale,
+                });
+                _ = try spill.assign(&seed, order, values, map);
                 {
                     // Store map
                     const name = std.fmt.bufPrint(
@@ -221,10 +247,23 @@ pub fn makeImages(
                     const file = try output.createFile(name, .{});
                     defer file.close();
                     var file_writer = file.writer(&buffer);
-                    for (values, image) |in_row, *out_row| {
-                        for (in_row, out_row) |in, *out| {
-                            out.* = @intFromFloat(@min(@round(scale * in), 255.0));
-                        }
+                    for (values, image) |in, *out| {
+                        out.* = @intFromFloat(@min(@round(scale * in), 255.0));
+                    }
+                    try lma.pipeline.image.toBMP(shape, image, &lma.pipeline.image.palettes.viridis, &file_writer.interface);
+                }
+                {
+                    // Store map
+                    const name = std.fmt.bufPrint(
+                        &name_buffer,
+                        "c{d}.bmp",
+                        .{@divFloor(iterator.epoch, snap)},
+                    ) catch unreachable;
+                    const file = try output.createFile(name, .{});
+                    defer file.close();
+                    var file_writer = file.writer(&buffer);
+                    for (map, image) |in, *out| {
+                        out.* = @intCast(in.int());
                     }
                     try lma.pipeline.image.toBMP(shape, image, &lma.pipeline.image.palettes.viridis, &file_writer.interface);
                 }

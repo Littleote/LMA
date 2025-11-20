@@ -86,7 +86,7 @@ test toCsv {
     var buffer: [1024]u8 = undefined;
     {
         // Load some values into the data structure
-        const file = try std.fs.cwd().openFile("data/ToA/bin_sources/LC_UPC_Bujaraloz_250712_120000.bin", .{ .mode = .read_only });
+        const file = try std.fs.cwd().openFile("data/ToA/250712/bin/LC_UPC_Bujaraloz_250712_120000.bin", .{ .mode = .read_only });
         defer file.close();
         var file_reader = file.reader(&buffer);
         try data.fromBin(&file_reader.interface);
@@ -141,7 +141,7 @@ pub fn fromBin(self: *Data, r: *Reader) !void {
 }
 
 test "BIN format" {
-    const file = try std.fs.cwd().openFile("data/ToA/bin_sources/LC_UPC_Bujaraloz_250712_120000.bin", .{ .mode = .read_only });
+    const file = try std.fs.cwd().openFile("data/ToA/250712/bin/LC_UPC_Bujaraloz_250712_120000.bin", .{ .mode = .read_only });
     defer file.close();
     var file_reader = file.reader(&.{});
 
@@ -156,7 +156,7 @@ test "BIN format" {
     defer data.deinit();
     // Attempt round trip conversion for a sanity check
     var reader: Reader = .fixed(input);
-    try data.fromBbin(&reader);
+    try data.fromBin(&reader);
     try data.toBin(&to_buffer.writer);
 
     const output = to_buffer.written();
@@ -204,7 +204,7 @@ pub fn fromDatBuffer(self: *Data, buffer: []u8) !void {
 }
 
 test Parser {
-    const file = try std.fs.cwd().openFile("data/ToA/dat_sources/LC_UPC_Bujaraloz_250712_120000.dat", .{ .mode = .read_only });
+    const file = try std.fs.cwd().openFile("data/ToA/250712/sources/LC_UPC_Bujaraloz_250712_120000.dat", .{ .mode = .read_only });
     defer file.close();
     var buffer: [1024]u8 = undefined;
 

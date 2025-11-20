@@ -141,7 +141,7 @@ fn demoGrid(b: *std.Build, options: std.Build.Module.CreateOptions) void {
     });
     const install = b.addInstallArtifact(demo_grid, .{});
     const run_demo_grid = b.addRunArtifact(demo_grid);
-    run_demo_grid.addArgs(&.{ "42.11", "1.84", "-i", "data/lightnings/250712/bin" });
+    run_demo_grid.addArgs(&.{ "42.11", "1.84", "-i", "data/lightnings/240802/bin" });
     const demo_grid_step = b.step("demo-grid", "Run the demo for the grid basic functionality");
     demo_grid_step.dependOn(&run_demo_grid.step);
     demo_grid_step.dependOn(&install.step);

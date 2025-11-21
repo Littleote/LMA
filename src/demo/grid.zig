@@ -165,33 +165,54 @@ pub fn main() !void {
             .cwd_dir = output,
         });
     }
+    {
+        var disposable: std.heap.FixedBufferAllocator = .init(try gpa.alloc(u8, 65535));
+        defer gpa.free(disposable.buffer);
+        _ = try std.process.Child.run(.{
+            .allocator = disposable.allocator(),
+            .argv = &.{
+                "ffmpeg",
+                "-framerate",
+                "60",
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                "img/s%d.bmp",
+                "-b:v",
+                "2M",
+                if (options.options.gif) "s_output.gif" else "s_output.mp4",
+            },
+            .cwd = options.options.output,
+            .cwd_dir = output,
+        });
+    }
 }
 
 pub fn makeImages(
     shape: lma.pipeline.grid.Shape,
     gpa: Allocator,
     rotation: *const zlm.Mat3,
-    info: *const lma.pipeline.grid.Info,
+    grid_info: *const lma.pipeline.grid.Info,
     scale: float,
     decay: float,
     input: std.fs.Dir,
     output: std.fs.Dir,
 ) !void {
+    var arena_alloc: std.heap.ArenaAllocator = .init(gpa);
+    const arena = arena_alloc.allocator();
+    defer arena_alloc.deinit();
     var name_buffer: [32]u8 = undefined;
     var buffer: [1024]u8 = undefined;
-    var array: std.ArrayList(zlm.Vec2) = try .initCapacity(gpa, 65_535);
-    defer array.deinit(gpa);
-    const values = try gpa.alloc(float, shape.size);
-    defer gpa.free(values);
+    var array: std.ArrayList(zlm.Vec2) = try .initCapacity(arena, 65_535);
+    const values = try arena.alloc(float, shape.size);
     @memset(values, 0);
-    const order = try lma.pipeline.holes.makeOrderBuffer(gpa, shape);
-    defer gpa.free(order);
-    const map = try gpa.alloc(lma.pipeline.holes.Cluster, shape.size);
-    defer gpa.free(map);
-    const image = try gpa.alloc(u8, shape.size);
-    defer gpa.free(image);
+    const scoring = try arena.alloc(float, shape.size);
+    @memset(scoring, 0);
+    const order = try lma.pipeline.holes.makeOrderBuffer(arena, shape);
+    const map = try arena.alloc(lma.pipeline.holes.Cluster, shape.size);
+    const image = try arena.alloc(u8, shape.size);
     var seed_index: std.ArrayList(usize) = .empty;
-    defer seed_index.deinit(gpa);
 
     for (0..count) |idx| {
         const time = idx * step;
@@ -227,7 +248,7 @@ pub fn makeImages(
                     array.appendAssumeCapacity(lma.pipeline.transform.projection(item, rotation.*));
                 }
             }
-            lma.pipeline.grid.update.triangular(shape, info, values, array.items);
+            lma.pipeline.grid.update.triangular(shape, grid_info, values, array.items);
             if (@mod(iterator.epoch, snap) == 0) {
                 lma.pipeline.holes.sort(values, order);
                 try lma.pipeline.holes.findSeeds(gpa, shape, values, &seed_index);
@@ -236,7 +257,29 @@ pub fn makeImages(
                     .relative = 1.2,
                     .absolute = 8.0 / scale,
                 });
-                _ = try spill.assign(&seed, order, values, map);
+                const size = try spill.assign(&seed, order, values, map);
+                const info = try gpa.alloc(lma.pipeline.holes.Info, size);
+                const range: lma.pipeline.holes.ranges.Scaled = .{ .min = 32.0 / scale, .low = 1.5, .high = 3 };
+                lma.pipeline.holes.generateInfo(shape, range, seed_index.items, info, values, map);
+                defer gpa.free(info);
+
+                var def_buffer: [16]float = undefined;
+                info[0].score = 0;
+                for (info[1..]) |*cluster| {
+                    cluster.score = 0;
+                    if (cluster.escapes) continue;
+                    const factor = 1.2;
+                    const max_definition_score = comptime (1 - std.math.pow(float, factor, 16.0)) / (1 - factor);
+                    for (cluster.definition, &def_buffer, 0..) |total, *percent, i| {
+                        percent.* = lma.math.cast(float, total) / lma.math.cast(float, cluster.contour);
+                        const expected = lma.math.cast(float, i + 15) / 60.0;
+                        cluster.score = factor * cluster.score + @as(float, if (percent.* < expected) 1.0 else 0.0);
+                    }
+                    cluster.score /= max_definition_score;
+                    cluster.score *= std.math.clamp(1.5 - scale * cluster.lowest / 64.0, 0.2, 1);
+                    cluster.score *= std.math.clamp(lma.math.cast(float, cluster.area) / 10.0, 0.2, 1);
+                }
+
                 {
                     // Store map
                     const name = std.fmt.bufPrint(
@@ -256,6 +299,26 @@ pub fn makeImages(
                     // Store map
                     const name = std.fmt.bufPrint(
                         &name_buffer,
+                        "s{d}.bmp",
+                        .{@divFloor(iterator.epoch, snap)},
+                    ) catch unreachable;
+                    const file = try output.createFile(name, .{});
+                    defer file.close();
+                    var file_writer = file.writer(&buffer);
+                    for (scoring, map, image) |*in, update, *out| {
+                        in.* += info[update.int()].score;
+                        out.* = @intFromFloat(std.math.clamp(
+                            @round(255.0 * (1 - decay) * in.*),
+                            0,
+                            255.0,
+                        ));
+                    }
+                    try lma.pipeline.image.toBMP(shape, image, &lma.pipeline.image.palettes.viridis, &file_writer.interface);
+                }
+                {
+                    // Store map
+                    const name = std.fmt.bufPrint(
+                        &name_buffer,
                         "c{d}.bmp",
                         .{@divFloor(iterator.epoch, snap)},
                     ) catch unreachable;
@@ -267,6 +330,7 @@ pub fn makeImages(
                     }
                     try lma.pipeline.image.toBMP(shape, image, &lma.pipeline.image.palettes.viridis, &file_writer.interface);
                 }
+                lma.pipeline.grid.update.decay(shape, scoring, decay);
                 lma.pipeline.grid.update.decay(shape, values, decay);
             }
         }

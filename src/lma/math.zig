@@ -1,16 +1,38 @@
 const std = @import("std");
 
-pub fn cast(T: type, value: anytype) T {
+pub fn as(T: type, value: anytype) T {
     const input_type = comptime std.meta.activeTag(@typeInfo(@TypeOf(value)));
     const output_type = comptime std.meta.activeTag(@typeInfo(T));
     if (input_type != output_type) {
-        @compileError("Unable to cast from " ++ @tagName(input_type) ++ " to " ++ @tagName(output_type));
+        @compileError("Unable to change from " ++ @tagName(input_type) ++ " to " ++ @tagName(output_type));
     } else if (input_type != .int and input_type != .float) {
-        @compileError("Unable to cast variable of type " ++ @tagName(input_type));
+        @compileError("Unable to change variable of type " ++ @tagName(input_type));
     }
     return switch (input_type) {
         .int => @intCast(value),
         .float => @floatCast(value),
+        else => unreachable,
+    };
+}
+
+pub fn cast(T: type, value: anytype) T {
+    const input_type = comptime std.meta.activeTag(@typeInfo(@TypeOf(value)));
+    const output_type = comptime std.meta.activeTag(@typeInfo(T));
+    return switch (input_type) {
+        .int => switch(output_type) {
+            .int => @intCast(value),
+            .float => @floatFromInt(value),
+            .@"enum" => @enumFromInt(value),
+            else => unreachable,
+        },
+        .float => switch(output_type) {
+            .int => @intFromFloat(value),
+            .float => @floatCast(value),
+            else => unreachable,
+        },
+        .@"enum" => switch(output_type) {
+            .int => @intFromEnum(value),
+        },
         else => unreachable,
     };
 }

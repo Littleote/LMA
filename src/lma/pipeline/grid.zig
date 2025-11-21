@@ -14,7 +14,7 @@ pub const Shape = struct {
         return .{
             .rows = rows,
             .columns = columns,
-            .size = math.cast(usize, rows) * math.cast(usize, columns),
+            .size = math.as(usize, rows) * math.as(usize, columns),
         };
     }
 
@@ -23,7 +23,7 @@ pub const Shape = struct {
     }
 
     pub fn offset(self: Shape, neighbour: Neighbour) isize {
-        return neighbour.h + neighbour.v * math.cast(isize, self.columns);
+        return neighbour.h + neighbour.v * math.as(isize, self.columns);
     }
 
     pub fn unravel(self: Shape, index: usize) struct { usize, usize } {
@@ -128,6 +128,10 @@ inline fn toFloat(value: anytype) float {
 }
 
 pub const update = struct {
+    // pub fn erode(shape: Shape, values: []float, erosion: Shape) void {
+
+    // }
+
     pub fn decay(shape: Shape, values: []float, factor: float) void {
         _ = shape;
         for (values) |*cell| {

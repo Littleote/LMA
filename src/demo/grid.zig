@@ -209,6 +209,9 @@ pub fn makeImages(
     @memset(values, 0);
     const scoring = try arena.alloc(float, shape.size);
     @memset(scoring, 0);
+    const scoring_threshold = try arena.alloc(float, shape.size);
+    const aux = try arena.alloc(float, shape.size);
+    const contour = try arena.alloc(float, shape.size);
     const order = try lma.pipeline.holes.makeOrderBuffer(arena, shape);
     const map = try arena.alloc(lma.pipeline.holes.Cluster, shape.size);
     const image = try arena.alloc(u8, shape.size);
@@ -280,21 +283,20 @@ pub fn makeImages(
                     cluster.score *= std.math.clamp(lma.math.cast(float, cluster.area) / 10.0, 0.2, 1);
                 }
 
-                {
-                    // Store map
-                    const name = std.fmt.bufPrint(
-                        &name_buffer,
-                        "{d}.bmp",
-                        .{@divFloor(iterator.epoch, snap)},
-                    ) catch unreachable;
-                    const file = try output.createFile(name, .{});
-                    defer file.close();
-                    var file_writer = file.writer(&buffer);
-                    for (values, image) |in, *out| {
-                        out.* = @intFromFloat(@min(@round(scale * in), 255.0));
-                    }
-                    try lma.pipeline.image.toBMP(shape, image, &lma.pipeline.image.palettes.viridis, &file_writer.interface);
+                for (scoring, map) |*in, update| {
+                    in.* += info[update.int()].score;
                 }
+                lma.pipeline.grid.update.morph(shape, scoring, aux, .init(3, 3), .dilate);
+                @memcpy(scoring_threshold, scoring);
+                lma.pipeline.grid.update.threshold(
+                    shape,
+                    scoring_threshold,
+                    0.95 / (1 - decay),
+                    .{ .above = .{ .fixed = 255.0 } },
+                );
+                @memcpy(contour, scoring_threshold);
+                lma.pipeline.grid.update.morph(shape, contour, aux, .init(3, 3), .dilate);
+
                 {
                     // Store map
                     const name = std.fmt.bufPrint(
@@ -305,10 +307,9 @@ pub fn makeImages(
                     const file = try output.createFile(name, .{});
                     defer file.close();
                     var file_writer = file.writer(&buffer);
-                    for (scoring, map, image) |*in, update, *out| {
-                        in.* += info[update.int()].score;
+                    for (scoring_threshold, image) |in, *out| {
                         out.* = @intFromFloat(std.math.clamp(
-                            @round(255.0 * (1 - decay) * in.*),
+                            @round(in), // 255.0 * (1 - decay) *
                             0,
                             255.0,
                         ));
@@ -329,6 +330,22 @@ pub fn makeImages(
                         out.* = @intCast(in.int());
                     }
                     try lma.pipeline.image.toBMP(shape, image, &lma.pipeline.image.palettes.viridis, &file_writer.interface);
+                }
+
+                {
+                    // Store map
+                    const name = std.fmt.bufPrint(
+                        &name_buffer,
+                        "{d}.bmp",
+                        .{@divFloor(iterator.epoch, snap)},
+                    ) catch unreachable;
+                    const file = try output.createFile(name, .{});
+                    defer file.close();
+                    var file_writer = file.writer(&buffer);
+                    for (values, image, contour, scoring_threshold) |in, *out, c, b| {
+                        out.* = if (c > b) 252 else @intFromFloat(@min(@round(scale * in), 251.0));
+                    }
+                    try lma.pipeline.image.toBMP(shape, image, &lma.pipeline.image.palettes.marked_heat, &file_writer.interface);
                 }
                 lma.pipeline.grid.update.decay(shape, scoring, decay);
                 lma.pipeline.grid.update.decay(shape, values, decay);

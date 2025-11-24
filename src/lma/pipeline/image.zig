@@ -69,6 +69,17 @@ pub const palettes = struct {
         }
         break :blk arr;
     };
+
+    pub const marked_heat = blk: {
+        @setEvalBranchQuota(255 * 255);
+        var arr: [256]Color = undefined;
+        @memcpy(&arr, &heat);
+        arr[252] = .{ .red = 0, .blue = 0, .green = 0 };
+        arr[253] = .{ .red = 0, .blue = 1, .green = 0 };
+        arr[254] = .{ .red = 0, .blue = 0, .green = 1 };
+        arr[255] = .{ .red = 1, .blue = 1, .green = 1 };
+        break :blk arr;
+    };
 };
 
 pub fn toBMP(

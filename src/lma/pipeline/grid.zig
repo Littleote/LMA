@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const lma = @import("../root.zig");
 const pipe = lma.pipeline;
 const float = pipe.float;
@@ -128,9 +129,75 @@ inline fn toFloat(value: anytype) float {
 }
 
 pub const update = struct {
-    // pub fn erode(shape: Shape, values: []float, erosion: Shape) void {
+    pub fn morph(shape: Shape, values: []float, aux: []float, op_shape: Shape, comptime op: enum { erode, dilate }) void {
+        const mid_col = @divExact(op_shape.columns - 1, 2);
+        for (0..shape.rows) |row| {
+            for (0..shape.columns) |col| {
+                const idx = shape.ravel(row, col);
+                var val = values[idx];
+                for (0..op_shape.columns) |diff| {
+                    if (col + diff < mid_col or shape.columns <= col + diff - mid_col) continue;
+                    const neigh = values[idx + diff - mid_col];
+                    val = switch (op) {
+                        .erode => @min(val, neigh),
+                        .dilate => @max(val, neigh),
+                    };
+                }
+                aux[idx] = val;
+            }
+        }
+        const mid_row = @divExact(op_shape.rows - 1, 2);
+        for (0..shape.rows) |row| {
+            for (0..shape.columns) |col| {
+                const idx = shape.ravel(row, col);
+                var val = aux[idx];
+                for (0..op_shape.rows) |diff| {
+                    if (row + diff < mid_row or shape.rows <= row + diff - mid_row) continue;
+                    const neigh = aux[shape.ravel(row + diff - mid_row, col)];
+                    val = switch (op) {
+                        .erode => @min(val, neigh),
+                        .dilate => @max(val, neigh),
+                    };
+                }
+                values[idx] = val;
+            }
+        }
+    }
 
-    // }
+    pub const Window = struct {
+        shape: Shape,
+        frames: []float,
+        current_frame: usize,
+        size: usize,
+        correction: float = 1e-7,
+
+        pub fn init(gpa: Allocator, shape: Shape, size: usize) !Window {
+            const frames = try gpa.alloc(shape.size * size, float);
+            @memset(frames, 0);
+            return .{
+                .shape = shape,
+                .frames = frames,
+                .current_frame = 0,
+                .size = size,
+            };
+        }
+
+        pub fn deinit(self: *Window, gpa: Allocator) void {
+            gpa.free(self.frames);
+            self.* = undefined;
+        }
+
+        pub fn nextFrame(self: *Window, values: []float) []float {
+            const last = self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
+            self.current_frame = (self.current_frame + 1) % self.size;
+            const next = self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
+            for (values, last, next) |*total, add, sub| {
+                total.* = @max(0, total.* + add - sub - self.correction);
+            }
+            @memset(next, 0);
+            return next;
+        }
+    };
 
     pub fn decay(shape: Shape, values: []float, factor: float) void {
         _ = shape;
@@ -152,6 +219,46 @@ pub const update = struct {
             grid[idx + shape.columns] += weight.x * (1 - weight.y);
             grid[idx + 1 + shape.columns] += weight.x * (1 - weight.y);
             grid[idx + 1] += (1 - weight.x) * weight.y;
+        }
+    }
+
+    pub const SetValue = union(enum) {
+        current: void,
+        limit: void,
+        fixed: float,
+
+        pub const zero: SetValue = .{ .fixed = 0 };
+    };
+
+    pub fn threshold(
+        shape: Shape,
+        values: []float,
+        min: float,
+        comptime limits: struct { below: SetValue = .zero, above: SetValue = .current },
+    ) void {
+        _ = shape;
+        for (values) |*cell| {
+            if (cell.* < min) {
+                switch (limits.below) {
+                    .current => {},
+                    .limit => {
+                        cell.* = min;
+                    },
+                    .fixed => |val| {
+                        cell.* = val;
+                    },
+                }
+            } else {
+                switch (limits.above) {
+                    .current => {},
+                    .limit => {
+                        cell.* = min;
+                    },
+                    .fixed => |val| {
+                        cell.* = val;
+                    },
+                }
+            }
         }
     }
 };

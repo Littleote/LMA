@@ -1,4 +1,5 @@
 const std = @import("std");
+const float = @import("../pipeline.zig").float;
 const Shape = @import("grid.zig").Shape;
 
 pub const Color = packed struct(u24) {
@@ -56,6 +57,17 @@ pub const palettes = struct {
         break :blk arr;
     };
 
+    pub const marked_viridis = blk: {
+        @setEvalBranchQuota(255 * 255);
+        var arr: [256]Color = undefined;
+        @memcpy(&arr, &viridis);
+        arr[252] = .{ .red = 0, .blue = 0, .green = 0 };
+        arr[253] = .{ .red = 0, .blue = 1, .green = 1 };
+        arr[254] = .{ .red = 1, .blue = 0, .green = 0 };
+        arr[255] = .{ .red = 1, .blue = 1, .green = 1 };
+        break :blk arr;
+    };
+
     pub const heat = blk: {
         @setEvalBranchQuota(255 * 255);
         var arr: [256]Color = undefined;
@@ -82,20 +94,81 @@ pub const palettes = struct {
     };
 };
 
-pub fn toBMP(
+const start_offset = 14 + 12 + 256 * 3;
+fn padding(shape: Shape) usize {
+    return 3 - @mod(shape.columns - 1, 4);
+}
+
+pub fn bytesToBMP(
     shape: Shape,
     values: []const u8,
     palette: *const [256]Color,
     w: *std.Io.Writer,
 ) !void {
-    const padding = 3 - @mod(shape.columns - 1, 4);
-    const start_offset = 14 + 12 + 256 * 3;
+    const pad = padding(shape);
+    try writeBMPHeader(shape, palette, w);
+
+    // Pixel Storage
+    for (0..shape.rows) |row| {
+        const start = shape.ravel(row, 0);
+        try w.writeAll(values[start..][0..shape.columns]);
+        std.debug.assert(pad == try w.splatByte(0, pad));
+    }
+    try w.flush();
+}
+
+pub fn intToBMP(
+    Int: type,
+    shape: Shape,
+    values: []const Int,
+    palette: *const [256]Color,
+    w: *std.Io.Writer,
+) !void {
+    const pad = padding(shape);
+    try writeBMPHeader(shape, palette, w);
+
+    // Pixel Storage
+    for (0..shape.rows) |row| {
+        const start = shape.ravel(row, 0);
+        for (values[start..][0..shape.columns]) |value| {
+            try w.writeByte(@intCast(value));
+        }
+        std.debug.assert(pad == try w.splatByte(0, pad));
+    }
+    try w.flush();
+}
+
+pub fn floatToBMP(
+    shape: Shape,
+    values: []const float,
+    palette: *const [256]Color,
+    w: *std.Io.Writer,
+) !void {
+    const pad = padding(shape);
+    try writeBMPHeader(shape, palette, w);
+
+    // Pixel Storage
+    for (0..shape.rows) |row| {
+        const start = shape.ravel(row, 0);
+        for (values[start..][0..shape.columns]) |value| {
+            try w.writeByte(@intFromFloat(@round(std.math.clamp(255.0 * value, 0, 255.0))));
+        }
+        std.debug.assert(pad == try w.splatByte(0, pad));
+    }
+    try w.flush();
+}
+
+pub fn writeBMPHeader(
+    shape: Shape,
+    palette: *const [256]Color,
+    w: *std.Io.Writer,
+) !void {
 
     // BitMap Header
     try w.writeAll("BM");
     try w.writeInt(
         u32,
-        start_offset + @as(u32, @intCast((shape.columns + padding) * shape.rows)),
+        start_offset + @as(u32, @intCast((shape.columns + padding(shape)) * shape.rows)),
         .little,
     );
     try w.writeInt(u16, 0, .little);
@@ -113,17 +186,9 @@ pub fn toBMP(
     for (palette) |color| {
         try w.writeStruct(color, .little);
     }
-
-    // Pixel Storage
-    for (0..shape.rows) |row| {
-        const start = shape.ravel(row, 0);
-        try w.writeAll(values[start..][0..shape.columns]);
-        std.debug.assert(padding == try w.splatByte(0, padding));
-    }
-    try w.flush();
 }
 
-test toBMP {
+test bytesToBMP {
     const gpa = std.testing.allocator;
     const file = try std.fs.cwd().createFile("test_image.bmp", .{});
     defer file.close();
@@ -144,5 +209,5 @@ test toBMP {
         }
     }
 
-    try toBMP(shape, values, &palettes.heat, &file_writer.interface);
+    try bytesToBMP(shape, values, &palettes.heat, &file_writer.interface);
 }

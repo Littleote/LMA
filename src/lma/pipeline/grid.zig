@@ -118,10 +118,6 @@ pub const Info = struct {
         );
         // zig fmt: on
     }
-
-    // pub fn indexInner(self: *const Info, point: zlm.Vec2) ?struct { usize, usize } {
-
-    // }
 };
 
 inline fn toFloat(value: anytype) float {
@@ -172,7 +168,7 @@ pub const update = struct {
         correction: float = 1e-7,
 
         pub fn init(gpa: Allocator, shape: Shape, size: usize) !Window {
-            const frames = try gpa.alloc(shape.size * size, float);
+            const frames = try gpa.alloc(float, shape.size * size);
             @memset(frames, 0);
             return .{
                 .shape = shape,
@@ -187,13 +183,43 @@ pub const update = struct {
             self.* = undefined;
         }
 
-        pub fn nextFrame(self: *Window, values: []float) []float {
+        pub fn applyFrame(self: *Window, values: []float) void {
+            const current = self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
+            for (values, current) |*total, add| {
+                total.* = total.* + add;
+            }
+        }
+
+        pub fn clearNextFrame(self: *Window, values: []float) []float {
+            self.current_frame = (self.current_frame + 1) % self.size;
+            const next = self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
+            for (values, next) |*total, sub| {
+                total.* = @max(0, total.* - sub - self.correction);
+            }
+            @memset(next, 0);
+            return next;
+        }
+
+        pub fn jumpToNextFrame(self: *Window, values: []float) []float {
             const last = self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
             self.current_frame = (self.current_frame + 1) % self.size;
             const next = self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
             for (values, last, next) |*total, add, sub| {
                 total.* = @max(0, total.* + add - sub - self.correction);
             }
+            @memset(next, 0);
+            return next;
+        }
+
+        pub fn peekFrame(self: *Window) []float {
+            const next_frame = (self.current_frame + 1) % self.size;
+            const next = self.frames[self.shape.size * next_frame ..][0..self.shape.size];
+            return next;
+        }
+
+        pub fn ignoreFrame(self: *Window) []float {
+            self.current_frame = (self.current_frame + 1) % self.size;
+            const next = self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
             @memset(next, 0);
             return next;
         }
@@ -206,7 +232,13 @@ pub const update = struct {
         }
     }
 
-    pub fn triangular(shape: Shape, info: *const Info, grid: []float, X: []const zlm.Vec2) void {
+    pub const options = struct {
+        pub const Triangular = struct {
+            scaling: float = 1.0,
+        };
+    };
+
+    pub fn triangular(shape: Shape, info: *const Info, grid: []float, X: []const zlm.Vec2, config: options.Triangular) void {
         for (X) |x| {
             const frac = x.sub(info.origin).div(info.step);
             if (frac.x < 0 or frac.y < 0) continue;
@@ -215,10 +247,10 @@ pub const update = struct {
             if (shape.rows <= row + 1 or shape.columns <= col + 1) continue;
             const weight: zlm.Vec2 = .new(@mod(frac.x, 1), @mod(frac.y, 1));
             const idx = shape.ravel(row, col);
-            grid[idx] += weight.x * weight.y;
-            grid[idx + shape.columns] += weight.x * (1 - weight.y);
-            grid[idx + 1 + shape.columns] += weight.x * (1 - weight.y);
-            grid[idx + 1] += (1 - weight.x) * weight.y;
+            grid[idx] += config.scaling * weight.x * weight.y;
+            grid[idx + shape.columns] += config.scaling * weight.x * (1 - weight.y);
+            grid[idx + 1 + shape.columns] += config.scaling * (1 - weight.x) * (1 - weight.y);
+            grid[idx + 1] += config.scaling * (1 - weight.x) * weight.y;
         }
     }
 

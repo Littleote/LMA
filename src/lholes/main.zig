@@ -227,7 +227,7 @@ pub fn makeImages(
                 });
                 const size = try spill.assign(&seed, order, values, map);
                 const info = try gpa.alloc(lma.pipeline.holes.Info, size);
-                const range: lma.pipeline.holes.ranges.Scaled = .{ .min = 0.1, .low = 1.5, .high = 3 };
+                const range: lma.pipeline.holes.ranges.Scaled = .{ .min = 0.1, .low = 2, .high = 4 };
                 lma.pipeline.holes.generateInfo(shape, range, seed_index.items, info, values, map);
                 defer gpa.free(info);
 

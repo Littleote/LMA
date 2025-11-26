@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
     }).module("zlm");
 
     const lma = b.createModule(.{
-        .root_source_file = b.path("src/lma/root.zig"),
+        .root_source_file = b.path("src/lma/lma.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -44,8 +44,8 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_lma_tests.step);
 
-    demoGrid(b, .{
-        .root_source_file = b.path("src/demo/grid.zig"),
+    lightningHoles(b, .{
+        .root_source_file = b.path("src/lholes/main.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -134,15 +134,15 @@ const ParserTargets = struct {
     }
 };
 
-fn demoGrid(b: *std.Build, options: std.Build.Module.CreateOptions) void {
-    const demo_grid = b.addExecutable(.{
-        .name = "demo-grid",
+fn lightningHoles(b: *std.Build, options: std.Build.Module.CreateOptions) void {
+    const lightning_holes = b.addExecutable(.{
+        .name = "holes",
         .root_module = b.createModule(options),
     });
-    const install = b.addInstallArtifact(demo_grid, .{});
-    const run_demo_grid = b.addRunArtifact(demo_grid);
+    b.installArtifact(lightning_holes);
+
+    const run_demo_grid = b.addRunArtifact(lightning_holes);
     run_demo_grid.addArgs(&.{ "42.11", "1.84", "-i", "data/lightnings/240802/bin" });
-    const demo_grid_step = b.step("demo-grid", "Run the demo for the grid basic functionality");
+    const demo_grid_step = b.step("demo-holes", "Run the demo for the lightning holes detection");
     demo_grid_step.dependOn(&run_demo_grid.step);
-    demo_grid_step.dependOn(&install.step);
 }

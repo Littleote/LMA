@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const lma = @import("../root.zig");
+const lma = @import("../lma.zig");
 const pipe = lma.pipeline;
 const float = pipe.float;
 const math = lma.math;

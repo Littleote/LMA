@@ -80,33 +80,62 @@ const Neighbour = packed struct(u4) {
 };
 
 pub const Info = struct {
+    pub const Detail = union(enum) {
+        shape: Shape,
+        step: zlm.Vec2,
+
+        pub fn fromShape(shape: Shape) Detail {
+            return .{ .shape = shape };
+        }
+
+        pub fn fromStep(step: zlm.Vec2) Detail {
+            return .{ .step = step };
+        }
+
+        pub fn getInfo(self: Detail, size: zlm.Vec2) struct { Shape, zlm.Vec2 } {
+            const shape: Shape = switch (self) {
+                .shape => |shape| shape,
+                .step => |step| blk: {
+                    const shape = size.div(step).add(.new(1, 1));
+                    break :blk .init(@intFromFloat(@round(shape.y)), @intFromFloat(@round(shape.x)));
+                },
+            };
+            const count: zlm.Vec2 = .new(@floatFromInt(shape.columns - 1), @floatFromInt(shape.rows - 1));
+            return .{ shape, size.div(count) };
+        }
+    };
+
+    shape: Shape,
+    size: zlm.Vec2,
     origin: zlm.Vec2,
     end: zlm.Vec2,
     step: zlm.Vec2,
-    count: zlm.Vec2,
 
-    pub fn limits(shape: Shape, origin: zlm.Vec2, end: zlm.Vec2) Info {
-        const count: zlm.Vec2 = .new(@floatFromInt(shape.columns - 1), @floatFromInt(shape.rows - 1));
+    pub fn limits(detail: Detail, origin: zlm.Vec2, end: zlm.Vec2) Info {
+        const size = end.sub(origin);
+        const shape, const step = detail.getInfo(size);
         return .{
+            .shape = shape,
+            .size = size,
             .origin = origin,
             .end = end,
-            .count = count,
-            .step = end.sub(origin).div(count),
+            .step = step,
         };
     }
 
-    pub fn scale(shape: Shape, size: zlm.Vec2) Info {
-        return .scaleTranslate(shape, .zero, size);
+    pub fn scale(detail: Detail, size: zlm.Vec2) Info {
+        return .scaleTranslate(detail, .zero, size);
     }
 
-    pub fn scaleTranslate(shape: Shape, center: zlm.Vec2, size: zlm.Vec2) Info {
+    pub fn scaleTranslate(detail: Detail, center: zlm.Vec2, size: zlm.Vec2) Info {
         const offset = size.scale(0.5);
-        const count: zlm.Vec2 = .new(@floatFromInt(shape.columns - 1), @floatFromInt(shape.rows - 1));
+        const shape, const step = detail.getInfo(size);
         return .{
+            .shape = shape,
+            .size = size,
             .origin = center.add(offset.neg()),
             .end = center.add(offset),
-            .count = count,
-            .step = size.div(count),
+            .step = step,
         };
     }
 

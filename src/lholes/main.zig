@@ -6,6 +6,7 @@ const float = lma.pipeline.float;
 const zlm = @import("zlm").as(float);
 const args = @import("args");
 const utils = @import("utils.zig");
+const Args = @import("Args.zig");
 
 const Resolution = enum {
     micro,
@@ -37,52 +38,15 @@ pub fn main() !void {
     };
     const gpa = if (builtin.mode == .Debug) allocator.allocator() else std.heap.smp_allocator;
 
-    const options = args.parseForCurrentProcess(
-        struct {
-            input: ?[]const u8 = null,
-            output: []const u8 = "img/demo/grid",
-            scale: float = 500.0,
-            resolution: Resolution = .medium,
-            @"half-life": float = 2.5,
-            luminosity: float = 1.0,
-            gif: bool = false,
+    const parsed: Args = try .parseArgs(gpa);
+    defer parsed.deinit(gpa);
+    try run(gpa, parsed);
+}
 
-            pub const shorthands = .{
-                .i = "input",
-                .s = "scale",
-                .r = "resolution",
-                .h = "half-life",
-                .l = "luminosity",
-            };
-        },
-        gpa,
-        .print,
-    ) catch return;
-    defer options.deinit();
-
-    // NOTE: Deal with mandatory missing arguments as zig-args can't
-    if (options.options.input == null) @panic("Missing input field");
-    if (options.positionals.len < 2) @panic("Missing coordinates");
-
-    const lat = std.math.degreesToRadians(
-        std.fmt.parseFloat(float, options.positionals[0]) catch @panic("Invalid latitude value"),
-    );
-    const lon = std.math.degreesToRadians(
-        std.fmt.parseFloat(float, options.positionals[1]) catch @panic("Invalid longitude value"),
-    );
-    const info: lma.pipeline.grid.Info = .scale(options.options.resolution.shape(), .new(options.options.scale, options.options.scale));
-
-    const decay: f32 = @floatCast(std.math.pow(f64, 0.5, @as(f64, @floatFromInt(snap)) / (60.0 * options.options.@"half-life")));
-    const freq = 20.0 / (1 - decay) / options.options.luminosity;
-    const area = info.step.dot(.one);
-    const scale = 1 / (freq * area);
-
+pub fn run(gpa: Allocator, parsed: Args) !void {
     const rotation: zlm.Mat3 = blk: {
-        const x = @cos(lat) * @sin(lon);
-        const y = @sin(lat);
-        const z = @cos(lat) * @cos(lon);
         const r = 6371.0088;
-        var front: zlm.Vec3 = .new(x, y, z);
+        var front: zlm.Vec3 = parsed.region.lookAt();
         var side: zlm.Vec3 = .cross(.unitY, front);
         var up: zlm.Vec3 = .cross(front, side);
 
@@ -98,12 +62,20 @@ pub fn main() !void {
         } };
     };
 
+    const info = parsed.region.generateInfo(parsed.resolution.step(), rotation);
+
+    const decay: f32 = @floatCast(std.math.pow(f64, 0.5, @as(f64, @floatFromInt(snap)) / (60.0 * parsed.half_life)));
+    const freq = 20.0 / (1 - decay) / parsed.luminosity;
+    const area = info.step.dot(.one);
+    const scale = 1 / (freq * area);
+
     // Input directory
-    var input = try std.fs.cwd().openDir(options.options.input.?, .{});
+    std.debug.assert(parsed.format.file == .bin and parsed.format.stage == .clusters);
+    var input = try std.fs.cwd().openDir(parsed.input, .{});
     defer input.close();
 
     // Output directories
-    var output = try utils.forceOpen(std.fs.cwd(), options.options.output, .{});
+    var output = try utils.forceOpen(std.fs.cwd(), parsed.output, .{});
     defer output.close();
 
     // Output directories
@@ -112,7 +84,6 @@ pub fn main() !void {
 
     try makeImages(
         gpa,
-        options.options.resolution.shape(),
         .{
             .rotation = &rotation,
             .info = &info,
@@ -125,9 +96,11 @@ pub fn main() !void {
 
     const disposable_buffer = try gpa.alloc(u8, 65535);
     defer gpa.free(disposable_buffer);
-    try ffmpeg(disposable_buffer, "", options.options.gif, options.options.output);
-    try ffmpeg(disposable_buffer, "s_", options.options.gif, options.options.output);
-    try ffmpeg(disposable_buffer, "c_", options.options.gif, options.options.output);
+    if (true) {
+        try ffmpeg(disposable_buffer, "", parsed.output);
+        try ffmpeg(disposable_buffer, "s_", parsed.output);
+        try ffmpeg(disposable_buffer, "c_", parsed.output);
+    }
 }
 
 pub const Params = struct {
@@ -139,7 +112,6 @@ pub const Params = struct {
 
 pub fn makeImages(
     gpa: Allocator,
-    shape: lma.pipeline.grid.Shape,
     config: Params,
     input: std.fs.Dir,
     output: std.fs.Dir,
@@ -148,6 +120,8 @@ pub fn makeImages(
     var arena_alloc: std.heap.ArenaAllocator = .init(gpa);
     const arena = arena_alloc.allocator();
     defer arena_alloc.deinit();
+
+    const shape = config.info.shape;
 
     // 2D points
     var array: std.ArrayList(zlm.Vec2) = try .initCapacity(arena, 65_535);
@@ -211,7 +185,7 @@ pub fn makeImages(
             std.debug.assert(items.len <= array.capacity);
             for (items) |item| {
                 if (!item.cluster.isNoise()) {
-                    array.appendAssumeCapacity(lma.pipeline.transform.projection(item, config.rotation.*));
+                    array.appendAssumeCapacity(lma.pipeline.transform.coordToPlane(item, config.rotation.*));
                 }
             }
             lma.pipeline.grid.update.triangular(shape, config.info, values, array.items, .{ .scaling = config.scaling });
@@ -380,7 +354,7 @@ fn save(dir: std.fs.Dir, name: []const u8, buffer: []u8, shape: lma.pipeline.gri
     };
 }
 
-fn ffmpeg(buffer: []u8, comptime prefix: []const u8, gif: bool, out: []const u8) !void {
+fn ffmpeg(buffer: []u8, comptime prefix: []const u8, out: []const u8) !void {
     var disposable: std.heap.FixedBufferAllocator = .init(buffer);
     _ = try std.process.Child.run(.{
         .allocator = disposable.allocator(),
@@ -395,7 +369,7 @@ fn ffmpeg(buffer: []u8, comptime prefix: []const u8, gif: bool, out: []const u8)
             "img/" ++ prefix ++ "%d.bmp",
             "-b:v",
             "2M",
-            if (gif) prefix ++ "output.gif" else prefix ++ "output.mp4",
+            prefix ++ "output.mp4",
         },
         .cwd = out,
     });

@@ -154,7 +154,7 @@ pub fn Segmented(T: type, comptime config: Config) type {
                 start orelse data.header.items[0].epoch,
                 switch (mode) {
                     .unlimited => null,
-                    .limited => data.header.getLast().epoch,
+                    .limited => if (data.header.items.len > 0) data.header.getLast().epoch else 0,
                     .until => |value| value,
                 },
             );

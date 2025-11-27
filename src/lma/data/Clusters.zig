@@ -6,13 +6,14 @@ const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 
 const segmented = @import("segmented.zig");
+pub const Segmented = segmented.Segmented(Data, .{
+    .version = 1,
+    .tag = "clust",
+});
 const Unsupported = error{UnsupportedVersion};
 
 pub const Header = segmented.Header;
-segments: segmented.Segmented(Data, .{
-    .version = 1,
-    .tag = "clust",
-}) = .{},
+segments: Segmented = .{},
 
 /// Data structure header
 header: std.ArrayListUnmanaged(Header) = .empty,

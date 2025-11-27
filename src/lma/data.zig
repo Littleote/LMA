@@ -4,3 +4,4 @@ pub const Points = @import("data/Points.zig");
 pub const Clusters = @import("data/Clusters.zig");
 
 pub const dat_file = @import("data/dat_file.zig");
+pub const segmented = @import("data/segmented.zig");

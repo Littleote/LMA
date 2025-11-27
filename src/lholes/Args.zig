@@ -2,12 +2,11 @@ const Args = @This();
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const builtin = @import("builtin");
 const lma = @import("lma");
 const float = lma.pipeline.float;
 const zlm = @import("zlm").as(float);
 const args = @import("args");
-const utils = @import("utils.zig");
+pub const Generator = @import("Generator.zig");
 
 const Parse = struct {
     // Input directory [Mandatory]
@@ -88,7 +87,7 @@ pub const Region = union(RegionType) {
         };
     }
 
-    pub fn generateInfo(self: Region, step: zlm.Vec2, rotation: zlm.Mat3) lma.pipeline.grid.Info {
+    pub fn generateInfo(self: Region, step: zlm.Vec2, rotation: *const zlm.Mat3) lma.pipeline.grid.Info {
         return switch (self) {
             .center_size => |center_size| .scale(.fromStep(step), center_size.size),
             .end_points => |end_points| .limits(
@@ -135,6 +134,10 @@ pub fn deinit(self: *const Args, gpa: Allocator) void {
     gpa.free(self.output);
 }
 
+pub fn generator(self: Args, gpa: Allocator) !Generator {
+    return try .init(gpa, self.input, self.format);
+}
+
 pub fn parseArgs(gpa: Allocator) !Args {
     const parsed = try args.parseForCurrentProcess(
         Parse,
@@ -179,7 +182,6 @@ pub fn parseArgs(gpa: Allocator) !Args {
         std.debug.print("Defaulting to catalonia due to no region specified\n", .{});
         break :blk .{ .center_size = .{ .center = .new(42.1, 1.8), .size = .new(500, 500) } };
     };
-    std.debug.print("{any}\n", .{region});
 
     const input = try gpa.dupe(u8, parsed.options.input orelse {
         std.debug.print("Missing argument \"input\"\n", .{});

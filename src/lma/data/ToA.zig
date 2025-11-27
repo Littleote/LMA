@@ -6,16 +6,17 @@ const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 
 const segmented = @import("segmented.zig");
-const Parser = @import("dat_file.zig").ToAParser;
-const Unsupported = error{UnsupportedVersion};
-
-pub const Header = segmented.Header;
-segments: segmented.Segmented(Data, .{
+pub const Segmented = segmented.Segmented(Data, .{
     .version = 1,
     .tag = "toa",
     .extra = "metadata",
     .packet = "packet",
-}) = .{},
+});
+const Parser = @import("dat_file.zig").ToAParser;
+const Unsupported = error{UnsupportedVersion};
+
+pub const Header = segmented.Header;
+segments: Segmented = .{},
 
 /// Data structure header
 header: std.ArrayListUnmanaged(Header) = .empty,

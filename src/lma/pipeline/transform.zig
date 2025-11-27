@@ -5,9 +5,9 @@ const float = pipe.float;
 const zlm = @import("zlm").as(float);
 const data = @import("../data.zig");
 
-pub fn coordToPlane(item: anytype, rotation: zlm.Mat3) zlm.Vec2 {
+pub fn coordToPlane(item: anytype, rotation: *const zlm.Mat3) zlm.Vec2 {
     const point = coordToSpace(item);
-    const proj = point.transform(rotation);
+    const proj = point.transform(rotation.*);
     return .new(proj.x, proj.y);
 }
 

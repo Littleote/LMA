@@ -142,7 +142,7 @@ fn lightningHoles(b: *std.Build, options: std.Build.Module.CreateOptions) void {
     b.installArtifact(lightning_holes);
 
     const run_demo_grid = b.addRunArtifact(lightning_holes);
-    run_demo_grid.addArgs(&.{ "--at", "42.11,1.84", "-i", "data/lightnings/240802/bin" });
+    run_demo_grid.addArgs(&.{ "--at", "42.11,1.84", "-i", "data/lightnings/240802/bin", "--ffmpeg" });
     const demo_grid_step = b.step("demo-holes", "Run the demo for the lightning holes detection");
     demo_grid_step.dependOn(&run_demo_grid.step);
 }

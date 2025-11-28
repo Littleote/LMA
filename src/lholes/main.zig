@@ -8,24 +8,6 @@ const args = @import("args");
 const utils = @import("utils.zig");
 const Args = @import("Args.zig");
 
-const Resolution = enum {
-    micro,
-    low,
-    medium,
-    high,
-    extra,
-
-    pub fn shape(res: Resolution) lma.pipeline.grid.Shape {
-        return switch (res) {
-            .micro => .init(32, 32),
-            .low => .init(255, 255),
-            .medium => .init(512, 512),
-            .high => .init(1024, 1024),
-            .extra => .init(2048, 2048),
-        };
-    }
-};
-
 const step = 60 * 10 * 1;
 const count = 1 * 6 * 24;
 const snap = 60 * 1 * 1;
@@ -69,7 +51,7 @@ pub fn run(gpa: Allocator, parsed: Args) !void {
         } };
     };
 
-    const info = parsed.region.generateInfo(parsed.resolution.step(), &rotation);
+    const info = parsed.region.generateInfo(parsed.detail, &rotation);
 
     const decay: f32 = @floatCast(std.math.pow(f64, 0.5, @as(f64, @floatFromInt(snap)) / (60.0 * parsed.half_life)));
     const freq = 20.0 / (1 - decay) / parsed.luminosity;
@@ -107,7 +89,7 @@ pub fn run(gpa: Allocator, parsed: Args) !void {
 
     const disposable_buffer = try gpa.alloc(u8, 65535);
     defer gpa.free(disposable_buffer);
-    if (true) {
+    if (parsed.ffmpeg) {
         try ffmpeg(disposable_buffer, "", parsed.output);
         try ffmpeg(disposable_buffer, "s_", parsed.output);
         try ffmpeg(disposable_buffer, "c_", parsed.output);
@@ -198,9 +180,6 @@ pub fn makeImages(
                 cluster.score /= max_definition_score;
                 cluster.score *= std.math.clamp(1.5 - 4 * cluster.lowest, 0.2, 1);
                 cluster.score *= std.math.clamp(lma.math.cast(float, cluster.area) / 10.0, 0.2, 1);
-                // if (cluster.score > threshold) {
-                //     std.debug.print("{d}: {any}\n", .{ @divFloor(iterator.epoch, snap), cluster });
-                // }
             }
 
             // Add scores to running window
@@ -283,7 +262,7 @@ fn ffmpeg(buffer: []u8, comptime prefix: []const u8, out: []const u8) !void {
             "-i",
             "img/" ++ prefix ++ "%d.bmp",
             "-b:v",
-            "2M",
+            "4M",
             prefix ++ "output.mp4",
         },
         .cwd = out,

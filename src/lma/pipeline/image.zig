@@ -62,9 +62,9 @@ pub const palettes = struct {
         var arr: [256]Color = undefined;
         @memcpy(&arr, &viridis);
         arr[252] = .{ .red = 0, .blue = 0, .green = 0 };
-        arr[253] = .{ .red = 0, .blue = 1, .green = 1 };
-        arr[254] = .{ .red = 1, .blue = 0, .green = 0 };
-        arr[255] = .{ .red = 1, .blue = 1, .green = 1 };
+        arr[253] = .{ .red = 255, .blue = 127, .green = 0 };
+        arr[254] = .{ .red = 255, .blue = 0, .green = 127 };
+        arr[255] = .{ .red = 255, .blue = 255, .green = 255 };
         break :blk arr;
     };
 
@@ -87,9 +87,9 @@ pub const palettes = struct {
         var arr: [256]Color = undefined;
         @memcpy(&arr, &heat);
         arr[252] = .{ .red = 0, .blue = 0, .green = 0 };
-        arr[253] = .{ .red = 0, .blue = 1, .green = 0 };
-        arr[254] = .{ .red = 0, .blue = 0, .green = 1 };
-        arr[255] = .{ .red = 1, .blue = 1, .green = 1 };
+        arr[253] = .{ .red = 0, .blue = 255, .green = 0 };
+        arr[254] = .{ .red = 0, .blue = 0, .green = 255 };
+        arr[255] = .{ .red = 255, .blue = 255, .green = 255 };
         break :blk arr;
     };
 };

@@ -160,6 +160,7 @@ pub fn deinit(self: *Generator) void {
     }
     self.files.deinit(self.gpa);
     self.gpa.free(self.file_buffer);
+    self.array.deinit(self.gpa);
     self.* = undefined;
 }
 

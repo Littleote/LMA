@@ -13,6 +13,9 @@ const Parse = struct {
     input: ?[]const u8 = null,
     // Output directory for images
     output: []const u8 = "img/demo/holes",
+    // Generate the mp4 after finishing
+    ffmpeg: ?bool = null,
+    @"no-ffmpeg": bool = false,
 
     // center (lat, lon) and size (w, [h])
     at: ?[]const u8 = null,
@@ -22,12 +25,14 @@ const Parse = struct {
     from: ?[]const u8 = null,
     to: ?[]const u8 = null,
 
-    resolution: Resolution = .medium,
+    resolution: ?Resolution = null,
+    @"fixed-size": ?[]const u8 = null,
     @"half-life": float = 2.5,
     luminosity: float = 1.0,
 
     pub const shorthands = .{
         .i = "input",
+        .o = "output",
         .r = "resolution",
         .h = "half-life",
         .l = "luminosity",
@@ -87,11 +92,11 @@ pub const Region = union(RegionType) {
         };
     }
 
-    pub fn generateInfo(self: Region, step: zlm.Vec2, rotation: *const zlm.Mat3) lma.pipeline.grid.Info {
+    pub fn generateInfo(self: Region, detail: Detail, rotation: *const zlm.Mat3) lma.pipeline.grid.Info {
         return switch (self) {
-            .center_size => |center_size| .scale(.fromStep(step), center_size.size),
+            .center_size => |center_size| .scale(detail, center_size.size),
             .end_points => |end_points| .limits(
-                .fromStep(step),
+                detail,
                 lma.pipeline.transform.coordToPlane(end_points.origin, rotation),
                 lma.pipeline.transform.coordToPlane(end_points.end, rotation),
             ),
@@ -116,15 +121,17 @@ const Resolution = enum(u8) {
         };
     }
 };
+const Detail = lma.pipeline.grid.Info.Detail;
 
 input: []const u8,
 format: Format,
 
 output: []const u8,
+ffmpeg: bool,
 
 region: Region,
 
-resolution: Resolution,
+detail: lma.pipeline.grid.Info.Detail,
 
 half_life: float,
 luminosity: float,
@@ -147,6 +154,16 @@ pub fn parseArgs(gpa: Allocator) !Args {
     defer parsed.deinit();
     if (parsed.positionals.len != 0) {
         std.debug.print("Positional arguments provided but non expected. Used coma separated values without spaces for specifying multiple values\n", .{});
+        return error.Parsing;
+    }
+
+    if (parsed.options.@"no-ffmpeg" and (parsed.options.ffmpeg orelse false)) {
+        std.debug.print("Contradictory values for ffmpeg specified\n", .{});
+        return error.Parsing;
+    }
+
+    if (parsed.options.@"fixed-size" != null and parsed.options.resolution != null) {
+        std.debug.print("Contradictory arguments \"fixed-size\" and \"resolution\" specified\n", .{});
         return error.Parsing;
     }
 
@@ -183,6 +200,11 @@ pub fn parseArgs(gpa: Allocator) !Args {
         break :blk .{ .center_size = .{ .center = .new(42.1, 1.8), .size = .new(500, 500) } };
     };
 
+    const detail: Detail = if (parsed.options.@"fixed-size") |shape| blk: {
+        const width, const height = std.mem.cutScalar(u8, shape, ',') orelse .{ shape, shape };
+        break :blk .fromShape(.init(try parseInt(u16, height), try parseInt(u16, width)));
+    } else .fromStep((parsed.options.resolution orelse Resolution.medium).step());
+
     const input = try gpa.dupe(u8, parsed.options.input orelse {
         std.debug.print("Missing argument \"input\"\n", .{});
         return error.Parsing;
@@ -195,9 +217,10 @@ pub fn parseArgs(gpa: Allocator) !Args {
         .input = input,
         .format = .{ .file = .bin, .stage = .clusters },
         .output = output,
+        .ffmpeg = parsed.options.ffmpeg orelse !parsed.options.@"no-ffmpeg",
 
         .region = region,
-        .resolution = parsed.options.resolution,
+        .detail = detail,
 
         .half_life = parsed.options.@"half-life",
         .luminosity = parsed.options.luminosity,
@@ -218,6 +241,7 @@ pub const ExternArgs = extern struct {
 
     output: [*:0]const u8,
     output_len: usize,
+    ffmpeg: bool,
 
     region_type: RegionType,
     region_first: Pair(float),
@@ -233,6 +257,7 @@ pub const ExternArgs = extern struct {
             .input = self.input[0..self.input_len],
             .format = self.format,
             .output = self.output[0..self.output_len],
+            .ffmpeg = self.ffmpeg,
             .region = switch (self.region_type) {
                 .center_size => .{ .center_size = .{
                     .center = .new(self.region_first.first, self.region_first.second),
@@ -243,7 +268,7 @@ pub const ExternArgs = extern struct {
                     .end = .new(self.region_second.first, self.region_second.second),
                 } },
             },
-            .resolution = self.resolution,
+            .detail = .fromStep(self.resolution.step()),
             .half_life = self.half_life,
             .luminosity = self.luminosity,
         };
@@ -253,6 +278,13 @@ pub const ExternArgs = extern struct {
 fn parseFloat(s: []const u8) !float {
     return std.fmt.parseFloat(float, s) catch |err| {
         std.debug.print("Failure to parse \"{s}\" as a float\n", .{s});
+        return err;
+    };
+}
+
+fn parseInt(Int: type, s: []const u8) !Int {
+    return std.fmt.parseInt(Int, s, 10) catch |err| {
+        std.debug.print("Failure to parse \"{s}\" as an integer\n", .{s});
         return err;
     };
 }

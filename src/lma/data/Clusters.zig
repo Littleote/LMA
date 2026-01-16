@@ -59,7 +59,7 @@ test toCsv {
         // Load some values into the data structure
         const file = try std.fs.cwd().openFile("data/lightnings/250712/bin/00h-00min-00s.bin", .{ .mode = .read_only });
         defer file.close();
-        var file_reader = file.reader(&buffer);
+        var file_reader = file.reader(std.testing.io, &buffer);
         try data.fromBin(&file_reader.interface);
     }
 
@@ -105,7 +105,7 @@ pub fn fromBin(self: *Data, r: *Reader) !void {
 test "BIN format" {
     const file = try std.fs.cwd().openFile("data/lightnings/250712/bin/00h-00min-00s.bin", .{ .mode = .read_only });
     defer file.close();
-    var file_reader = file.reader(&.{});
+    var file_reader = file.reader(std.testing.io, &.{});
 
     var to_buffer: Writer.Allocating = .init(std.testing.allocator);
     defer to_buffer.deinit();

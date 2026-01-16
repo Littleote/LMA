@@ -89,7 +89,7 @@ test toCsv {
         // Load some values into the data structure
         const file = try std.fs.cwd().openFile("data/ToA/250712/bin/LC_UPC_Bujaraloz_250712_120000.bin", .{ .mode = .read_only });
         defer file.close();
-        var file_reader = file.reader(&buffer);
+        var file_reader = file.reader(std.testing.io, &buffer);
         try data.fromBin(&file_reader.interface);
         try data.build_all();
     }
@@ -144,7 +144,7 @@ pub fn fromBin(self: *Data, r: *Reader) !void {
 test "BIN format" {
     const file = try std.fs.cwd().openFile("data/ToA/250712/bin/LC_UPC_Bujaraloz_250712_120000.bin", .{ .mode = .read_only });
     defer file.close();
-    var file_reader = file.reader(&.{});
+    var file_reader = file.reader(std.testing.io, &.{});
 
     var to_buffer: Writer.Allocating = .init(std.testing.allocator);
     defer to_buffer.deinit();
@@ -210,12 +210,11 @@ test Parser {
     const file = try std.fs.cwd().openFile("data/ToA/250712/sources/LC_UPC_Bujaraloz_250712_120000.dat", .{ .mode = .read_only });
     defer file.close();
     var buffer: [1024]u8 = undefined;
-
     {
         var data: Data = .init(std.testing.allocator);
         defer data.deinit();
 
-        var file_reader = file.reader(&buffer);
+        var file_reader = file.reader(std.testing.io, &buffer);
         _ = try data.fromDat(&file_reader.interface);
     }
     {

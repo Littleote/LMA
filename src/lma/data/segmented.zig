@@ -76,23 +76,24 @@ pub fn Segmented(T: type, comptime config: Config) type {
             }
         };
 
-        pub fn append(self: *Self, other: *const Self) error{OutOfMemory}!T {
+        pub fn append(self: *Self, other: *const Self) error{OutOfMemory}!*T {
             const data: *T = @alignCast(@fieldParentPtr("segments", self));
             const extra_data: *const T = @alignCast(@fieldParentPtr("segments", other));
 
-            const same_day = data.header.last().epoch < extra_data.header.items[0].epoch;
+            const same_day = data.header.items[data.header.items.len - 1].epoch < extra_data.header.items[0].epoch;
             const old_len = data.header.items.len;
 
-            data.header.appendSlice(data.gpa, extra_data.header.items);
-            if (config.extra) |extra| @field(data, extra).appendSlice(data.gpa, @field(extra_data, extra).items);
-            @field(data, config.value).appendSlice(data.gpa, @field(extra_data, config.value).items);
-            if (config.packet) |packet| @field(data, packet).appendSlice(data.gpa, @field(extra_data, packet).items);
+            try data.header.appendSlice(data.gpa, extra_data.header.items);
+            if (config.extra) |extra| try @field(data, extra).appendSlice(data.gpa, @field(extra_data, extra).items);
+            try @field(data, config.value).appendSlice(data.gpa, @field(extra_data, config.value).items);
+            if (config.packet) |packet| try @field(data, packet).appendSlice(data.gpa, @field(extra_data, packet).items);
 
             if (!same_day) {
                 for (old_len..data.header.items.len) |idx| {
                     data.header.items[idx].epoch += 24 * 60 * 60;
                 }
             }
+            return data;
         }
 
         pub fn epochIndex(self: *const Self, epoch: usize, search: Search) ?usize {

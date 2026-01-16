@@ -173,7 +173,9 @@ pub fn fromDat(self: *Data, r: *Reader) !void {
 }
 
 pub fn fromDatFile(self: *Data, file: std.fs.File, buffer: []u8) !void {
-    var file_reader = file.reader(buffer);
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+    var file_reader = file.reader(io, buffer);
     const parser: Parser = try .init(&file_reader.interface);
     file_reader.seekTo(0) catch unreachable;
     try parser.parseAllHeaders(self, &file_reader.interface);

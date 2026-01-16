@@ -154,6 +154,52 @@ inline fn toFloat(value: anytype) float {
 }
 
 pub const update = struct {
+    pub const convolution = struct {
+        pub fn call(shape: Shape, values: []float, aux: []float, horizontal: []const float, vertical: []const float) void {
+            const mid_col = @divExact(horizontal.len - 1, 2);
+            for (0..shape.rows) |row| {
+                for (0..shape.columns) |col| {
+                    const idx = shape.ravel(row, col);
+                    var val: float = 0.0;
+                    for (0..horizontal.len) |diff| {
+                        if (col + diff < mid_col or shape.columns <= col + diff - mid_col) continue;
+                        val += horizontal[diff] * values[idx + diff - mid_col];
+                    }
+                    aux[idx] = val;
+                }
+            }
+            const mid_row = @divExact(vertical.len - 1, 2);
+            for (0..shape.rows) |row| {
+                for (0..shape.columns) |col| {
+                    const idx = shape.ravel(row, col);
+                    var val: float = 0.0;
+                    for (0..vertical.len) |diff| {
+                        if (row + diff < mid_row or shape.rows <= row + diff - mid_row) continue;
+                        val += vertical[diff] * aux[shape.ravel(row + diff - mid_row, col)];
+                    }
+                    values[idx] = val;
+                }
+            }
+        }
+
+        pub fn gaussian(buffer: []float, sigma: float) void {
+            var sum: float = 0.0;
+            var idx: usize = 0;
+            var x = -(lma.math.cast(float, buffer.len) - 1) / 2;
+            const to = -x + 0.5;
+            while (x < to) : ({
+                x += 1.0;
+                idx += 1;
+            }) {
+                buffer[idx] = @exp(-(x * x) / (sigma * sigma));
+                sum += buffer[idx];
+            }
+            for (buffer) |*value| {
+                value.* /= sum;
+            }
+        }
+    };
+
     pub fn morph(shape: Shape, values: []float, aux: []float, op_shape: Shape, comptime op: enum { erode, dilate }) void {
         const mid_col = @divExact(op_shape.columns - 1, 2);
         for (0..shape.rows) |row| {
@@ -212,45 +258,49 @@ pub const update = struct {
             self.* = undefined;
         }
 
-        pub fn applyFrame(self: *Window, values: []float) void {
-            const current = self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
+        pub fn get(self: *Window) []float {
+            return self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
+        }
+
+        pub fn apply(self: *Window, values: []float) void {
+            const current = self.get();
             for (values, current) |*total, add| {
                 total.* = total.* + add;
             }
         }
 
-        pub fn clearNextFrame(self: *Window, values: []float) []float {
-            self.current_frame = (self.current_frame + 1) % self.size;
-            const next = self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
+        pub fn setupNext(self: *Window, values: []float) void {
+            self.ignore();
+            const next = self.get();
             for (values, next) |*total, sub| {
                 total.* = @max(0, total.* - sub - self.correction);
             }
-            @memset(next, 0);
-            return next;
+            self.clear();
         }
 
-        pub fn jumpToNextFrame(self: *Window, values: []float) []float {
-            const last = self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
-            self.current_frame = (self.current_frame + 1) % self.size;
-            const next = self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
+        pub fn advance(self: *Window, values: []float) void {
+            const last = self.get();
+            self.ignore();
+            const next = self.get();
             for (values, last, next) |*total, add, sub| {
                 total.* = @max(0, total.* + add - sub - self.correction);
             }
-            @memset(next, 0);
-            return next;
+            self.clear();
         }
 
-        pub fn peekFrame(self: *Window) []float {
+        pub fn peek(self: *Window) []float {
             const next_frame = (self.current_frame + 1) % self.size;
             const next = self.frames[self.shape.size * next_frame ..][0..self.shape.size];
             return next;
         }
 
-        pub fn ignoreFrame(self: *Window) []float {
+        pub fn ignore(self: *Window) void {
             self.current_frame = (self.current_frame + 1) % self.size;
-            const next = self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
-            @memset(next, 0);
-            return next;
+        }
+
+        pub fn clear(self: *Window) void {
+            const frame = self.get();
+            @memset(frame, 0);
         }
     };
 

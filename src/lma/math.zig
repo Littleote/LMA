@@ -19,18 +19,18 @@ pub fn cast(T: type, value: anytype) T {
     const input_type = comptime std.meta.activeTag(@typeInfo(@TypeOf(value)));
     const output_type = comptime std.meta.activeTag(@typeInfo(T));
     return switch (input_type) {
-        .int => switch(output_type) {
+        .int => switch (output_type) {
             .int => @intCast(value),
             .float => @floatFromInt(value),
             .@"enum" => @enumFromInt(value),
             else => unreachable,
         },
-        .float => switch(output_type) {
+        .float => switch (output_type) {
             .int => @intFromFloat(value),
             .float => @floatCast(value),
             else => unreachable,
         },
-        .@"enum" => switch(output_type) {
+        .@"enum" => switch (output_type) {
             .int => @intFromEnum(value),
         },
         else => unreachable,
@@ -38,10 +38,10 @@ pub fn cast(T: type, value: anytype) T {
 }
 
 fn Signed(T: type) type {
-    return @Type(.{ .int = .{
-        .bits = @typeInfo(T).int.bits,
-        .signedness = .signed,
-    } });
+    return @Int(
+        .signed,
+        @typeInfo(T).int.bits,
+    );
 }
 
 pub fn offset(T: type, a: T, b: Signed(T)) (error{Overflow}!T) {

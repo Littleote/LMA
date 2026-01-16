@@ -13,6 +13,8 @@ const Parse = struct {
     input: ?[]const u8 = null,
     // Output directory for images
     output: []const u8 = "img/demo/holes",
+    // Map overlay GeoJSON
+    map: ?[]const u8 = null,
     // Generate the mp4 after finishing
     ffmpeg: ?bool = null,
     @"no-ffmpeg": bool = false,
@@ -36,6 +38,7 @@ const Parse = struct {
         .r = "resolution",
         .h = "half-life",
         .l = "luminosity",
+        .m = "map",
     };
 };
 
@@ -127,6 +130,7 @@ input: []const u8,
 format: Format,
 
 output: []const u8,
+map: ?[]const u8,
 ffmpeg: bool,
 
 region: Region,
@@ -141,8 +145,8 @@ pub fn deinit(self: *const Args, gpa: Allocator) void {
     gpa.free(self.output);
 }
 
-pub fn generator(self: Args, gpa: Allocator) !Generator {
-    return try .init(gpa, self.input, self.format);
+pub fn generator(self: Args, gpa: Allocator, io: std.Io) !Generator {
+    return try .init(gpa, io, self.input, self.format);
 }
 
 pub fn parseArgs(gpa: Allocator) !Args {
@@ -197,7 +201,7 @@ pub fn parseArgs(gpa: Allocator) !Args {
         } };
     } else blk: {
         std.debug.print("Defaulting to catalonia due to no region specified\n", .{});
-        break :blk .{ .center_size = .{ .center = .new(42.1, 1.8), .size = .new(500, 500) } };
+        break :blk .{ .center_size = .{ .center = .new(42.1, 1.8), .size = .new(300, 300) } };
     };
 
     const detail: Detail = if (parsed.options.@"fixed-size") |shape| blk: {
@@ -212,11 +216,14 @@ pub fn parseArgs(gpa: Allocator) !Args {
     errdefer gpa.free(input);
     const output = try gpa.dupe(u8, parsed.options.output);
     errdefer gpa.free(output);
+    const maybe_map = if (parsed.options.map) |map| try gpa.dupe(u8, map) else null;
+    errdefer if (maybe_map) |map| gpa.free(map);
 
     return .{
         .input = input,
         .format = .{ .file = .bin, .stage = .clusters },
         .output = output,
+        .map = maybe_map,
         .ffmpeg = parsed.options.ffmpeg orelse !parsed.options.@"no-ffmpeg",
 
         .region = region,
@@ -241,6 +248,8 @@ pub const ExternArgs = extern struct {
 
     output: [*:0]const u8,
     output_len: usize,
+    map: ?[*:0]const u8,
+    map_len: usize,
     ffmpeg: bool,
 
     region_type: RegionType,
@@ -257,6 +266,7 @@ pub const ExternArgs = extern struct {
             .input = self.input[0..self.input_len],
             .format = self.format,
             .output = self.output[0..self.output_len],
+            .map = if (self.map) |map| map[0..self.map_len] else null,
             .ffmpeg = self.ffmpeg,
             .region = switch (self.region_type) {
                 .center_size => .{ .center_size = .{

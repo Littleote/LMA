@@ -103,9 +103,10 @@ files: std.ArrayList([]const u8),
 file_buffer: []u8,
 
 gpa: Allocator,
+io: std.Io,
 array: std.ArrayList(zlm.Vec2),
 
-pub fn init(gpa: Allocator, input: []const u8, format: Args.Format) !Generator {
+pub fn init(gpa: Allocator, io: std.Io, input: []const u8, format: Args.Format) !Generator {
     var path: []const u8 = undefined;
     var files: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -147,10 +148,12 @@ pub fn init(gpa: Allocator, input: []const u8, format: Args.Format) !Generator {
         .files = files,
         .file_buffer = try gpa.alloc(u8, 1024),
         .gpa = gpa,
+        .io = io,
         .array = .empty,
     };
     errdefer gpa.free(out.file_buffer);
-    try out.load() orelse return error.NoFileFound;
+    if (out.files.items.len == 0) return error.NoFileFound;
+    try out.load();
     return out;
 }
 
@@ -159,17 +162,18 @@ pub fn deinit(self: *Generator) void {
         self.gpa.free(file);
     }
     self.files.deinit(self.gpa);
+    self.data.unload();
     self.gpa.free(self.file_buffer);
     self.array.deinit(self.gpa);
     self.* = undefined;
 }
 
-fn load(self: *Generator) !?void {
-    if (self.current_file >= self.files.items.len) return null;
+fn load(self: *Generator) !void {
+    if (self.current_file >= self.files.items.len) unreachable;
     var dir = try std.fs.cwd().openDir(self.path, .{});
     defer dir.close();
     const file = try dir.openFile(self.files.items[self.current_file], .{ .mode = .read_only });
-    var file_reader = file.reader(self.file_buffer);
+    var file_reader = file.reader(self.io, self.file_buffer);
     self.current_file += 1;
     try self.data.load(&file_reader.interface);
 }
@@ -177,8 +181,9 @@ fn load(self: *Generator) !?void {
 pub fn next(self: *Generator, rotation: *const zlm.Mat3) !?[]zlm.Vec2 {
     var out: ?[]zlm.Vec2 = try self.data.next(rotation);
     while (out == null) {
+        if (self.current_file >= self.files.items.len) return null;
         self.data.unload();
-        try self.load() orelse return null;
+        try self.load();
         out = try self.data.next(rotation);
     }
     return out;

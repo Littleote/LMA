@@ -21,13 +21,16 @@ pub const Args = struct {
 };
 
 pub fn parse(gpa: std.mem.Allocator, path: []const u8, args: *const Args) !void {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
     const delimiter = @intFromEnum(args.delimiter);
 
     // Input file
     const file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
     defer file.close();
     var buffer: [1024]u8 = undefined;
-    var file_reader = file.reader(&buffer);
+    var file_reader = file.reader(io, &buffer);
 
     // Open directories
     const dir_path = std.fs.path.dirname(path) orelse "../";

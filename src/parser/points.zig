@@ -13,6 +13,8 @@ pub const Args = struct {
 };
 
 pub fn parse(gpa: std.mem.Allocator, path: []const u8, args: *const Args) !void {
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
 
     // Input directory
     var dir = try std.fs.cwd().openDir(path, .{ .iterate = true });
@@ -53,7 +55,7 @@ pub fn parse(gpa: std.mem.Allocator, path: []const u8, args: *const Args) !void 
                 .{ .mode = .read_only },
             );
             defer file.close();
-            var file_reader = file.reader(&buffer);
+            var file_reader = file.reader(io, &buffer);
             loaded = true;
             time = data.dat_file.parseOutput(
                 &points,

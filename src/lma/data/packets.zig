@@ -83,11 +83,12 @@ pub fn Packets(Elem: type) type {
             self.array.deinit(self.allocator);
         }
 
-        pub const ParseError = (Reader.Error || Allocator.Error || error{ InvalidHeader, InvalidValue, UnsupportedVersion });
+        pub const ParseError = (Reader.DelimiterError || Allocator.Error || error{ InvalidHeader, InvalidValue, UnsupportedVersion });
 
+        /// Write Packets to custom binary fromat
         pub fn toBin(self: *const Self, w: *Writer) Writer.Error!void {
             // File Header
-            try w.print("LMA-{s}-{d:0>3}\n", .{ Elem.name, Elem.version });
+            try w.print("LMA-{s}-{d:0>3}\n", .{ Elem.bin_tag, Elem.bin_version });
             try w.writeInt(usize, self.headers.items.len, .little);
             try w.writeInt(usize, self.array.items.len, .little);
             for (self.headers.items) |header| {
@@ -97,15 +98,16 @@ pub fn Packets(Elem: type) type {
             try w.flush();
         }
 
+        /// Read Packets from custom binary fromat
         pub fn fromBin(self: *Self, r: *Reader) Self.ParseError!void {
             const version: u8 = blk: {
-                const header_len = comptime 3 + 1 + Elem.name.len + 1 + 3 + 1;
+                const header_len = comptime 3 + 1 + Elem.bin_tag.len + 1 + 3 + 1;
                 const header = try r.take(header_len);
                 var header_match: bool = true;
                 header_match &= std.mem.eql(u8, header[0..4], "LMA-");
-                header_match &= std.mem.eql(u8, header[4..][0..Elem.name.len], Elem.name);
-                header_match &= header[4 + Elem.name.len] == '-';
-                const version_string = header[5 + Elem.name.len ..][0..3];
+                header_match &= std.mem.eql(u8, header[4..][0..Elem.bin_tag.len], Elem.bin_tag);
+                header_match &= header[4 + Elem.bin_tag.len] == '-';
+                const version_string = header[5 + Elem.bin_tag.len ..][0..3];
                 header_match &= header[header.len - 1] == '\n';
                 if (!header_match) return error.InvalidHeader;
                 break :blk std.fmt.parseInt(u8, version_string, 10) catch return error.InvalidHeader;
@@ -131,23 +133,137 @@ pub fn Packets(Elem: type) type {
             }
         }
 
-        pub fn toCsv(self: *const Self, w: *Writer, separator: ?u8) Writer.Error!void {
-            const sep = separator orelse ',';
-            try w.print(Elem.csvHeader, .{sep});
-            for (self.header.items) |header| {
-                for (self.array[header.start..][0..header.size]) |value| {
-                    try value.toCsv(w, header, sep);
+        /// Write Packets to a CSV file
+        /// When delimiter is null, use a comma (`,`)
+        pub fn toCsv(self: *const Self, w: *Writer, delimiter: ?u8) Writer.Error!void {
+            const del = delimiter orelse ',';
+            for (Elem.csv_columns, 1..) |column, idx| {
+                try w.writeAll(column);
+                try w.writeByte(if (idx == Elem.csv_columns.len) '\n' else del);
+            }
+            for (self.headers.items) |header| {
+                for (self.array.items[header.start..][0..header.size]) |value| {
+                    try value.toCsv(w, header, del);
                 }
             }
             try w.flush();
         }
 
-        pub fn fromCsv(self: *Self, r: *Reader, separator: ?u8) Self.ParseError!void {
-            _ = self;
-            _ = r;
-            _ = separator;
+        /// Read Packets from CSV file
+        /// When delimiter is null, the most common delimiters are tested
+        pub fn fromCsv(self: *Self, r: *Reader, delimiter: ?u8) Self.ParseError!void {
+            // Read CSV header
+            const csv_header = try r.takeDelimiter('\n') orelse return error.InvalidHeader;
+            const del = delimiter orelse blk: {
+                const common_delimiters = [_]u8{ ',', ';', '\t', '|' };
+                for (common_delimiters) |del| {
+                    const columns = 1 + std.mem.countScalar(u8, csv_header, del);
+                    if (columns == Elem.csv_columns.len) break :blk del;
+                }
+                return error.InvalidHeader;
+            };
+
+            // Short-circuit for empty csv
+            const first_line = r.peekDelimiterExclusive('\n') catch |err| switch (err) {
+                error.EndOfStream => return,
+                else => return err,
+            };
+            var first_value: Elem = undefined;
+            var last_epoch: usize = try first_value.fromCsv(first_line, del);
+
+            // Parse entries
+            errdefer self.deinit();
+            var header = try self.headers.addOne(self.allocator);
+            // Start first header info
+            header.* = .{
+                .start = @intCast(self.array.items.len),
+                .epoch = @intCast(last_epoch),
+                .size = 0,
+            };
+            while (try r.takeDelimiter('\n')) |line| {
+                const value = try self.array.addOne(self.allocator);
+                const current_epoch = try value.fromCsv(line, del);
+                if (last_epoch != current_epoch) {
+                    // Finish current and start next header info
+                    header.size = @intCast(self.array.items.len - header.start - 1);
+                    last_epoch = current_epoch;
+                    header = try self.headers.addOne(self.allocator);
+                    header.* = .{
+                        .start = @intCast(self.array.items.len - 1),
+                        .epoch = @intCast(last_epoch),
+                        .size = 0,
+                    };
+                }
+            }
+            // Finish last header info
+            header.size = @intCast(self.array.items.len - header.start);
         }
 
+        test "csv columns" {
+            if (!@hasDecl(Elem, "dummyValue")) return error.SkipZigTest;
+            var data: Packets(Elem) = .init(std.testing.allocator);
+            defer data.deinit();
+            try randomPackets(Elem, &data, 3, 5);
+
+            // Write to a buffer and read from it onto a new packet
+            var writer: Writer.Allocating = .init(data.allocator);
+            defer writer.deinit();
+            const del = ',';
+            try data.toCsv(&writer.writer, del);
+
+            var reader: Reader = .fixed(writer.written());
+            const csv_header = try reader.takeDelimiter('\n') orelse {
+                std.log.err("Missing CSV header in buffer\n{s}\n", .{writer.written()});
+                return error.InvalidHeader;
+            };
+            const columns_delimiters = Elem.csv_columns.len - 1;
+            if (std.mem.countScalar(u8, csv_header, del) != columns_delimiters) {
+                std.log.err("Delimiter used in header\n{s}\n", .{csv_header});
+                return error.InvalidHeader;
+            }
+            var rows: usize = 0;
+            while (try reader.takeDelimiter('\n')) |line| {
+                if (std.mem.countScalar(u8, line, del) != columns_delimiters) {
+                    std.log.err("Column number mismatch between header\n{s}\nAnd entry\n{s}\n", .{ csv_header, line });
+                    return error.InvalidValue;
+                }
+                rows += 1;
+            }
+            if (rows != 3 * 5) {
+                std.log.err("Row count mismatch\n{s}\n", .{writer.written()});
+                return error.InvalidValue;
+            }
+        }
+
+        test "csv format round trip" {
+            if (!@hasDecl(Elem, "dummyValue")) return error.SkipZigTest;
+            var data: Packets(Elem) = .init(std.testing.allocator);
+            defer data.deinit();
+            try randomPackets(Elem, &data, 10, 5);
+
+            // Write to a buffer and read from it onto a new packet
+            var writer: Writer.Allocating = .init(data.allocator);
+            defer writer.deinit();
+            try data.toCsv(&writer.writer, null);
+
+            var read_data: Packets(Elem) = .init(std.testing.allocator);
+            defer read_data.deinit();
+            var reader: Reader = .fixed(writer.written());
+            read_data.fromCsv(&reader, null) catch |err| {
+                std.log.err("Failed to parse\n{s}\n", .{writer.written()});
+                return err;
+            };
+
+            try std.testing.expect(std.mem.eql(Header, data.headers.items, read_data.headers.items));
+            for (data.array.items, read_data.array.items) |original, read| {
+                std.testing.expect(Elem.approxEql(original, read)) catch |err| {
+                    std.log.err("Entry\n{any}\nBecame\n{any}.\n", .{ original, read });
+                    return err;
+                };
+            }
+        }
+
+        /// Create a copy of the Packets
         pub fn copy(self: *const Self, gpa: Allocator) error{OutOfMemory}!Self {
             var new_data: Self = .init(gpa);
             errdefer new_data.deinit();
@@ -175,10 +291,12 @@ pub fn Packets(Elem: type) type {
         //     }
         // }
 
+        /// Find the index of a header with a specific epoch
+        /// If no valid index is found, return null instead
         pub fn epochIndex(self: *const Self, epoch: usize, search: Search) ?usize {
             const headers = self.headers.items;
 
-            // Shortcircuit for the empty case
+            // Short-circuit for the empty case
             if (headers.len == 0) return null;
 
             // Binary search as epochs should be sorted
@@ -209,6 +327,8 @@ pub fn Packets(Elem: type) type {
             } else low;
         }
 
+        /// Create a view of the Packets, containing the specified epoch range
+        /// The returned view is form start inclusive to end exclusive
         pub fn epochRange(self: *const Self, start: usize, end: usize) Self {
             std.debug.assert(start < end);
             var view: Self = .init(Allocator.failing);
@@ -241,29 +361,44 @@ pub fn Packets(Elem: type) type {
 const Dummy = extern struct {
     value: u32,
 
-    inline fn toCsv(self: *const Dummy, w: *Writer, header: Header, sep: u8) Writer.Error!void {
-        try w.print("{[seconds]d}{[separator]c}{[value]d}\n", .{
+    // CSV elements
+    pub inline fn toCsv(self: *const Dummy, w: *Writer, header: Header, del: u8) Writer.Error!void {
+        try w.print("{[seconds]d}{[delimiter]c}{[value]d}\n", .{
             .seconds = header.epoch,
-            .separator = sep,
+            .delimiter = del,
             .value = self.value,
         });
     }
 
-    inline fn fromCsv(self: *Dummy, line: []u8, sep: u8) error.InvalidValue!usize {
-        var iterator = std.mem.tokenizeScalar(u8, line, sep);
+    pub inline fn fromCsv(self: *Dummy, line: []u8, del: u8) error{InvalidValue}!usize {
+        var iterator = std.mem.tokenizeScalar(u8, line, del);
         const epoch = std.fmt.parseInt(usize, iterator.next() orelse return error.InvalidValue, 10) catch return error.InvalidValue;
         self.value = std.fmt.parseInt(u32, iterator.next() orelse return error.InvalidValue, 10) catch return error.InvalidValue;
         return epoch;
     }
 
-    pub const name = "dummy";
-    pub const version = 1;
+    pub const csv_columns: []const []const u8 = &.{ "Epoch", "Value" };
+
+    pub inline fn eql(first: Dummy, second: Dummy) bool {
+        return first.value == second.value;
+    }
+
+    pub const approxEql = Dummy.eql;
+
+    pub fn dummyValue(rand: std.Random) Dummy {
+        return .{
+            .value = rand.int(u32),
+        };
+    }
+
+    pub const bin_tag = "dummy";
+    pub const bin_version = 1;
 };
 
-fn randomPackets(data: *Packets(Dummy), headers: usize, size: usize) !void {
+fn randomPackets(Elem: type, data: *Packets(Elem), headers: usize, size: usize) !void {
     try data.headers.ensureTotalCapacity(data.allocator, headers);
     try data.array.ensureTotalCapacity(data.allocator, headers * size);
-    for (0..10) |i| {
+    for (0..headers) |i| {
         data.headers.appendAssumeCapacity(.{
             .epoch = @intCast(i),
             .start = @intCast(size * i),
@@ -273,13 +408,15 @@ fn randomPackets(data: *Packets(Dummy), headers: usize, size: usize) !void {
     data.array.items.len = headers * size;
     var rng: std.Random.DefaultPrng = .init(std.testing.random_seed);
     const random = rng.random();
-    random.bytes(@ptrCast(@alignCast(data.array.items)));
+    for (data.array.items) |*element| {
+        element.* = Elem.dummyValue(random);
+    }
 }
 
 test "bin format round trip" {
     var data: Packets(Dummy) = .init(std.testing.allocator);
     defer data.deinit();
-    try randomPackets(&data, 10, 5);
+    try randomPackets(Dummy, &data, 10, 5);
 
     // Write to a buffer and read from it onto a new packet
     var writer: Writer.Allocating = .init(data.allocator);
@@ -292,27 +429,23 @@ test "bin format round trip" {
     try read_data.fromBin(&reader);
 
     try std.testing.expect(std.mem.eql(Header, data.headers.items, read_data.headers.items));
-    try std.testing.expect(std.mem.eql(
-        u8,
-        @ptrCast(@alignCast(data.array.items)),
-        @ptrCast(@alignCast(read_data.array.items)),
-    ));
+    for (data.array.items, read_data.array.items) |original, read| {
+        try std.testing.expect(Dummy.eql(original, read));
+    }
 }
 
 test "copy" {
     var origin: Packets(Dummy) = .init(std.testing.allocator);
     defer origin.deinit();
-    try randomPackets(&origin, 10, 5);
+    try randomPackets(Dummy, &origin, 10, 5);
 
     var dest = try origin.copy(origin.allocator);
     defer dest.deinit();
 
     try std.testing.expect(std.mem.eql(Header, origin.headers.items, dest.headers.items));
-    try std.testing.expect(std.mem.eql(
-        u8,
-        @ptrCast(@alignCast(origin.array.items)),
-        @ptrCast(@alignCast(dest.array.items)),
-    ));
+    for (origin.array.items, dest.array.items) |original, destination| {
+        try std.testing.expect(Dummy.eql(original, destination));
+    }
 }
 
 test "epochIndex" {

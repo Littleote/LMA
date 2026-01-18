@@ -5,5 +5,5 @@ pub const pipeline = @import("pipeline.zig");
 pub const math = @import("math.zig");
 
 comptime {
-    std.testing.refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }

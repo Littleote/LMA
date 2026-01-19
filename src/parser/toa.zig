@@ -1,9 +1,10 @@
 const std = @import("std");
-const Data = @import("lma").data.ToA;
+const lma = @import("lma");
+const ToA = lma.data.ToA;
 
 const utils = @import("utils.zig");
 
-pub fn parse(gpa: std.mem.Allocator, path: []const u8) !void {
+pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8) !void {
     // Input directory
     var dir = try std.fs.cwd().openDir(path, .{ .iterate = true });
     defer dir.close();
@@ -21,17 +22,17 @@ pub fn parse(gpa: std.mem.Allocator, path: []const u8) !void {
     while (iterator.next()) |maybe_entry| {
         if (maybe_entry) |entry| {
             var buffer: [1024]u8 = undefined;
-            var data: Data = .init(gpa);
-            defer data.deinit();
-            {
+            var data: ToA = blk: {
                 // Parse source file
                 const file = try dir.openFile(
                     entry.name,
                     .{ .mode = .read_only },
                 );
                 defer file.close();
-                try data.fromDatFile(file, &buffer);
-            }
+                var file_reader = file.reader(io, &buffer);
+                break :blk try lma.data.dat_file.toa.fromFile(&file_reader, gpa);
+            };
+            defer data.deinit();
 
             {
                 // Save as CSV
@@ -42,8 +43,7 @@ pub fn parse(gpa: std.mem.Allocator, path: []const u8) !void {
                 defer csv.close();
                 var file_writer = csv.writer(&buffer);
 
-                try data.build_all();
-                try data.toCsv(&file_writer.interface);
+                try data.toCsv(&file_writer.interface, null);
             }
 
             {

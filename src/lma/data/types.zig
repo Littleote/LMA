@@ -36,7 +36,7 @@ pub const ToA = extern struct {
     padding: u16 = 0,
 
     // CSV elements
-    pub inline fn toCsv(self: *const ToA, w: *Writer, header: data.packets.Header, del: u8) Writer.Error!void {
+    pub inline fn toCsv(self: ToA, w: *Writer, header: data.packets.Header, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.3}\n", .{
             del,
             math.cast(f64, header.epoch) + math.cast(f64, self.nanosecond) / i30p2,
@@ -99,7 +99,7 @@ pub const Point = extern struct {
     dBm: f16,
 
     // CSV elements
-    pub inline fn toCsv(self: *const Point, w: *Writer, header: data.packets.Header, del: u8) Writer.Error!void {
+    pub inline fn toCsv(self: Point, w: *Writer, header: data.packets.Header, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.8}{0c}{3d:.8}{0c}{4d:.3}{0c}{5d:.3}{0c}0x{6x:0>8}{0c}{7d:.2}\n", .{
             del,
             math.cast(f64, header.epoch) + math.cast(f64, self.nanosecond) / i30p2,
@@ -116,7 +116,7 @@ pub const Point = extern struct {
         var iterator = std.mem.tokenizeScalar(u8, line, del);
         const time = std.math.modf(try parse(f64, iterator.next(), .float));
         const epoch: usize = @intFromFloat(time.ipart);
-        const nano30p2: u32 = @intFromFloat(@round(time.fpart * 4 * 1_000_000_000));
+        const nano30p2: u32 = @intFromFloat(@round(time.fpart * i30p2));
         const lat = try parse(f32, iterator.next(), .float);
         const lon = try parse(f32, iterator.next(), .float);
         const alt = try parse(f32, iterator.next(), .float);
@@ -145,7 +145,23 @@ pub const Point = extern struct {
     }
 
     pub fn approxEql(first: Point, second: Point) bool {
-        return first.nanosecond == second.nanosecond and std.math.approxEqAbs(f16, first.dBm, second.dBm, 1e-2);
+        return
+        // zig fmt: off
+            // time
+            (first.nanosecond == second.nanosecond) and
+            // coordinates
+            (
+                std.math.approxEqAbs(f32, first.latitude, second.latitude, 1e-6) and
+                std.math.approxEqAbs(f32, first.longitude, second.longitude, 1e-6) and 
+                std.math.approxEqAbs(f32, first.altitude, second.altitude, 1e-3)
+            ) and
+            // mask
+            (first.station_mask == second.station_mask) and
+            // fitness
+            std.math.approxEqAbs(f16, first.measure_error, second.measure_error, 1e-2) and
+            // decibels
+            std.math.approxEqAbs(f16, first.dBm, second.dBm, 1e-2);
+        // zig fmt: on
     }
 
     pub fn dummyValue(rand: std.Random) Point {
@@ -165,11 +181,11 @@ pub const Point = extern struct {
 };
 
 pub const Clustered = extern struct {
-    pub const Cluster = enum(u16) {
+    pub const Cluster = enum(u32) {
         noise = 0,
         _,
 
-        pub fn cluster(value: u16) Cluster {
+        pub fn cluster(value: u32) Cluster {
             std.debug.assert(value != Cluster.noise.value);
             return @enumFromInt(value);
         }
@@ -178,7 +194,7 @@ pub const Clustered = extern struct {
             return self == .noise;
         }
 
-        pub fn id(self: Cluster) ?u16 {
+        pub fn id(self: Cluster) ?u32 {
             return if (self.isNoise()) null else @intFromEnum(self);
         }
     };
@@ -201,14 +217,14 @@ pub const Clustered = extern struct {
     dBm: f16,
 
     // CSV elements
-    pub inline fn toCsv(self: *const Clustered, w: *Writer, header: data.packets.Header, del: u8) Writer.Error!void {
-        try w.print("{1d:.10}{0c}{2d:.8}{0c}{3d:.8}{0c}{4d:.3}{0c}{5?d}{0c}{6d:.3}\n", .{
+    pub inline fn toCsv(self: Clustered, w: *Writer, header: data.packets.Header, del: u8) Writer.Error!void {
+        try w.print("{1d:.10}{0c}{2d:.8}{0c}{3d:.8}{0c}{4d:.3}{0c}{5d}{0c}{6d:.3}\n", .{
             del,
             math.cast(f64, header.epoch) + math.cast(f64, self.nanosecond) / i30p2,
             self.latitude,
             self.longitude,
             self.altitude,
-            self.cluster.id(),
+            @intFromEnum(self.cluster),
             self.dBm,
         });
     }
@@ -217,7 +233,7 @@ pub const Clustered = extern struct {
         var iterator = std.mem.tokenizeScalar(u8, line, del);
         const time = std.math.modf(try parse(f64, iterator.next(), .float));
         const epoch: usize = @intFromFloat(time.ipart);
-        const nano30p2: u32 = @intFromFloat(@round(time.fpart * 4 * 1_000_000_000));
+        const nano30p2: u32 = @intFromFloat(@round(time.fpart * i30p2));
         const lat = try parse(f32, iterator.next(), .float);
         const lon = try parse(f32, iterator.next(), .float);
         const alt = try parse(f32, iterator.next(), .float);
@@ -244,7 +260,21 @@ pub const Clustered = extern struct {
     }
 
     pub fn approxEql(first: Clustered, second: Clustered) bool {
-        return first.nanosecond == second.nanosecond and std.math.approxEqAbs(f16, first.dBm, second.dBm, 1e-2);
+        return
+        // zig fmt: off
+            // time
+            (first.nanosecond == second.nanosecond) and
+            // coordinates
+            (
+                std.math.approxEqAbs(f32, first.latitude, second.latitude, 1e-6) and
+                std.math.approxEqAbs(f32, first.longitude, second.longitude, 1e-6) and 
+                std.math.approxEqAbs(f32, first.altitude, second.altitude, 1e-3)
+            ) and
+            // cluster
+            (first.cluster == second.cluster) and
+            // decibels
+            std.math.approxEqAbs(f16, first.dBm, second.dBm, 1e-2);
+        // zig fmt: on
     }
 
     pub fn dummyValue(rand: std.Random) Clustered {

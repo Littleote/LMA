@@ -185,11 +185,12 @@ pub fn Packets(Elem: type) type {
                 const current_epoch = try value.fromCsv(line, del);
                 if (last_epoch != current_epoch) {
                     // Finish current and start next header info
-                    header.size = @intCast(self.array.items.len - header.start - 1);
+                    const last_len = self.array.items.len - 1;
+                    header.size = @intCast(last_len - header.start);
                     last_epoch = current_epoch;
                     header = try self.headers.addOne(self.allocator);
                     header.* = .{
-                        .start = @intCast(self.array.items.len - 1),
+                        .start = @intCast(last_len),
                         .epoch = @intCast(last_epoch),
                         .size = 0,
                     };
@@ -362,7 +363,7 @@ const Dummy = extern struct {
     value: u32,
 
     // CSV elements
-    pub inline fn toCsv(self: *const Dummy, w: *Writer, header: Header, del: u8) Writer.Error!void {
+    pub inline fn toCsv(self: Dummy, w: *Writer, header: Header, del: u8) Writer.Error!void {
         try w.print("{[seconds]d}{[delimiter]c}{[value]d}\n", .{
             .seconds = header.epoch,
             .delimiter = del,

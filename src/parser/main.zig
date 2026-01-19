@@ -12,6 +12,10 @@ pub fn main() !void {
     const gpa = allocator.allocator();
     defer _ = allocator.deinit();
 
+    var threaded: std.Io.Threaded = .init(gpa);
+    defer threaded.deinit();
+    const io = threaded.io();
+
     const options = args.parseWithVerbForCurrentProcess(
         struct {
             input: ?[]const u8 = null,
@@ -34,8 +38,8 @@ pub fn main() !void {
     if (options.verb == null) @panic("Missing subcommand field");
 
     switch (options.verb.?) {
-        .toa => try toa.parse(gpa, options.options.input.?),
-        .points => |*specific| try points.parse(gpa, options.options.input.?, specific),
-        .clusters => |*specific| try clusters.parse(gpa, options.options.input.?, specific),
+        .toa => try toa.parse(io, gpa, options.options.input.?),
+        .points => |*specific| try points.parse(io, gpa, options.options.input.?, specific),
+        .clusters => |*specific| try clusters.parse(io, gpa, options.options.input.?, specific),
     }
 }

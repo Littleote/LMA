@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn as(T: type, value: anytype) T {
+pub inline fn as(T: type, value: anytype) T {
     const input_type = comptime std.meta.activeTag(@typeInfo(@TypeOf(value)));
     const output_type = comptime std.meta.activeTag(@typeInfo(T));
     if (input_type != output_type) {
@@ -15,7 +15,7 @@ pub fn as(T: type, value: anytype) T {
     };
 }
 
-pub fn cast(T: type, value: anytype) T {
+pub inline fn cast(T: type, value: anytype) T {
     const input_type = comptime std.meta.activeTag(@typeInfo(@TypeOf(value)));
     const output_type = comptime std.meta.activeTag(@typeInfo(T));
     return switch (input_type) {

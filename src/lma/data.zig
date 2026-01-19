@@ -18,5 +18,6 @@ comptime {
     _ = &ToA;
     _ = &Points;
     _ = &Clusters;
+    _ = &dat_file;
     // std.testing.refAllDecls(@This());
 }

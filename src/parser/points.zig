@@ -12,9 +12,7 @@ pub const Args = struct {
     };
 };
 
-pub fn parse(gpa: std.mem.Allocator, path: []const u8, args: *const Args) !void {
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
+pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: *const Args) !void {
 
     // Input directory
     var dir = try std.fs.cwd().openDir(path, .{ .iterate = true });
@@ -73,7 +71,7 @@ pub fn parse(gpa: std.mem.Allocator, path: []const u8, args: *const Args) !void 
                     upper_bound,
                     &file_reader.interface,
                 ) catch continue;
-                break :blk if (points.header.items.len == 0) null else points.header.items[0].epoch;
+                break :blk if (points.headers.items.len == 0) null else points.headers.items[0].epoch;
             };
             if (time == null) continue;
         }
@@ -85,7 +83,7 @@ pub fn parse(gpa: std.mem.Allocator, path: []const u8, args: *const Args) !void 
                 const csv = try csv_dir.createFile(name, .{});
                 defer csv.close();
                 var file_writer = csv.writer(&buffer);
-                try points.toCsv(&file_writer.interface);
+                try points.toCsv(&file_writer.interface, null);
             }
 
             if (load_stations and loaded) {

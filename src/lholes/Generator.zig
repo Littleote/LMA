@@ -11,7 +11,7 @@ const Args = @import("Args.zig");
 fn DataInstance(T: type) type {
     return struct {
         data: T,
-        iterator: T.Segmented.Iterator,
+        iterator: T.Iterator,
     };
 }
 
@@ -67,7 +67,7 @@ const Data = union(Args.Stage) {
                         // try self.clusters.data.fromCsv(r, null, true);
                     },
                 }
-                self.clusters.iterator = self.clusters.data.segments.epochIterator(generator.epoch, .limited);
+                self.clusters.iterator = self.clusters.data.epochIterator(generator.epoch, .all);
                 self.clusters.iterator.end = end orelse self.clusters.iterator.end;
             },
             .points => {
@@ -83,10 +83,10 @@ const Data = union(Args.Stage) {
                         // try self.points.data.fromCsv(r, null);
                     },
                     .dat => {
-                        _ = try self.points.data.fromDat(r);
+                        _ = try lma.data.dat_file.parseOutput(&self.points.data, null, r);
                     },
                 }
-                self.points.iterator = self.points.data.segments.epochIterator(generator.epoch, .limited);
+                self.points.iterator = self.points.data.epochIterator(generator.epoch, .all);
                 self.points.iterator.end = end orelse self.points.iterator.end;
             },
         }

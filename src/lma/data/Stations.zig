@@ -7,26 +7,34 @@ const Writer = std.Io.Writer;
 const dat_file = @import("dat_file.zig");
 
 stations: std.ArrayList(Info),
-gpa: Allocator,
+allocator: Allocator,
 
 pub fn init(gpa: Allocator) Data {
     return .{
         .stations = .empty,
-        .gpa = gpa,
+        .allocator = gpa,
     };
 }
 
 pub fn deinit(self: *Data) void {
     for (self.stations.items) |*station| {
-        station.deinit(self.gpa);
+        station.deinit(self.allocator);
     }
-    self.stations.deinit(self.gpa);
+    self.stations.deinit(self.allocator);
 }
 
-pub fn toCsv(data: *const Data, w: *Writer) !void {
-    try w.writeAll("Name;Latitude;Longitude;Altitude;Delay\n");
-    for (data.stations.items) |station| {
-        try w.print("{s};{};{};{};{}\n", .{
+/// Write Stations to a CSV file
+/// When delimiter is null, use a comma (`,`)
+pub fn toCsv(self: *const Data, w: *Writer, delimiter: ?u8) Writer.Error!void {
+    const del = delimiter orelse ',';
+    const csv_columns: []const []const u8 = &.{ "Name", "Latitude", "Longitude", "Altitude", "Delay" };
+    for (csv_columns, 1..) |column, idx| {
+        try w.writeAll(column);
+        try w.writeByte(if (idx == csv_columns.len) '\n' else del);
+    }
+    for (self.stations.items) |station| {
+        try w.print("{1s}{0c}{2d:.9}{0c}{3d:.9}{0c}{4d:.3}{0c}{5d}\n", .{
+            del,
             station.name orelse &.{},
             station.latitude,
             station.longitude,
@@ -50,7 +58,7 @@ test toCsv {
     }
 
     var discard: Writer.Discarding = .init(&buffer);
-    try data.toCsv(&discard.writer);
+    try data.toCsv(&discard.writer, null);
 }
 
 pub fn toBin(data: *const Data, w: *Writer) !void {
@@ -72,54 +80,56 @@ pub fn fromBin(self: *Data, r: *Reader) !void {
     switch (version) {
         1 => {
             const station_count = try r.takeInt(usize, .little);
-            try self.stations.ensureTotalCapacityPrecise(self.gpa, station_count);
+            try self.stations.ensureTotalCapacityPrecise(self.allocator, station_count);
             for (0..station_count) |_| {
                 const packet = try r.takeStruct(Info.Packet, .little);
-                self.stations.appendAssumeCapacity(try .build(packet, self.gpa, r));
+                self.stations.appendAssumeCapacity(try .build(packet, self.allocator, r));
             }
         },
         else => return error.UnsupportedVersion,
     }
 }
 
-test "BIN format" {
-    const file = try std.fs.cwd().openFile("data/ToA/stations/stations.bin", .{ .mode = .read_only });
-    defer file.close();
-    var file_reader = file.reader(std.testing.io, &.{});
-
-    var to_buffer: Writer.Allocating = .init(std.testing.allocator);
-    defer to_buffer.deinit();
-    _ = try file_reader.interface.streamRemaining(&to_buffer.writer);
-
-    const input = try to_buffer.toOwnedSlice();
-    defer std.testing.allocator.free(input);
-
+test "bin format round trip" {
     var data: Data = .init(std.testing.allocator);
     defer data.deinit();
-    // Attempt round trip conversion for a sanity check
-    var reader: Reader = .fixed(input);
-    try data.fromBin(&reader);
-    try data.toBin(&to_buffer.writer);
 
-    const output = to_buffer.written();
+    var rng: std.Random.DefaultPrng = .init(std.testing.random_seed);
+    const random = rng.random();
+    for (0..10) |_| {
+        const buf = try data.allocator.alloc(u8, random.intRangeAtMost(u8, 5, 120));
+        errdefer data.allocator.free(buf);
+        random.bytes(buf);
+        try data.stations.append(data.allocator, .{
+            .name = buf,
+            .latitude = 180 * random.float(f64) - 90,
+            .longitude = 360 * random.float(f64) - 180,
+            .delay = 100 * random.float(f64),
+            .altitude = 2_000 * random.float(f64) - 1_000,
+        });
+    }
 
-    try std.testing.expect(std.mem.eql(u8, input, output));
+    // Write to a buffer and read from it onto a new packet
+    var writer: Writer.Allocating = .init(data.allocator);
+    defer writer.deinit();
+    try data.toBin(&writer.writer);
+
+    var read_data: Data = .init(std.testing.allocator);
+    defer read_data.deinit();
+    var reader: Reader = .fixed(writer.written());
+    try read_data.fromBin(&reader);
+
+    for (data.stations.items, read_data.stations.items) |original, read| {
+        std.testing.expect(Info.eql(original, read)) catch |err| {
+            std.log.err("Entry\n{any}\nBecame\n{any}\n", .{ original, read });
+            return err;
+        };
+        try std.testing.expect(std.mem.eql(u8, original.name.?, read.name.?));
+    }
 }
 
 pub fn fromDat(self: *Data, r: *Reader) !void {
     _ = try dat_file.parseOutput(null, self, r);
-}
-
-test fromDat {
-    const file = try std.fs.cwd().openFile("data/points/250712/output/XCALMA_250712_012000_0600.dat", .{ .mode = .read_only });
-    defer file.close();
-    var buffer: [1024]u8 = undefined;
-
-    var data: Data = .init(std.testing.allocator);
-    defer data.deinit();
-
-    var file_reader = file.reader(std.testing.io, &buffer);
-    _ = try data.fromDat(&file_reader.interface);
 }
 
 pub const Info = struct {
@@ -132,8 +142,8 @@ pub const Info = struct {
     pub const Packet = extern struct {
         latitude: f64,
         longitude: f64,
-        altitude: f32,
-        delay: f16,
+        altitude: f64,
+        delay: f64,
         name_length: u16,
     };
 
@@ -149,6 +159,21 @@ pub const Info = struct {
         if (self.name) |name| {
             gpa.free(name);
         }
+    }
+
+    pub fn eql(first: Info, second: Info) bool {
+        if (first.name) |first_name| {
+            if (second.name) |second_name| {
+                if (!std.mem.eql(u8, first_name, second_name)) return false;
+            } else return false;
+        } else if (second.name != null) return false;
+        return
+        // zig fmt: off
+            first.latitude == second.latitude and
+            first.longitude == second.longitude and
+            first.altitude == second.altitude and
+            first.delay == second.delay;
+        // zig fmt: on
     }
 
     pub fn build_partial(packet: Packet) Info {

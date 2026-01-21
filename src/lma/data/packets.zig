@@ -4,12 +4,15 @@ const Io = std.Io;
 const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 const builtin = @import("builtin");
+const lma = @import("../lma.zig");
 
 pub const Header = packed struct(u64) {
     padding: bool = false,
     start: u31,
     size: u14,
     epoch: u18,
+
+    pub const epoch_day = 24 * 60 * 60;
 };
 
 pub const Config = struct {
@@ -24,9 +27,14 @@ pub const Search = enum {
 };
 
 pub const IteratorMode = union(enum) {
-    limited: void,
-    unlimited: void,
-    until: usize,
+    /// Iterate until the last epoch in the data
+    all: void,
+    until_epoch: usize,
+
+    /// Iterate until the specified epoch
+    pub fn until(epoch: usize) IteratorMode {
+        return .{ .until_epoch = epoch };
+    }
 };
 
 pub fn Packets(Elem: type) type {
@@ -37,43 +45,6 @@ pub fn Packets(Elem: type) type {
         array: std.ArrayList(Elem) = .empty,
         allocator: Allocator,
 
-        // pub const Iterator = struct {
-        //     data: *const Self,
-        //     end: ?usize,
-        //     epoch: u32,
-        //     header: ?u32,
-
-        //     pub fn init(data: *const Self, epoch: usize, end: ?usize) @This() {
-        //         return .{
-        //             .data = data,
-        //             .chain = null,
-        //             .epoch = @intCast(epoch),
-        //             .header = if (data.segments.epochIndex(epoch, .at_least)) |value| @intCast(value) else null,
-        //             .end = end,
-        //         };
-        //     }
-
-        //     pub fn next(self: *@This()) ?[]Elem {
-        //         if (self.end) |end| if (end <= self.epoch) return null;
-        //         defer self.epoch += 1;
-        //         const header_idx = if (self.header) |header| header else blk: {
-        //             self.data = self.chain orelse return &.{};
-        //             self.chain = null;
-        //             if (self.epoch > self.data.header.items[0].epoch) {
-        //                 self.epoch -= 86400;
-        //                 if (self.end) |*end| end.* -= 86400;
-        //             }
-        //             self.header = if (self.data.segments.epochIndex(self.epoch, .at_least)) |value| @intCast(value) else null;
-        //             break :blk self.header orelse return &.{};
-        //         };
-        //         const header = self.data.header.items[header_idx];
-        //         if (header.epoch == self.epoch) {
-        //             self.header = if (header_idx + 1 >= self.data.header.items.len) null else header_idx + 1;
-        //             return self.data.array.items[header.start..][0..header.size];
-        //         }
-        //         return &.{};
-        //     }
-        // };
         pub fn init(gpa: Allocator) Self {
             return .{ .allocator = gpa };
         }
@@ -81,6 +52,10 @@ pub fn Packets(Elem: type) type {
         pub fn deinit(self: *Self) void {
             self.headers.deinit(self.allocator);
             self.array.deinit(self.allocator);
+        }
+
+        pub fn isEmpty(self: *const Self) bool {
+            return self.headers.items.len == 0 or self.array.items.len == 0;
         }
 
         pub const ParseError = (Reader.DelimiterError || Allocator.Error || error{ InvalidHeader, InvalidValue, UnsupportedVersion });
@@ -344,18 +319,49 @@ pub fn Packets(Elem: type) type {
             return view;
         }
 
-        // pub fn epochIterator(self: *const Self, start: ?usize, mode: IteratorMode) Iterator {
-        //     const data: *const T = @alignCast(@fieldParentPtr("segments", self));
-        //     return .init(
-        //         data,
-        //         start orelse data.header.items[0].epoch,
-        //         switch (mode) {
-        //             .unlimited => null,
-        //             .limited => if (data.header.items.len > 0) data.header.getLast().epoch else 0,
-        //             .until => |value| value,
-        //         },
-        //     );
-        // }
+        /// Iterate thourgh all epochs from start to the given limit
+        /// Epochs that are empty or have no header for it, will yield an empty slice
+        pub fn epochIterator(self: *const Self, start: ?usize, mode: IteratorMode) Iterator {
+            if (self.headers.items.len == 0 and start == null) return .init(self, 0, 0);
+            return .init(
+                self,
+                start orelse self.headers.items[0].epoch,
+                switch (mode) {
+                    .all => null,
+                    .until_epoch => |epoch| epoch,
+                },
+            );
+        }
+
+        pub const Iterator = struct {
+            data: *const Self,
+            end: ?usize,
+            epoch: u32,
+            header: ?u32,
+
+            fn init(data: *const Self, epoch: usize, end: ?usize) @This() {
+                return .{
+                    .data = data,
+                    .epoch = @intCast(epoch),
+                    .header = lma.math.as(?u32, data.epochIndex(epoch, .at_least)),
+                    .end = end,
+                };
+            }
+
+            pub fn next(self: *@This()) ?[]Elem {
+                if (self.end) |end| {
+                    if (end <= self.epoch) return null;
+                } else if (self.header == null) return null;
+                defer self.epoch += 1;
+                const header_idx = self.header orelse return &.{};
+                const header = self.data.headers.items[header_idx];
+                if (header.epoch == self.epoch) {
+                    self.header = if (header_idx + 1 >= self.data.headers.items.len) null else header_idx + 1;
+                    return self.data.array.items[header.start..][0..header.size];
+                }
+                return &.{};
+            }
+        };
     };
 }
 
@@ -521,4 +527,82 @@ test "epochRange" {
     try std.testing.expect(view2.headers.items.len == 7);
     try std.testing.expect(view2.headers.items[0].epoch == 4);
     try std.testing.expect(view2.headers.getLast().epoch == 13);
+}
+
+test "epochIterator" {
+    var data: Packets(Dummy) = .init(std.testing.allocator);
+    defer data.deinit();
+    var iter: Packets(Dummy).Iterator = undefined;
+    var failed_buffer: [1]Dummy = undefined;
+    const failed: []Dummy = &failed_buffer;
+
+    // Empty
+    iter = data.epochIterator(1, .until(3));
+    try std.testing.expect((iter.next() orelse failed).len == 0);
+    try std.testing.expect((iter.next() orelse failed).len == 0);
+    try std.testing.expect(iter.next() == null);
+
+    // Undefined lower bound
+    iter = data.epochIterator(null, .until(5));
+    try std.testing.expect(iter.next() == null);
+
+    // Undefined upper bound
+    iter = data.epochIterator(8, .all);
+    try std.testing.expect(iter.next() == null);
+
+    // Undefined bounds
+    iter = data.epochIterator(null, .all);
+    try std.testing.expect(iter.next() == null);
+
+    try randomPackets(Dummy, &data, 11, 5);
+    const test_values = struct {
+        pub const epochs = [_]usize{ 2, 4, 6, 8, 10, 11, 12, 13, 14, 15, 20 };
+        pub fn contains(number: usize) bool {
+            return std.mem.findScalar(usize, &epochs, number) != null;
+        }
+    };
+    for (test_values.epochs, data.headers.items) |epoch, *header| {
+        header.epoch = @intCast(epoch);
+    }
+
+    // Below range
+    iter = data.epochIterator(0, .until(1));
+    try std.testing.expect((iter.next() orelse failed).len == 0);
+    try std.testing.expect(iter.next() == null);
+
+    // Above range
+    iter = data.epochIterator(25, .until(30));
+    for (25..30) |_|
+        try std.testing.expect((iter.next() orelse failed).len == 0);
+    try std.testing.expect(iter.next() == null);
+
+    // In range
+    iter = data.epochIterator(7, .until(17));
+    for (7..17) |idx|
+        try std.testing.expect((iter.next() orelse failed).len == @as(usize, if (test_values.contains(idx)) 5 else 0));
+    try std.testing.expect(iter.next() == null);
+
+    // Match
+    iter = data.epochIterator(4, .until(14));
+    for (4..14) |idx|
+        try std.testing.expect((iter.next() orelse failed).len == @as(usize, if (test_values.contains(idx)) 5 else 0));
+    try std.testing.expect(iter.next() == null);
+
+    // Until the end
+    iter = data.epochIterator(8, .all);
+    for (8..21) |idx|
+        try std.testing.expect((iter.next() orelse failed).len == @as(usize, if (test_values.contains(idx)) 5 else 0));
+    try std.testing.expect(iter.next() == null);
+
+    // From the start
+    iter = data.epochIterator(null, .until(10));
+    for (2..10) |idx|
+        try std.testing.expect((iter.next() orelse failed).len == @as(usize, if (test_values.contains(idx)) 5 else 0));
+    try std.testing.expect(iter.next() == null);
+
+    // Full range
+    iter = data.epochIterator(null, .all);
+    for (2..21) |idx|
+        try std.testing.expect((iter.next() orelse failed).len == @as(usize, if (test_values.contains(idx)) 5 else 0));
+    try std.testing.expect(iter.next() == null);
 }

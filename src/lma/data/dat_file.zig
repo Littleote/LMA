@@ -37,8 +37,41 @@ fn peekPreserve(r: *Reader, preserve: usize, n: usize, comptime greedy: bool) er
 }
 
 test peekPreserve {
-    // TODO
-    return error.SkipZigTest;
+    const DummyReader = struct {
+        fn stream(r: *Reader, w: *std.Io.Writer, limit: std.Io.Limit) Reader.StreamError!usize {
+            _ = r;
+            return try w.splatByte(0, @intFromEnum(limit));
+        }
+
+        pub const vtable: Reader.VTable = .{
+            .stream = &@This().stream,
+        };
+    };
+
+    var buffer: [16]u8 = @splat(0);
+    var r: Reader = .{
+        .buffer = &buffer,
+        .seek = 0,
+        .end = 0,
+        .vtable = &DummyReader.vtable,
+    };
+
+    // Works when seek is less than preseve target
+    _ = peekPreserve(&r, 7, 3, false) catch unreachable;
+    r.toss(3);
+    _ = peekPreserve(&r, 7, 5, false) catch unreachable;
+    r.toss(5);
+
+    // Preserved bytes don't get discarded
+    _ = peekPreserve(&r, 7, 9, true) catch unreachable;
+    try std.testing.expect(r.seek >= 7);
+    r.toss(9);
+    _ = peekPreserve(&r, 7, 3, true) catch unreachable;
+    try std.testing.expect(r.seek >= 7);
+    r.toss(3);
+    _ = peekPreserve(&r, 7, 2, false) catch unreachable;
+    try std.testing.expect(r.seek >= 7);
+    r.toss(2);
 }
 
 /// Helper function to parse an epoch value padded with spaces at the start
@@ -516,7 +549,7 @@ pub fn parseOutput(maybe_points: ?*data.Points, maybe_stations: ?*data.Stations,
 
     // Parse station information
     if (maybe_stations) |stations| {
-        try stations.stations.ensureTotalCapacityPrecise(stations.gpa, station_count.?);
+        try stations.stations.ensureTotalCapacityPrecise(stations.allocator, station_count.?);
 
         for (0..station_count.?) |_| {
             const current_station = stations.stations.addOneAssumeCapacity();
@@ -529,7 +562,7 @@ pub fn parseOutput(maybe_points: ?*data.Points, maybe_stations: ?*data.Stations,
                 switch (column) {
                     0, 1 => {},
                     2 => {
-                        current_station.name = try stations.gpa.dupe(u8, token);
+                        current_station.name = try stations.allocator.dupe(u8, token);
                     },
                     3 => {
                         current_station.latitude = try std.fmt.parseFloat(f64, token);

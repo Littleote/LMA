@@ -5,13 +5,12 @@ pub inline fn as(T: type, value: anytype) T {
     const output_type = comptime std.meta.activeTag(@typeInfo(T));
     if (input_type != output_type) {
         @compileError("Unable to change from " ++ @tagName(input_type) ++ " to " ++ @tagName(output_type));
-    } else if (input_type != .int and input_type != .float) {
-        @compileError("Unable to change variable of type " ++ @tagName(input_type));
     }
     return switch (input_type) {
         .int => @intCast(value),
         .float => @floatCast(value),
-        else => unreachable,
+        .optional => if (value) |inner| as(@typeInfo(T).optional.child, inner) else null,
+        else => @compileError("Unable to change variable of type " ++ @tagName(input_type)),
     };
 }
 

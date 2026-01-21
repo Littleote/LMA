@@ -90,7 +90,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: *const 
                 const csv = try station.?.createFile("stations.csv", .{});
                 defer csv.close();
                 var file_writer = csv.writer(&buffer);
-                try stations.toCsv(&file_writer.interface);
+                try stations.toCsv(&file_writer.interface, null);
             }
         }
 

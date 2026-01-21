@@ -98,6 +98,11 @@ pub const Point = extern struct {
     /// Decibels detected with base of 1mW
     dBm: f16,
 
+    /// Number of stations that participated into locating the point
+    pub fn station_count(self: *const Point) u8 {
+        return @intCast(@popCount(self.station_mask));
+    }
+
     // CSV elements
     pub inline fn toCsv(self: Point, w: *Writer, header: data.packets.Header, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.8}{0c}{3d:.8}{0c}{4d:.3}{0c}{5d:.3}{0c}0x{6x:0>8}{0c}{7d:.2}\n", .{

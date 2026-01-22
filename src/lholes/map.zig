@@ -46,18 +46,18 @@ fn parsePair(value: std.json.Value) zlm.Vec2 {
 
 fn drawLine(context: *const Context, canvas: []u8, a: zlm.Vec2, b: zlm.Vec2) void {
     const delta = b.sub(a);
-    const count = 1 + lma.math.cast(usize, @round(@max(@abs(delta.x), @abs(delta.y))));
-    const step = delta.scale(1 / lma.math.cast(float, count));
+    const count = 1 + lma.common.cast(usize, @round(@max(@abs(delta.x), @abs(delta.y))));
+    const step = delta.scale(1 / lma.common.cast(float, count));
     for (0..count) |idx| {
-        drawAt(context, canvas, a.add(step.scale(lma.math.cast(float, idx))));
+        drawAt(context, canvas, a.add(step.scale(lma.common.cast(float, idx))));
     }
 }
 
 fn drawAt(context: *const Context, canvas: []u8, a: zlm.Vec2) void {
     const x = @round(a.x);
     const y = @round(a.y);
-    if (x >= 0 and y >= 0 and x < lma.math.cast(float, context.info.shape.columns) and y < lma.math.cast(float, context.info.shape.rows)) {
-        const idx = context.info.shape.ravel(lma.math.cast(usize, y), lma.math.cast(usize, x));
+    if (x >= 0 and y >= 0 and x < lma.common.cast(float, context.info.shape.columns) and y < lma.common.cast(float, context.info.shape.rows)) {
+        const idx = context.info.shape.ravel(lma.common.cast(usize, y), lma.common.cast(usize, x));
         canvas[idx] = context.color;
     }
 }

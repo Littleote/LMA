@@ -3,7 +3,7 @@ const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 const lma = @import("../lma.zig");
 const data = lma.data;
-const math = lma.math;
+const cast = lma.common.cast;
 
 const ParseError = error{InvalidValue};
 const i30p2 = 4 * 1_000_000_000;
@@ -26,6 +26,7 @@ inline fn parse(T: type, s: ?[]const u8, comptime config: ParseConfig) ParseErro
     };
 }
 
+/// Time of arrival data from the LMA stations
 pub const ToA = extern struct {
     /// Nanoseconds since the start of the second
     /// Value expressed with fixed point 30.2
@@ -36,10 +37,10 @@ pub const ToA = extern struct {
     padding: u16 = 0,
 
     // CSV elements
-    pub inline fn toCsv(self: ToA, w: *Writer, header: data.packets.Header, del: u8) Writer.Error!void {
+    pub inline fn toCsv(self: ToA, w: *Writer, header: data.segmented.Header, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.3}\n", .{
             del,
-            math.cast(f64, header.epoch) + math.cast(f64, self.nanosecond) / i30p2,
+            cast(f64, header.epoch) + cast(f64, self.nanosecond) / i30p2,
             self.dBm,
         });
     }
@@ -78,6 +79,7 @@ pub const ToA = extern struct {
     pub const bin_version = 1;
 };
 
+/// Points indicating the sources of VHF radiation the LMA system captured
 pub const Point = extern struct {
     /// Nanoseconds since the start of the second
     /// Value expressed with fixed point 30.2
@@ -104,10 +106,10 @@ pub const Point = extern struct {
     }
 
     // CSV elements
-    pub inline fn toCsv(self: Point, w: *Writer, header: data.packets.Header, del: u8) Writer.Error!void {
+    pub inline fn toCsv(self: Point, w: *Writer, header: data.segmented.Header, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.8}{0c}{3d:.8}{0c}{4d:.3}{0c}{5d:.3}{0c}0x{6x:0>8}{0c}{7d:.2}\n", .{
             del,
-            math.cast(f64, header.epoch) + math.cast(f64, self.nanosecond) / i30p2,
+            cast(f64, header.epoch) + cast(f64, self.nanosecond) / i30p2,
             self.latitude,
             self.longitude,
             self.altitude,
@@ -157,7 +159,7 @@ pub const Point = extern struct {
             // coordinates
             (
                 std.math.approxEqAbs(f32, first.latitude, second.latitude, 1e-6) and
-                std.math.approxEqAbs(f32, first.longitude, second.longitude, 1e-6) and 
+                std.math.approxEqAbs(f32, first.longitude, second.longitude, 1e-6) and
                 std.math.approxEqAbs(f32, first.altitude, second.altitude, 1e-3)
             ) and
             // mask
@@ -185,6 +187,9 @@ pub const Point = extern struct {
     pub const bin_version = 1;
 };
 
+/// Points indicating the sources of VHF radiation the LMA system captured
+/// The points are classified as either noise with a 0
+/// or as part of a lightning with a given id assigned to them
 pub const Clustered = extern struct {
     pub const Cluster = enum(u32) {
         noise = 0,
@@ -222,10 +227,10 @@ pub const Clustered = extern struct {
     dBm: f16,
 
     // CSV elements
-    pub inline fn toCsv(self: Clustered, w: *Writer, header: data.packets.Header, del: u8) Writer.Error!void {
+    pub inline fn toCsv(self: Clustered, w: *Writer, header: data.segmented.Header, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.8}{0c}{3d:.8}{0c}{4d:.3}{0c}{5d}{0c}{6d:.3}\n", .{
             del,
-            math.cast(f64, header.epoch) + math.cast(f64, self.nanosecond) / i30p2,
+            cast(f64, header.epoch) + cast(f64, self.nanosecond) / i30p2,
             self.latitude,
             self.longitude,
             self.altitude,
@@ -272,7 +277,7 @@ pub const Clustered = extern struct {
             // coordinates
             (
                 std.math.approxEqAbs(f32, first.latitude, second.latitude, 1e-6) and
-                std.math.approxEqAbs(f32, first.longitude, second.longitude, 1e-6) and 
+                std.math.approxEqAbs(f32, first.longitude, second.longitude, 1e-6) and
                 std.math.approxEqAbs(f32, first.altitude, second.altitude, 1e-3)
             ) and
             // cluster

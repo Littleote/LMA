@@ -4,6 +4,8 @@ const Reader = std.Io.Reader;
 
 const lma = @import("../lma.zig");
 const data = lma.data;
+const cast = lma.common.cast;
+
 const Unsupported = error{UnsupportedVersion};
 
 const masks = struct {
@@ -385,10 +387,10 @@ pub const toa = struct {
                         .max = bytes[4],
                         .above = above_high + above_low,
                     };
-                    const factor: f64 = std.time.ns_per_s / (std.time.ns_per_s / 40.0 + lma.math.cast(f64, header.count_correction));
+                    const factor: f64 = std.time.ns_per_s / (std.time.ns_per_s / 40.0 + cast(f64, header.count_correction));
                     break :blk .{
-                        .nanosecond = @intFromFloat(@round(4 * lma.math.cast(f64, packet.nano_x40) * factor)),
-                        .dBm = 0.488 * lma.math.cast(f16, packet.max) - 111.0,
+                        .nanosecond = @intFromFloat(@round(4 * cast(f64, packet.nano_x40) * factor)),
+                        .dBm = 0.488 * cast(f16, packet.max) - 111.0,
                         .padding = packet.above,
                     };
                 },

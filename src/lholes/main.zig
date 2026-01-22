@@ -200,19 +200,19 @@ pub fn makeImages(
                 const factor = 1.2;
                 const max_definition_score = comptime (1 - std.math.pow(float, factor, 16.0)) / (1 - factor);
                 for (cluster.definition, &def_buffer, 0..) |total, *percent, i| {
-                    percent.* = lma.math.cast(float, total) / lma.math.cast(float, cluster.contour);
-                    const expected = lma.math.cast(float, i + 15) / 60.0;
+                    percent.* = lma.common.cast(float, total) / lma.common.cast(float, cluster.contour);
+                    const expected = lma.common.cast(float, i + 15) / 60.0;
                     cluster.score = factor * cluster.score + @as(float, if (percent.* < expected) 1.0 else 0.0);
                 }
                 cluster.score /= max_definition_score;
                 cluster.score *= std.math.clamp(1.5 - 4 * cluster.lowest, 0.2, 1);
-                cluster.score *= std.math.clamp(lma.math.cast(float, cluster.area) / 10.0, 0.2, 1);
+                cluster.score *= std.math.clamp(lma.common.cast(float, cluster.area) / 10.0, 0.2, 1);
             }
 
             // Add scores to running window
             scores.setupNext(scoring);
             for (scores.get(), map) |*in, update| {
-                in.* += info[update.int()].score / lma.math.cast(float, scores.size);
+                in.* += info[update.int()].score / lma.common.cast(float, scores.size);
             }
             lma.pipeline.grid.update.morph(shape, scores.get(), aux, .init(3, 3), .dilate);
             scores.apply(scoring);

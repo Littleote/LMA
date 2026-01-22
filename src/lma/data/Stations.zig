@@ -109,7 +109,7 @@ test "bin format round trip" {
         });
     }
 
-    // Write to a buffer and read from it onto a new packet
+    // Write to a buffer and read from it with a new instance
     var writer: Writer.Allocating = .init(data.allocator);
     defer writer.deinit();
     try data.toBin(&writer.writer);

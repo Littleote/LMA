@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 const lma = @import("../lma.zig");
 const pipe = lma.pipeline;
 const float = pipe.float;
-const math = lma.math;
+const common = lma.common;
 const zlm = @import("zlm").as(float);
 
 pub const Shape = struct {
@@ -15,7 +15,7 @@ pub const Shape = struct {
         return .{
             .rows = rows,
             .columns = columns,
-            .size = math.as(usize, rows) * math.as(usize, columns),
+            .size = common.as(usize, rows) * common.as(usize, columns),
         };
     }
 
@@ -24,7 +24,7 @@ pub const Shape = struct {
     }
 
     pub fn offset(self: Shape, neighbour: Neighbour) isize {
-        return neighbour.h + neighbour.v * math.as(isize, self.columns);
+        return neighbour.h + neighbour.v * common.as(isize, self.columns);
     }
 
     pub fn unravel(self: Shape, index: usize) struct { usize, usize } {
@@ -185,7 +185,7 @@ pub const update = struct {
         pub fn gaussian(buffer: []float, sigma: float) void {
             var sum: float = 0.0;
             var idx: usize = 0;
-            var x = -(lma.math.cast(float, buffer.len) - 1) / 2;
+            var x = -(common.cast(float, buffer.len) - 1) / 2;
             const to = -x + 0.5;
             while (x < to) : ({
                 x += 1.0;

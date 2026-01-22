@@ -4,7 +4,7 @@ const Io = std.Io;
 const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 const builtin = @import("builtin");
-const lma = @import("../lma.zig");
+const common = @import("../common.zig");
 
 pub const Header = packed struct(u64) {
     padding: bool = false,
@@ -37,7 +37,7 @@ pub const IteratorMode = union(enum) {
     }
 };
 
-pub fn Packets(Elem: type) type {
+pub fn Segmented(Elem: type) type {
     return struct {
         const Self = @This();
 
@@ -60,7 +60,7 @@ pub fn Packets(Elem: type) type {
 
         pub const ParseError = (Reader.DelimiterError || Allocator.Error || error{ InvalidHeader, InvalidValue, UnsupportedVersion });
 
-        /// Write Packets to custom binary fromat
+        /// Write segments to custom binary fromat
         pub fn toBin(self: *const Self, w: *Writer) Writer.Error!void {
             // File Header
             try w.print("LMA-{s}-{d:0>3}\n", .{ Elem.bin_tag, Elem.bin_version });
@@ -73,7 +73,7 @@ pub fn Packets(Elem: type) type {
             try w.flush();
         }
 
-        /// Read Packets from custom binary fromat
+        /// Read segments from custom binary fromat
         pub fn fromBin(self: *Self, r: *Reader) Self.ParseError!void {
             const version: u8 = blk: {
                 const header_len = comptime 3 + 1 + Elem.bin_tag.len + 1 + 3 + 1;
@@ -108,7 +108,7 @@ pub fn Packets(Elem: type) type {
             }
         }
 
-        /// Write Packets to a CSV file
+        /// Write segmented data to a CSV file
         /// When delimiter is null, use a comma (`,`)
         pub fn toCsv(self: *const Self, w: *Writer, delimiter: ?u8) Writer.Error!void {
             const del = delimiter orelse ',';
@@ -124,7 +124,7 @@ pub fn Packets(Elem: type) type {
             try w.flush();
         }
 
-        /// Read Packets from CSV file
+        /// Read data from CSV file as segments
         /// When delimiter is null, the most common delimiters are tested
         pub fn fromCsv(self: *Self, r: *Reader, delimiter: ?u8) Self.ParseError!void {
             // Read CSV header
@@ -177,11 +177,11 @@ pub fn Packets(Elem: type) type {
 
         test "csv columns" {
             if (!@hasDecl(Elem, "dummyValue")) return error.SkipZigTest;
-            var data: Packets(Elem) = .init(std.testing.allocator);
+            var data: Segmented(Elem) = .init(std.testing.allocator);
             defer data.deinit();
-            try randomPackets(Elem, &data, 3, 5);
+            try randomSegments(Elem, &data, 3, 5);
 
-            // Write to a buffer and read from it onto a new packet
+            // Write to a buffer and read from it to check for issues with the CSV format
             var writer: Writer.Allocating = .init(data.allocator);
             defer writer.deinit();
             const del = ',';
@@ -213,16 +213,16 @@ pub fn Packets(Elem: type) type {
 
         test "csv format round trip" {
             if (!@hasDecl(Elem, "dummyValue")) return error.SkipZigTest;
-            var data: Packets(Elem) = .init(std.testing.allocator);
+            var data: Segmented(Elem) = .init(std.testing.allocator);
             defer data.deinit();
-            try randomPackets(Elem, &data, 10, 5);
+            try randomSegments(Elem, &data, 10, 5);
 
-            // Write to a buffer and read from it onto a new packet
+            // Write to a buffer and read from it with a new Segmented instance
             var writer: Writer.Allocating = .init(data.allocator);
             defer writer.deinit();
             try data.toCsv(&writer.writer, null);
 
-            var read_data: Packets(Elem) = .init(std.testing.allocator);
+            var read_data: Segmented(Elem) = .init(std.testing.allocator);
             defer read_data.deinit();
             var reader: Reader = .fixed(writer.written());
             read_data.fromCsv(&reader, null) catch |err| {
@@ -239,7 +239,7 @@ pub fn Packets(Elem: type) type {
             }
         }
 
-        /// Create a copy of the Packets
+        /// Create a copy of the data
         pub fn copy(self: *const Self, gpa: Allocator) error{OutOfMemory}!Self {
             var new_data: Self = .init(gpa);
             errdefer new_data.deinit();
@@ -303,7 +303,7 @@ pub fn Packets(Elem: type) type {
             } else low;
         }
 
-        /// Create a view of the Packets, containing the specified epoch range
+        /// Create a view of the data, containing the specified epoch range
         /// The returned view is form start inclusive to end exclusive
         pub fn epochRange(self: *const Self, start: usize, end: usize) Self {
             std.debug.assert(start < end);
@@ -343,7 +343,7 @@ pub fn Packets(Elem: type) type {
                 return .{
                     .data = data,
                     .epoch = @intCast(epoch),
-                    .header = lma.math.as(?u32, data.epochIndex(epoch, .at_least)),
+                    .header = common.as(?u32, data.epochIndex(epoch, .at_least)),
                     .end = end,
                 };
             }
@@ -402,7 +402,7 @@ const Dummy = extern struct {
     pub const bin_version = 1;
 };
 
-fn randomPackets(Elem: type, data: *Packets(Elem), headers: usize, size: usize) !void {
+fn randomSegments(Elem: type, data: *Segmented(Elem), headers: usize, size: usize) !void {
     try data.headers.ensureTotalCapacity(data.allocator, headers);
     try data.array.ensureTotalCapacity(data.allocator, headers * size);
     for (0..headers) |i| {
@@ -421,16 +421,16 @@ fn randomPackets(Elem: type, data: *Packets(Elem), headers: usize, size: usize) 
 }
 
 test "bin format round trip" {
-    var data: Packets(Dummy) = .init(std.testing.allocator);
+    var data: Segmented(Dummy) = .init(std.testing.allocator);
     defer data.deinit();
-    try randomPackets(Dummy, &data, 10, 5);
+    try randomSegments(Dummy, &data, 10, 5);
 
-    // Write to a buffer and read from it onto a new packet
+    // Write to a buffer and read from it with a new Segmented instance
     var writer: Writer.Allocating = .init(data.allocator);
     defer writer.deinit();
     try data.toBin(&writer.writer);
 
-    var read_data: Packets(Dummy) = .init(std.testing.allocator);
+    var read_data: Segmented(Dummy) = .init(std.testing.allocator);
     defer read_data.deinit();
     var reader: Reader = .fixed(writer.written());
     try read_data.fromBin(&reader);
@@ -442,9 +442,9 @@ test "bin format round trip" {
 }
 
 test "copy" {
-    var origin: Packets(Dummy) = .init(std.testing.allocator);
+    var origin: Segmented(Dummy) = .init(std.testing.allocator);
     defer origin.deinit();
-    try randomPackets(Dummy, &origin, 10, 5);
+    try randomSegments(Dummy, &origin, 10, 5);
 
     var dest = try origin.copy(origin.allocator);
     defer dest.deinit();
@@ -456,7 +456,7 @@ test "copy" {
 }
 
 test "epochIndex" {
-    var data: Packets(Dummy) = .init(std.testing.allocator);
+    var data: Segmented(Dummy) = .init(std.testing.allocator);
     defer data.deinit();
 
     // Empty
@@ -494,7 +494,7 @@ test "epochIndex" {
 }
 
 test "epochRange" {
-    var data: Packets(Dummy) = .init(std.testing.allocator);
+    var data: Segmented(Dummy) = .init(std.testing.allocator);
     defer data.deinit();
 
     // Empty
@@ -530,9 +530,9 @@ test "epochRange" {
 }
 
 test "epochIterator" {
-    var data: Packets(Dummy) = .init(std.testing.allocator);
+    var data: Segmented(Dummy) = .init(std.testing.allocator);
     defer data.deinit();
-    var iter: Packets(Dummy).Iterator = undefined;
+    var iter: Segmented(Dummy).Iterator = undefined;
     var failed_buffer: [1]Dummy = undefined;
     const failed: []Dummy = &failed_buffer;
 
@@ -554,7 +554,7 @@ test "epochIterator" {
     iter = data.epochIterator(null, .all);
     try std.testing.expect(iter.next() == null);
 
-    try randomPackets(Dummy, &data, 11, 5);
+    try randomSegments(Dummy, &data, 11, 5);
     const test_values = struct {
         pub const epochs = [_]usize{ 2, 4, 6, 8, 10, 11, 12, 13, 14, 15, 20 };
         pub fn contains(number: usize) bool {

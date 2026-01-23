@@ -57,8 +57,8 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
     const snap = 60 * 1 * 1;
     const decay: f32 = @floatCast(std.math.pow(f64, 0.5, @as(f64, @floatFromInt(snap)) / (60.0 * parsed.half_life)));
     const freq = 40.0 / (1 - decay) / parsed.luminosity;
-    const area = info.step.x * info.step.y;
-    const scale = 1 / (freq * area);
+    const area_km = info.step.x * info.step.y / 1_000_000;
+    const scale = 1 / (freq * area_km);
 
     // Input directory
     std.debug.assert(parsed.format.file == .bin and parsed.format.stage == .clusters);
@@ -138,9 +138,9 @@ pub fn makeImages(
     const sources = try arena.alloc(float, shape.size);
     const density = try arena.alloc(float, shape.size);
     // Gaussian arrays to smooth data
-    const step_inverse = zlm.Vec2.one.div(config.info.step);
-    const conv_h = try arena.alloc(float, @intFromFloat(1 + 2 * @round(step_inverse.x)));
-    const conv_v = try arena.alloc(float, @intFromFloat(1 + 2 * @round(step_inverse.x)));
+    const step_km_inverse = zlm.vec2(1_000, 1_000).div(config.info.step);
+    const conv_h = try arena.alloc(float, @intFromFloat(1 + 2 * @round(step_km_inverse.x)));
+    const conv_v = try arena.alloc(float, @intFromFloat(1 + 2 * @round(step_km_inverse.x)));
     // Scores running mean buffer and total
     var scores: lma.pipeline.grid.update.Window = try .init(arena, shape, 5);
     const scoring = try arena.alloc(float, shape.size);
@@ -161,8 +161,8 @@ pub fn makeImages(
     @memset(scoring, 0);
 
     // Calculate the gaussian blurr
-    lma.pipeline.grid.update.convolution.gaussian(conv_h, step_inverse.x);
-    lma.pipeline.grid.update.convolution.gaussian(conv_v, step_inverse.y);
+    lma.pipeline.grid.update.convolution.gaussian(conv_h, step_km_inverse.x);
+    lma.pipeline.grid.update.convolution.gaussian(conv_v, step_km_inverse.y);
 
     // File name buffer
     var name_buffer: [32]u8 = undefined;

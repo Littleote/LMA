@@ -170,7 +170,7 @@ pub fn deinit(self: *Generator) void {
 }
 
 fn load(self: *Generator) !void {
-    if (self.current_file >= self.files.items.len) unreachable;
+    std.debug.assert(self.current_file < self.files.items.len);
     var dir = try std.fs.cwd().openDir(self.path, .{});
     defer dir.close();
     const file = try dir.openFile(self.files.items[self.current_file], .{ .mode = .read_only });

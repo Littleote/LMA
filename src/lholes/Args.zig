@@ -4,6 +4,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lma = @import("lma");
 const float = lma.pipeline.float;
+const transform = lma.pipeline.transform;
 const zlm = @import("zlm").as(float);
 const args = @import("args");
 pub const Generator = @import("Generator.zig");
@@ -86,10 +87,10 @@ pub const Region = union(RegionType) {
         self: Region,
     ) zlm.Vec3 {
         return switch (self) {
-            .center_size => |center_size| lma.pipeline.transform.coordToSpace(center_size.center),
+            .center_size => |center_size| transform.surfaceToXYZ(center_size.center),
             .end_points => |end_points| blk: {
-                const origin = lma.pipeline.transform.coordToSpace(end_points.origin);
-                const end = lma.pipeline.transform.coordToSpace(end_points.end);
+                const origin = transform.surfaceToXYZ(end_points.origin);
+                const end = transform.surfaceToXYZ(end_points.end);
                 break :blk origin.add(end);
             },
         };
@@ -100,8 +101,8 @@ pub const Region = union(RegionType) {
             .center_size => |center_size| .scale(detail, center_size.size),
             .end_points => |end_points| .limits(
                 detail,
-                lma.pipeline.transform.coordToPlane(end_points.origin, rotation),
-                lma.pipeline.transform.coordToPlane(end_points.end, rotation),
+                transform.surfaceToPlane(end_points.origin, rotation),
+                transform.surfaceToPlane(end_points.end, rotation),
             ),
         };
     }
@@ -116,11 +117,11 @@ const Resolution = enum(u8) {
 
     pub fn step(res: Resolution) zlm.Vec2 {
         return switch (res) {
-            .micro => .new(7.071, 7.071),
-            .low => .new(2.236, 2.236),
-            .medium => .new(1.0, 1.0),
-            .high => .new(0.5, 0.5),
-            .extra => .new(0.1, 0.1),
+            .micro => .new(7_071.0, 7_071.0),
+            .low => .new(2_236.0, 2_236.0),
+            .medium => .new(1_000.0, 1_000.0),
+            .high => .new(500.0, 500.0),
+            .extra => .new(100.0, 100.0),
         };
     }
 };
@@ -143,9 +144,10 @@ luminosity: float,
 pub fn deinit(self: *const Args, gpa: Allocator) void {
     gpa.free(self.input);
     gpa.free(self.output);
+    if (self.map) |map| gpa.free(map);
 }
 
-pub fn generator(self: Args, gpa: Allocator, io: std.Io) !Generator {
+pub fn generator(self: Args, gpa: Allocator, io: std.Io) !*Generator {
     return try .init(gpa, io, self.input, self.format);
 }
 
@@ -157,40 +159,40 @@ pub fn parseArgs(gpa: Allocator) !Args {
     );
     defer parsed.deinit();
     if (parsed.positionals.len != 0) {
-        std.debug.print("Positional arguments provided but non expected. Used coma separated values without spaces for specifying multiple values\n", .{});
+        std.log.err("Positional arguments provided but non expected. Used coma separated values without spaces for specifying multiple values\n", .{});
         return error.Parsing;
     }
 
     if (parsed.options.@"no-ffmpeg" and (parsed.options.ffmpeg orelse false)) {
-        std.debug.print("Contradictory values for ffmpeg specified\n", .{});
+        std.log.err("Contradictory values for ffmpeg specified\n", .{});
         return error.Parsing;
     }
 
     if (parsed.options.@"fixed-size" != null and parsed.options.resolution != null) {
-        std.debug.print("Contradictory arguments \"fixed-size\" and \"resolution\" specified\n", .{});
+        std.log.err("Contradictory arguments \"fixed-size\" and \"resolution\" specified\n", .{});
         return error.Parsing;
     }
 
     if (parsed.options.at == null and parsed.options.scale != null) {
-        std.debug.print("Missing argument \"at\", required when using \"scale\"\n", .{});
+        std.log.err("Missing argument \"at\", required when using \"scale\"\n", .{});
         return error.Parsing;
     }
     if (parsed.options.from == null and parsed.options.to != null) {
-        std.debug.print("Missing argument \"from\", required when using \"to\"\n", .{});
+        std.log.err("Missing argument \"from\", required when using \"to\"\n", .{});
         return error.Parsing;
     }
 
     const region: Region = if (parsed.options.at) |at| blk: {
-        const scale = parsed.options.scale orelse "512";
+        const scale = parsed.options.scale orelse "512_000";
         const lat, const lon = try parseCoords(at);
         const width, const height = std.mem.cutScalar(u8, scale, ',') orelse .{ scale, scale };
         break :blk .{ .center_size = .{
             .center = .new(lat, lon),
-            .size = .new(try parseFloat(width), try parseFloat(height)),
+            .size = .new(1_000 * try parseFloat(width), 1_000 * try parseFloat(height)),
         } };
     } else if (parsed.options.from) |from| blk: {
         const to = parsed.options.to orelse {
-            std.debug.print("Missing argument \"to\", required when using \"from\"\n", .{});
+            std.log.err("Missing argument \"to\", required when using \"from\"\n", .{});
             return error.Parsing;
         };
         const origin = try parseCoords(from);
@@ -200,8 +202,8 @@ pub fn parseArgs(gpa: Allocator) !Args {
             .end = .new(end[0], end[1]),
         } };
     } else blk: {
-        std.debug.print("Defaulting to catalonia due to no region specified\n", .{});
-        break :blk .{ .center_size = .{ .center = .new(42.1, 1.8), .size = .new(300, 300) } };
+        std.log.err("Defaulting to catalonia due to no region specified\n", .{});
+        break :blk .{ .center_size = .{ .center = .new(42.1, 1.8), .size = .new(300_000, 300_000) } };
     };
 
     const detail: Detail = if (parsed.options.@"fixed-size") |shape| blk: {
@@ -210,7 +212,7 @@ pub fn parseArgs(gpa: Allocator) !Args {
     } else .fromStep((parsed.options.resolution orelse Resolution.medium).step());
 
     const input = try gpa.dupe(u8, parsed.options.input orelse {
-        std.debug.print("Missing argument \"input\"\n", .{});
+        std.log.err("Missing argument \"input\"\n", .{});
         return error.Parsing;
     });
     errdefer gpa.free(input);
@@ -287,21 +289,21 @@ pub const ExternArgs = extern struct {
 
 fn parseFloat(s: []const u8) !float {
     return std.fmt.parseFloat(float, s) catch |err| {
-        std.debug.print("Failure to parse \"{s}\" as a float\n", .{s});
+        std.log.err("Failure to parse \"{s}\" as a float\n", .{s});
         return err;
     };
 }
 
 fn parseInt(Int: type, s: []const u8) !Int {
     return std.fmt.parseInt(Int, s, 10) catch |err| {
-        std.debug.print("Failure to parse \"{s}\" as an integer\n", .{s});
+        std.log.err("Failure to parse \"{s}\" as an integer\n", .{s});
         return err;
     };
 }
 
 fn parseCoords(s: []const u8) !struct { float, float } {
     const lat, const lon = std.mem.cutScalar(u8, s, ',') orelse {
-        std.debug.print("Failure to parse latitude and longitude from \"{s}\" due to missing coma separator\n", .{s});
+        std.log.err("Failure to parse latitude and longitude from \"{s}\" due to missing coma separator\n", .{s});
         return error.Parsing;
     };
     return .{ try parseFloat(lat), try parseFloat(lon) };

@@ -28,7 +28,7 @@ const Data = union(Args.Stage) {
                 try generator.array.ensureTotalCapacity(generator.gpa, items.len);
                 for (items) |item| {
                     if (tag != .clusters or !item.cluster.isNoise()) {
-                        generator.array.appendAssumeCapacity(lma.pipeline.transform.coordToPlane(item, rotation));
+                        generator.array.appendAssumeCapacity(lma.pipeline.transform.surfaceToPlane(item, rotation));
                     }
                 }
                 generator.epoch = data.iterator.epoch;
@@ -106,7 +106,7 @@ gpa: Allocator,
 io: std.Io,
 array: std.ArrayList(zlm.Vec2),
 
-pub fn init(gpa: Allocator, io: std.Io, input: []const u8, format: Args.Format) !Generator {
+pub fn init(gpa: Allocator, io: std.Io, input: []const u8, format: Args.Format) !*Generator {
     var path: []const u8 = undefined;
     var files: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -141,7 +141,8 @@ pub fn init(gpa: Allocator, io: std.Io, input: []const u8, format: Args.Format) 
     }.fileOrder;
     std.sort.insertion([]const u8, files.items, {}, fileOrder);
 
-    var out: Generator = .{
+    const out = try gpa.create(Generator);
+    out.* = .{
         .format = format,
         .data = undefined,
         .path = path,
@@ -173,6 +174,7 @@ fn load(self: *Generator) !void {
     var dir = try std.fs.cwd().openDir(self.path, .{});
     defer dir.close();
     const file = try dir.openFile(self.files.items[self.current_file], .{ .mode = .read_only });
+    defer file.close();
     var file_reader = file.reader(self.io, self.file_buffer);
     self.current_file += 1;
     try self.data.load(&file_reader.interface);

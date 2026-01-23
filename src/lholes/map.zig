@@ -34,7 +34,7 @@ pub const Context = struct {
     color: u8,
 
     pub fn transform(self: *const Context, coord: zlm.Vec2) zlm.Vec2 {
-        const point = lma.pipeline.transform.coordToPlane(coord, &self.rotation);
+        const point = lma.pipeline.transform.surfaceToPlane(coord, &self.rotation);
         return point.sub(self.info.origin).div(self.info.step);
     }
 };

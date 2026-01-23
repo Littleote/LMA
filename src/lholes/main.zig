@@ -36,20 +36,19 @@ export fn callHoles(parsed: Args.ExternArgs) callconv(.c) ?[*:0]const u8 {
 
 pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
     const rotation: zlm.Mat3 = blk: {
-        const r = 6371.0088;
         var front: zlm.Vec3 = parsed.region.lookAt();
-        var side: zlm.Vec3 = .cross(.unitY, front);
+        var side: zlm.Vec3 = .cross(.unitZ, front);
         var up: zlm.Vec3 = .cross(front, side);
 
-        up = up.scale(r / up.length());
-        side = side.scale(r / side.length());
-        front = front.scale(r / front.length());
+        up = up.scale(1 / up.length());
+        side = side.scale(1 / side.length());
+        front = front.scale(1 / front.length());
 
         // NOTE: zlm only has v * M not M * v so we write the transpose
         break :blk .{ .fields = .{
+            .{ front.x, front.y, front.z },
             .{ side.x, side.y, side.z },
             .{ up.x, up.y, up.z },
-            .{ front.x, front.y, front.z },
         } };
     };
 
@@ -75,7 +74,10 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
     defer image_output.close();
 
     var gen = try parsed.generator(gpa, io);
-    defer gen.deinit();
+    defer {
+        gen.deinit();
+        gpa.destroy(gen);
+    }
 
     // Load fixed map
     const canvas = try gpa.alloc(u8, info.shape.size);
@@ -92,7 +94,7 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
         .{
             .rotation = &rotation,
             .info = &info,
-            .generator = &gen,
+            .generator = gen,
             .overlay = canvas,
             .scaling = scale,
             .decay = decay,

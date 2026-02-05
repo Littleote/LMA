@@ -1,45 +1,33 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const args = @import("args");
+const nargs = @import("nargs");
 
 const toa = @import("toa.zig");
 const points = @import("points.zig");
 const clusters = @import("clusters.zig");
 
-pub fn main() !void {
-    const Allocator = if (builtin.mode == std.builtin.OptimizeMode.Debug) std.heap.DebugAllocator(.{}) else std.heap.GeneralPurposeAllocator(.{});
-    var allocator: Allocator = .init;
-    const gpa = allocator.allocator();
-    defer _ = allocator.deinit();
+pub const root = nargs.groups.any("PARSER", .{
+    .path = nargs.params.param("input", nargs.types.string, .single, .{ .short = .auto }),
+    .command = nargs.groups.subcommand("STAGE", .{
+        .toa = toa.root,
+        .points = points.root,
+        .clusters = clusters.root,
+    }, true, .read_any(null)),
+});
 
-    var threaded: std.Io.Threaded = .init(gpa);
-    defer threaded.deinit();
-    const io = threaded.io();
+pub fn main(init: std.process.Init) !void {
+    const ctx = .{ .allocator = init.gpa };
+    var options = blk: {
+        var args: nargs.Args = .init(init.gpa);
+        defer args.deinit();
+        try args.appendArguments(init.minimal.args);
+        break :blk try args.parseAndCreate(init.io, ctx, root);
+    };
+    defer root.destroy(ctx, &options);
 
-    const options = args.parseWithVerbForCurrentProcess(
-        struct {
-            input: ?[]const u8 = null,
-
-            pub const shorthands = .{
-                .i = "input",
-            };
-        },
-        union(enum) {
-            toa: struct {},
-            points: points.Args,
-            clusters: clusters.Args,
-        },
-        gpa,
-        .print,
-    ) catch return;
-    defer options.deinit();
-
-    if (options.options.input == null) @panic("Missing input field");
-    if (options.verb == null) @panic("Missing subcommand field");
-
-    switch (options.verb.?) {
-        .toa => try toa.parse(io, gpa, options.options.input.?),
-        .points => |*specific| try points.parse(io, gpa, options.options.input.?, specific),
-        .clusters => |*specific| try clusters.parse(io, gpa, options.options.input.?, specific),
+    switch (options.command) {
+        .toa => |specific| try toa.parse(init.io, init.gpa, options.path, specific),
+        .points => |specific| try points.parse(init.io, init.gpa, options.path, specific),
+        .clusters => |specific| try clusters.parse(init.io, init.gpa, options.path, specific),
     }
 }

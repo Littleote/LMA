@@ -1,45 +1,44 @@
 const std = @import("std");
+
 const lma = @import("lma");
 const Clusters = lma.data.Clusters;
+const nargs = @import("nargs");
 
 const utils = @import("utils.zig");
+
 const save_frequency = 10 * 60;
 
-pub const Args = struct {
-    delimiter: enum(u8) {
-        comma = ',',
-        semicolon = ';',
-        tab = '\t',
-        bar = '|',
-        space = ' ',
-    } = .space,
-
-    pub const shorthands = .{
-        .d = "delimiter",
-    };
+const Delimiter = enum(u8) {
+    comma = ',',
+    semicolon = ';',
+    tab = '\t',
+    bar = '|',
+    space = ' ',
 };
 
-pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: *const Args) !void {
+pub const root = nargs.groups.any("CLUSTERS", .{ .delimiter = nargs.params.param("delimiter", nargs.types.options(Delimiter), .single, .{ .short = .auto, .default = .space }) });
+
+pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf(root).Type) !void {
     const delimiter = @intFromEnum(args.delimiter);
 
     // Input file
-    const file = try std.fs.cwd().openFile(path, .{ .mode = .read_only });
-    defer file.close();
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
+    defer file.close(io);
     var buffer: [4096]u8 = undefined;
     var file_reader = file.reader(io, &buffer);
 
     // Open directories
-    const dir_path = std.fs.path.dirname(path) orelse "../";
-    var dir = try std.fs.cwd().openDir(dir_path, .{});
-    defer dir.close();
+    const dir_path = std.Io.Dir.path.dirname(path) orelse "../";
+    var dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{});
+    defer dir.close(io);
 
     // Output CSV directory
-    SaveInfo.csv_dir = try utils.forceOpen(dir, "csv", .{});
-    defer SaveInfo.csv_dir.?.close();
+    SaveInfo.csv_dir = try utils.forceOpen(io, dir, "csv", .{});
+    defer SaveInfo.csv_dir.?.close(io);
 
     // Output BIN directory
-    SaveInfo.bin_dir = try utils.forceOpen(dir, "bin", .{});
-    defer SaveInfo.bin_dir.?.close();
+    SaveInfo.bin_dir = try utils.forceOpen(io, dir, "bin", .{});
+    defer SaveInfo.bin_dir.?.close(io);
 
     var data: Clusters = .init(gpa);
     var last_header = try data.headers.addOne(gpa);
@@ -50,9 +49,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: *const 
     var group: std.Io.Group = .init;
 
     // Async saving
-    defer group.wait(io);
-    var save_buffer: [16]SaveInfo = undefined;
-    var queue: std.Io.Queue(SaveInfo) = .init(&save_buffer);
+    defer group.await(io) catch {};
 
     const header = try file_reader.interface.takeDelimiter('\n') orelse return error.EndOfStream;
     {
@@ -102,16 +99,14 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: *const 
             if (@divFloor(second, save_frequency) != last_save) {
                 @branchHint(.unlikely);
                 last_save += 1;
-                queue.putOneUncancelable(io, .{ .data = data, .save_time = null });
-                group.async(io, saveFiles, .{ &io, &queue });
+                group.async(io, saveFiles, .{ io, data, null });
                 const size = .{ .headers = data.headers.items.len, .array = data.array.items.len };
                 data = .init(gpa);
                 try data.headers.ensureTotalCapacity(gpa, size.headers);
                 try data.array.ensureTotalCapacity(gpa, size.array);
 
                 while (@divFloor(second, save_frequency) != last_save) : (last_save += 1) {
-                    queue.putOneUncancelable(io, .{ .data = .init(gpa), .save_time = last_save });
-                    group.async(io, saveFiles, .{ &io, &queue });
+                    group.async(io, saveFiles, .{ io, Clusters.init(gpa), last_save });
                 }
             }
             last_header = try data.headers.addOne(gpa);
@@ -125,38 +120,33 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: *const 
             .altitude = try std.fmt.parseFloat(f32, iterator.next().?),
             .dBm = try std.fmt.parseFloat(f16, iterator.next().?),
             // Both 0 and -1 Indicate a noise value
-            .cluster = @enumFromInt(lma.math.as(u32, @max(0, try std.fmt.parseInt(isize, iterator.next().?, 10)))),
+            .cluster = @enumFromInt(lma.common.as(u32, @max(0, try std.fmt.parseInt(isize, iterator.next().?, 10)))),
         });
     }
     last_header.size = @intCast(data.array.items.len - last_header.start);
-    queue.putOneUncancelable(io, .{ .data = data, .save_time = null });
-    group.async(io, saveFiles, .{ &io, &queue });
+    group.async(io, saveFiles, .{ io, data, null });
     data.headers.items.len = 0;
     data.array.items.len = 0;
     while (@divFloor(60 * 60 * 24, save_frequency) != last_save) : (last_save += 1) {
-        queue.putOneUncancelable(io, .{ .data = .init(gpa), .save_time = last_save });
-        group.async(io, saveFiles, .{ &io, &queue });
+        group.async(io, saveFiles, .{ io, Clusters.init(gpa), last_save });
     }
 }
 
 const SaveInfo = struct {
-    data: Clusters,
-    save_time: ?usize,
-
-    var csv_dir: ?std.fs.Dir = null;
-    var bin_dir: ?std.fs.Dir = null;
+    var csv_dir: ?std.Io.Dir = null;
+    var bin_dir: ?std.Io.Dir = null;
 };
 
-fn saveFiles(io: *const std.Io, queue: *std.Io.Queue(SaveInfo)) void {
-    var info = queue.getOneUncancelable(io.*);
+fn saveFiles(io: std.Io, data: Clusters, save_time: ?usize) std.Io.Cancelable!void {
+    var mutable_data = data;
+    defer mutable_data.deinit();
     if (SaveInfo.bin_dir) |dir|
-        saveBin(&info.data, info.save_time, dir);
+        try saveBin(io, data, save_time, dir);
     if (SaveInfo.csv_dir) |dir|
-        saveCsv(&info.data, info.save_time, dir);
-    info.data.deinit();
+        try saveCsv(io, data, save_time, dir);
 }
 
-fn saveCsv(data: *const Clusters, save_time: ?usize, dir: std.fs.Dir) void {
+fn saveCsv(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.Io.Cancelable!void {
     const time = utils.saveTime(
         save_time,
         if (data.headers.items.len == 0) null else data.headers.items[0].epoch,
@@ -167,12 +157,15 @@ fn saveCsv(data: *const Clusters, save_time: ?usize, dir: std.fs.Dir) void {
     var name_buffer: [32]u8 = undefined;
 
     const name = utils.fileName(&name_buffer, time, "csv");
-    const file = dir.createFile(name, .{}) catch {
-        std.log.err("Failed to create file {s}\n", .{name});
-        return;
+    const file = dir.createFile(io, name, .{}) catch |err| switch (err) {
+        error.Canceled => return error.Canceled,
+        else => {
+            std.log.err("Failed to create file {s}\n", .{name});
+            return;
+        },
     };
-    defer file.close();
-    var file_writer = file.writer(&buffer);
+    defer file.close(io);
+    var file_writer = file.writer(io, &buffer);
 
     data.toCsv(&file_writer.interface, null) catch {
         std.log.err("Failed to write file {s}\n", .{name});
@@ -180,7 +173,7 @@ fn saveCsv(data: *const Clusters, save_time: ?usize, dir: std.fs.Dir) void {
     };
 }
 
-fn saveBin(data: *const Clusters, save_time: ?usize, dir: std.fs.Dir) void {
+fn saveBin(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.Io.Cancelable!void {
     const time = utils.saveTime(
         save_time,
         if (data.headers.items.len == 0) null else data.headers.items[0].epoch,
@@ -191,12 +184,15 @@ fn saveBin(data: *const Clusters, save_time: ?usize, dir: std.fs.Dir) void {
     var name_buffer: [32]u8 = undefined;
 
     const name = utils.fileName(&name_buffer, time, "bin");
-    const file = dir.createFile(name, .{}) catch {
-        std.log.err("Failed to create file {s}\n", .{name});
-        return;
+    const file = dir.createFile(io, name, .{}) catch |err| switch (err) {
+        error.Canceled => return error.Canceled,
+        else => {
+            std.log.err("Failed to create file {s}\n", .{name});
+            return;
+        },
     };
-    defer file.close();
-    var file_writer = file.writer(&buffer);
+    defer file.close(io);
+    var file_writer = file.writer(io, &buffer);
 
     data.toBin(&file_writer.interface) catch {
         std.log.err("Failed to write file {s}\n", .{name});

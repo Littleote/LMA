@@ -121,10 +121,10 @@ pub fn init(gpa: Allocator, io: std.Io, input: []const u8, format: Args.Format) 
         try files.append(gpa, try gpa.dupe(u8, input));
     } else {
         path = input;
-        var dir = try std.fs.cwd().openDir(path, .{ .iterate = true });
-        defer dir.close();
+        var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+        defer dir.close(io);
         var iterator = dir.iterate();
-        while (try iterator.next()) |entry| {
+        while (try iterator.next(io)) |entry| {
             try files.append(gpa, try gpa.dupe(u8, entry.name));
         }
     }
@@ -171,10 +171,10 @@ pub fn deinit(self: *Generator) void {
 
 fn load(self: *Generator) !void {
     std.debug.assert(self.current_file < self.files.items.len);
-    var dir = try std.fs.cwd().openDir(self.path, .{});
-    defer dir.close();
-    const file = try dir.openFile(self.files.items[self.current_file], .{ .mode = .read_only });
-    defer file.close();
+    var dir = try std.Io.Dir.cwd().openDir(self.io, self.path, .{});
+    defer dir.close(self.io);
+    const file = try dir.openFile(self.io, self.files.items[self.current_file], .{ .mode = .read_only });
+    defer file.close(self.io);
     var file_reader = file.reader(self.io, self.file_buffer);
     self.current_file += 1;
     try self.data.load(&file_reader.interface);

@@ -2,15 +2,15 @@
     .name = .lma,
     .version = "0.0.0",
     .fingerprint = 0x546aaf72f19c0241,
-    .minimum_zig_version = "0.16.0-dev.205+4c0127566",
+    .minimum_zig_version = "0.16.0-dev.2471+e9eadee00",
     .dependencies = .{
         .zlm = .{
-            .url = "https://github.com/ziglibs/zlm/archive/refs/heads/master.zip",
-            .hash = "zlm-0.1.0-LoZ6yI2sAACW1YdckJV4qm7HXCGcRkkk_wO36dUi5qcQ",
+            .url = "git+https://github.com/ziglibs/zlm.git?ref=master#35ab7df57cfb5392a11486f6e4b03a82f849a118",
+            .hash = "zlm-0.1.0-LoZ6yDawAADMopilIe9MDzer0UqmruCy_PuhNv4OMc7c",
         },
-        .args = .{
-            .url = "git+https://github.com/ikskuh/zig-args?ref=master#8ae26b44a884ff20dca98ee84c098e8f8e94902f",
-            .hash = "args-0.0.0-CiLiqojRAACGzDRO7A9dw7kWSchNk29caJZkXuMCb0Cn",
+        .nice_args = .{
+            .url = "git+https://codeberg.org/Littleote/nice_args.git?ref=main#bcbadd307505663f8634d5deb22bdc101cc6cadb",
+            .hash = "nice_args-0.0.8-g3sjm4jCAgDp6V8G3kk8y3Yx__VuLTAsI8UaPo73N7cX",
         },
     },
     .paths = .{

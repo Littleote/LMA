@@ -51,8 +51,8 @@ test toCsv {
     var buffer: [1024]u8 = undefined;
     {
         // Load some values into the data structure
-        const file = try std.fs.cwd().openFile("data/ToA/stations/stations.bin", .{ .mode = .read_only });
-        defer file.close();
+        const file = try std.Io.Dir.cwd().openFile(std.testing.io, "data/ToA/stations/stations.bin", .{ .mode = .read_only });
+        defer file.close(std.testing.io);
         var file_reader = file.reader(std.testing.io, &buffer);
         try data.fromBin(&file_reader.interface);
     }

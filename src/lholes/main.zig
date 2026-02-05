@@ -9,24 +9,15 @@ const utils = @import("utils.zig");
 const Args = @import("Args.zig");
 const mapping = @import("map.zig");
 
-pub fn main() !void {
-    const BackingAllocator = if (builtin.mode == .Debug) std.heap.DebugAllocator(.{}) else void;
-    var allocator: BackingAllocator = if (builtin.mode == .Debug) .init else {};
-    defer if (builtin.mode == .Debug) {
-        _ = allocator.deinit();
-    };
-    const gpa = if (builtin.mode == .Debug) allocator.allocator() else std.heap.smp_allocator;
-
-    var threaded: std.Io.Threaded = .init(gpa);
-
-    const parsed: Args = try .parseArgs(gpa);
-    defer parsed.deinit(gpa);
-    try run(gpa, threaded.io(), parsed);
+pub fn main(init: std.process.Init) !void {
+    const parsed: Args = try .parseNargs(init.gpa, init.io, init.minimal.args);
+    defer parsed.deinit(init.gpa);
+    try run(init.gpa, init.io, parsed);
 }
 
 export fn callHoles(parsed: Args.ExternArgs) callconv(.c) ?[*:0]const u8 {
     const gpa = std.heap.smp_allocator;
-    var threaded: std.Io.Threaded = .init(gpa);
+    var threaded: std.Io.Threaded = .init(gpa, .{ .environ = .empty });
     const io = threaded.io();
     run(gpa, io, parsed.toInner()) catch |err| switch (err) {
         else => |comtpime_err| return @errorName(comtpime_err),
@@ -62,16 +53,16 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
 
     // Input directory
     std.debug.assert(parsed.format.file == .bin and parsed.format.stage == .clusters);
-    var input = try std.fs.cwd().openDir(parsed.input, .{});
-    defer input.close();
+    var input = try std.Io.Dir.cwd().openDir(io, parsed.input, .{});
+    defer input.close(io);
 
     // Output directories
-    var output = try utils.forceOpen(std.fs.cwd(), parsed.output, .{});
-    defer output.close();
+    var output = try utils.forceOpen(io, std.Io.Dir.cwd(), parsed.output, .{});
+    defer output.close(io);
 
     // Output directories
-    var image_output = try utils.forceOpen(output, "img", .{});
-    defer image_output.close();
+    var image_output = try utils.forceOpen(io, output, "img", .{});
+    defer image_output.close(io);
 
     var gen = try parsed.generator(gpa, io);
     defer {
@@ -84,13 +75,15 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
     defer gpa.free(canvas);
     @memset(canvas, 0);
     if (parsed.map) |map| {
-        const in_file = try std.fs.cwd().openFile(map, .{ .mode = .read_only });
+        const in_file = try std.Io.Dir.cwd().openFile(io, map, .{ .mode = .read_only });
+        defer in_file.close(io);
         var file_reader = in_file.reader(io, &.{});
         try mapping.load(gpa, &.{ .rotation = rotation, .info = info, .color = 255 }, canvas, &file_reader.interface);
     }
 
     try makeImages(
         gpa,
+        io,
         .{
             .rotation = &rotation,
             .info = &info,
@@ -106,9 +99,9 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
     const disposable_buffer = try gpa.alloc(u8, 65535);
     defer gpa.free(disposable_buffer);
     if (parsed.ffmpeg) {
-        try ffmpeg(disposable_buffer, "", parsed.output);
-        try ffmpeg(disposable_buffer, "s_", parsed.output);
-        try ffmpeg(disposable_buffer, "c_", parsed.output);
+        try ffmpeg(io, disposable_buffer, "", parsed.output);
+        try ffmpeg(io, disposable_buffer, "s_", parsed.output);
+        try ffmpeg(io, disposable_buffer, "c_", parsed.output);
     }
 }
 
@@ -124,8 +117,9 @@ pub const Params = struct {
 
 pub fn makeImages(
     gpa: Allocator,
+    io: std.Io,
     config: Params,
-    output: std.fs.Dir,
+    output: std.Io.Dir,
 ) !void {
     // Arena allocations
     var arena_alloc: std.heap.ArenaAllocator = .init(gpa);
@@ -235,6 +229,7 @@ pub fn makeImages(
 
             const time = @divFloor(config.generator.epoch, config.snap);
             try save(
+                io,
                 output,
                 std.fmt.bufPrint(&name_buffer, "{d}.bmp", .{time}) catch unreachable,
                 &buffer,
@@ -244,6 +239,7 @@ pub fn makeImages(
                 &lma.pipeline.image.palettes.viridis,
             );
             try save(
+                io,
                 output,
                 std.fmt.bufPrint(&name_buffer, "c_{d}.bmp", .{time}) catch unreachable,
                 &buffer,
@@ -253,6 +249,7 @@ pub fn makeImages(
                 &lma.pipeline.image.palettes.viridis,
             );
             try save(
+                io,
                 output,
                 std.fmt.bufPrint(&name_buffer, "s_{d}.bmp", .{time}) catch unreachable,
                 &buffer,
@@ -266,10 +263,10 @@ pub fn makeImages(
     }
 }
 
-fn save(dir: std.fs.Dir, name: []const u8, buffer: []u8, shape: lma.pipeline.grid.Shape, T: type, values: []const T, palette: *const [256]lma.pipeline.image.Color) !void {
-    const file = try dir.createFile(name, .{});
-    defer file.close();
-    var file_writer = file.writer(buffer);
+fn save(io: std.Io, dir: std.Io.Dir, name: []const u8, buffer: []u8, shape: lma.pipeline.grid.Shape, T: type, values: []const T, palette: *const [256]lma.pipeline.image.Color) !void {
+    const file = try dir.createFile(io, name, .{});
+    defer file.close(io);
+    var file_writer = file.writer(io, buffer);
     try switch (@typeInfo(T)) {
         .float => if (T == float) lma.pipeline.image.floatToBMP(shape, values, palette, &file_writer.interface) else @compileError("Invalid type"),
         .int => if (T == u8) lma.pipeline.image.bytesToBMP(shape, values, palette, &file_writer.interface) else lma.pipeline.image.intToBMP(T, shape, values, palette, &file_writer.interface),
@@ -277,10 +274,9 @@ fn save(dir: std.fs.Dir, name: []const u8, buffer: []u8, shape: lma.pipeline.gri
     };
 }
 
-fn ffmpeg(buffer: []u8, comptime prefix: []const u8, out: []const u8) !void {
+fn ffmpeg(io: std.Io, buffer: []u8, comptime prefix: []const u8, out: []const u8) !void {
     var disposable: std.heap.FixedBufferAllocator = .init(buffer);
-    _ = try std.process.Child.run(.{
-        .allocator = disposable.allocator(),
+    _ = try std.process.run(disposable.allocator(), io, .{
         .argv = &.{
             "ffmpeg",
             "-framerate",
@@ -294,6 +290,6 @@ fn ffmpeg(buffer: []u8, comptime prefix: []const u8, out: []const u8) !void {
             "4M",
             prefix ++ "output.mp4",
         },
-        .cwd = out,
+        .cwd = .{ .path = out },
     });
 }

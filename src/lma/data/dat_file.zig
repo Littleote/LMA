@@ -92,7 +92,7 @@ test parseEpoch {
 
 pub const toa = struct {
     /// Load a Time of Arrival '.dat' file from a seeking file reader
-    pub fn fromFile(file_reader: *std.fs.File.Reader, gpa: Allocator) !data.ToA {
+    pub fn fromFile(file_reader: *std.Io.File.Reader, gpa: Allocator) !data.ToA {
         const parser: Parser = try .init(&file_reader.interface);
 
         file_reader.seekTo(0) catch unreachable;

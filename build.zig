@@ -4,10 +4,10 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const args = b.dependency("args", .{
+    const nargs = b.dependency("nice_args", .{
         .target = target,
         .optimize = optimize,
-    }).module("args");
+    }).module("nice_args");
 
     const zlm = b.dependency("zlm", .{
         .target = target,
@@ -29,7 +29,17 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .module = lma, .name = "lma" },
-            .{ .module = args, .name = "args" },
+            .{ .module = nargs, .name = "nargs" },
+        },
+    });
+
+    matchExe(b, .{
+        .root_source_file = b.path("src/match-toa/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .module = lma, .name = "lma" },
+            .{ .module = nargs, .name = "nargs" },
         },
     });
 
@@ -51,7 +61,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .module = lma, .name = "lma" },
             .{ .module = zlm, .name = "zlm" },
-            .{ .module = args, .name = "args" },
+            .{ .module = nargs, .name = "nargs" },
         },
     });
 }
@@ -86,6 +96,8 @@ fn parserExe(b: *std.Build, options: std.Build.Module.CreateOptions) void {
         .name = "parser",
         .root_module = b.createModule(options),
     });
+    b.installArtifact(parser);
+
     const parser_step = b.step(
         "parser",
         "Parse the selected files and generate the corresponding '.bin' and '.csv' files",
@@ -116,17 +128,17 @@ const ParserTargets = struct {
     ) void {
         if (self.toa orelse default) {
             const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "-i", "data/ToA/250712/sources", "toa" });
+            run.addArgs(&.{ "-i=data/ToA/250712/sources", "toa" });
             step.dependOn(&run.step);
         }
         if (self.points orelse default) {
             const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "-i", "data/points/250712/output", "points", "-s", "data/ToA/stations" });
+            run.addArgs(&.{ "-i=data/points/250712/output", "points", "-s=data/ToA/stations" });
             step.dependOn(&run.step);
         }
         if (self.clusters orelse default) {
             const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "-i", "data/lightnings/250712/XCALMA_250712.csv", "clusters" });
+            run.addArgs(&.{ "-i=data/lightnings/250712/XCALMA_250712.csv", "clusters" });
             step.dependOn(&run.step);
         }
         const install = b.addInstallArtifact(exe, .{});
@@ -143,18 +155,23 @@ fn lightningHoles(b: *std.Build, options: std.Build.Module.CreateOptions) void {
 
     const run_demo_grid = b.addRunArtifact(lightning_holes);
     run_demo_grid.addArgs(&.{
-        "--at",
-        "41.70,1.75",
-        "--scale",
-        "300,300",
-        "-r",
-        "high",
-        "-i",
-        "data/lightnings/240802/bin",
-        "-m",
-        "data/map/comarques-compressed.geojson",
+        "--region=catalunya",
+        "-r=high",
+        "-i=data/lightnings/240802/bin",
+        "--cat-map",
         "--ffmpeg",
     });
     const demo_grid_step = b.step("demo-holes", "Run the demo for the lightning holes detection");
     demo_grid_step.dependOn(&run_demo_grid.step);
+}
+
+fn matchExe(b: *std.Build, options: std.Build.Module.CreateOptions) void {
+    const match = b.addExecutable(.{
+        .name = "match",
+        .root_module = b.createModule(options),
+    });
+    const run_match = b.addRunArtifact(match);
+    run_match.addArgs(&.{});
+    const match_step = b.step("demo-match", "Run the demo for matching");
+    match_step.dependOn(&run_match.step);
 }

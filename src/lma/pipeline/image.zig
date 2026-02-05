@@ -190,11 +190,11 @@ pub fn writeBMPHeader(
 
 test bytesToBMP {
     const gpa = std.testing.allocator;
-    const file = try std.fs.cwd().createFile("test_image.bmp", .{});
-    defer file.close();
+    const file = try std.Io.Dir.cwd().createFile(std.testing.io, "test_image.bmp", .{});
+    defer file.close(std.testing.io);
 
     var buffer: [1024]u8 = undefined;
-    var file_writer = file.writer(&buffer);
+    var file_writer = file.writer(std.testing.io, &buffer);
 
     const shape: Shape = .init(255, 255);
     const values = try gpa.alloc(u8, shape.size);

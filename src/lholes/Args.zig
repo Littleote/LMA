@@ -6,42 +6,11 @@ const lma = @import("lma");
 const float = lma.pipeline.float;
 const transform = lma.pipeline.transform;
 const zlm = @import("zlm").as(float);
-const args = @import("args");
+const nargs = @import("nargs");
+const groups = nargs.groups;
+const params = nargs.params;
+const types = nargs.types;
 pub const Generator = @import("Generator.zig");
-
-const Parse = struct {
-    // Input directory [Mandatory]
-    input: ?[]const u8 = null,
-    // Output directory for images
-    output: []const u8 = "img/demo/holes",
-    // Map overlay GeoJSON
-    map: ?[]const u8 = null,
-    // Generate the mp4 after finishing
-    ffmpeg: ?bool = null,
-    @"no-ffmpeg": bool = false,
-
-    // center (lat, lon) and size (w, [h])
-    at: ?[]const u8 = null,
-    scale: ?[]const u8 = null,
-
-    // origin (lat, lon) and end (lat, lon)
-    from: ?[]const u8 = null,
-    to: ?[]const u8 = null,
-
-    resolution: ?Resolution = null,
-    @"fixed-size": ?[]const u8 = null,
-    @"half-life": float = 2.5,
-    luminosity: float = 1.0,
-
-    pub const shorthands = .{
-        .i = "input",
-        .o = "output",
-        .r = "resolution",
-        .h = "half-life",
-        .l = "luminosity",
-        .m = "map",
-    };
-};
 
 /// Input file format for the lightning hole detection application
 pub const FileFormat = enum(u8) {
@@ -151,88 +120,97 @@ pub fn generator(self: Args, gpa: Allocator, io: std.Io) !*Generator {
     return try .init(gpa, io, self.input, self.format);
 }
 
-pub fn parseArgs(gpa: Allocator) !Args {
-    const parsed = try args.parseForCurrentProcess(
-        Parse,
-        gpa,
-        .print,
-    );
-    defer parsed.deinit();
-    if (parsed.positionals.len != 0) {
-        std.log.err("Positional arguments provided but non expected. Used coma separated values without spaces for specifying multiple values\n", .{});
-        return error.Parsing;
-    }
+const coord_parsers = .{
+    .latitude = types.Floating(float).interval(-90, 90, .closed),
+    .longitude = types.Floating(float).interval(-180, 180, .closed),
+};
+fn coord(name: []const u8, options: params.Mixed(@TypeOf(coord_parsers)).Options) params.Mixed(@TypeOf(coord_parsers)) {
+    return params.mixed(name, coord_parsers, options);
+}
 
-    if (parsed.options.@"no-ffmpeg" and (parsed.options.ffmpeg orelse false)) {
-        std.log.err("Contradictory values for ffmpeg specified\n", .{});
-        return error.Parsing;
-    }
+pub fn parseNargs(gpa: Allocator, io: std.Io, cli: std.process.Args) !Args {
+    var root = groups.any("holes", .{
+        .input = params.param("input", types.string, .single, .{ .short = .auto }),
+        .info = groups.any("FILE INFO", .{
+            .format = params.param("Fformat", types.options(FileFormat), .single, .{ .default = .bin }),
+            .stage = params.param("Fstage", types.options(Stage), .single, .{ .default = .clusters }),
+        }),
+        .output = params.param("output", types.string, .single, .{ .short = .auto, .default = "img/demo/holes" }),
+        .map = params.param(
+            "map",
+            types.string,
+            .single,
+            .{ .short = .auto, .default = "", .alias = &.{
+                .pair("cat-map", "data/map/comarques-compressed.geojson"),
+                .pair("val-map", "data/map/comarques-cv.geojson"),
+            } },
+        ),
+        .ffmpeg = params.flag("ffmpeg", .{}),
 
-    if (parsed.options.@"fixed-size" != null and parsed.options.resolution != null) {
-        std.log.err("Contradictory arguments \"fixed-size\" and \"resolution\" specified\n", .{});
-        return error.Parsing;
-    }
+        .region = groups.exclusive("REGION", .{
+            .center_scale = groups.incremental("CENTER & SCALE", .{
+                .center = coord("center", .{ .delimiter = ',' }),
+                .scale = params.param("scale", types.Floating(float).init, .array(2), .{ .delimiter = ',', .default = .{ 512, 512 } }),
+            }),
+            .end_points = groups.incremental("END POINTS", .{
+                .from = coord("from", .{ .delimiter = ',' }),
+                .to = coord("to", .{ .delimiter = ',' }),
+            }),
+            .preset = params.param("region", types.options(enum { catalunya, valencia }), .single, .{ .default = .catalunya }),
+        }, .preset),
+        .detail = groups.exclusive("DETAIL", .{
+            .fixed_size = params.param("fixed-size", types.Integer(u16).init, .array(2), .{ .delimiter = ',' }),
+            .resolution = params.param("resolution", types.options(Resolution), .single, .{ .short = .auto, .default = .medium }),
+        }, .resolution),
 
-    if (parsed.options.at == null and parsed.options.scale != null) {
-        std.log.err("Missing argument \"at\", required when using \"scale\"\n", .{});
-        return error.Parsing;
-    }
-    if (parsed.options.from == null and parsed.options.to != null) {
-        std.log.err("Missing argument \"from\", required when using \"to\"\n", .{});
-        return error.Parsing;
-    }
-
-    const region: Region = if (parsed.options.at) |at| blk: {
-        const scale = parsed.options.scale orelse "512_000";
-        const lat, const lon = try parseCoords(at);
-        const width, const height = std.mem.cutScalar(u8, scale, ',') orelse .{ scale, scale };
-        break :blk .{ .center_size = .{
-            .center = .new(lat, lon),
-            .size = .new(1_000 * try parseFloat(width), 1_000 * try parseFloat(height)),
-        } };
-    } else if (parsed.options.from) |from| blk: {
-        const to = parsed.options.to orelse {
-            std.log.err("Missing argument \"to\", required when using \"from\"\n", .{});
-            return error.Parsing;
-        };
-        const origin = try parseCoords(from);
-        const end = try parseCoords(to);
-        break :blk .{ .end_points = .{
-            .origin = .new(origin[0], origin[1]),
-            .end = .new(end[0], end[1]),
-        } };
-    } else blk: {
-        std.log.err("Defaulting to catalonia due to no region specified\n", .{});
-        break :blk .{ .center_size = .{ .center = .new(42.1, 1.8), .size = .new(300_000, 300_000) } };
-    };
-
-    const detail: Detail = if (parsed.options.@"fixed-size") |shape| blk: {
-        const width, const height = std.mem.cutScalar(u8, shape, ',') orelse .{ shape, shape };
-        break :blk .fromShape(.init(try parseInt(u16, height), try parseInt(u16, width)));
-    } else .fromStep((parsed.options.resolution orelse Resolution.medium).step());
-
-    const input = try gpa.dupe(u8, parsed.options.input orelse {
-        std.log.err("Missing argument \"input\"\n", .{});
-        return error.Parsing;
+        .half_life = params.param("half-life", types.Floating(float).init, .single, .{ .short = .auto, .default = 2.5 }),
+        .luminosity = params.param("luminosity", types.Floating(float).init, .single, .{ .short = .auto, .default = 1.0 }),
     });
+
+    const ctx = .{ .allocator = gpa };
+    var command = blk: {
+        var args: nargs.Args = .init(gpa);
+        defer args.deinit();
+        try args.appendArguments(cli);
+        break :blk try args.parseAndCreate(io, ctx, root);
+    };
+    defer root.destroy(ctx, &command);
+
+    const input = try gpa.dupe(u8, command.input);
     errdefer gpa.free(input);
-    const output = try gpa.dupe(u8, parsed.options.output);
+    const output = try gpa.dupe(u8, command.output);
     errdefer gpa.free(output);
-    const maybe_map = if (parsed.options.map) |map| try gpa.dupe(u8, map) else null;
+    const maybe_map = if (command.map.len != 0) try gpa.dupe(u8, command.map) else null;
     errdefer if (maybe_map) |map| gpa.free(map);
 
     return .{
         .input = input,
-        .format = .{ .file = .bin, .stage = .clusters },
+        .format = .{ .file = command.info.format, .stage = command.info.stage },
         .output = output,
         .map = maybe_map,
-        .ffmpeg = parsed.options.ffmpeg orelse !parsed.options.@"no-ffmpeg",
+        .ffmpeg = command.ffmpeg,
 
-        .region = region,
-        .detail = detail,
+        .region = switch (command.region) {
+            .center_scale => |center_scale| .{ .center_size = .{
+                .center = .new(center_scale.center.latitude, center_scale.center.longitude),
+                .size = .new(1_000 * center_scale.scale[0], 1_000 * center_scale.scale[1]),
+            } },
+            .end_points => |end_points| .{ .end_points = .{
+                .origin = .new(end_points.from.latitude, end_points.from.longitude),
+                .end = .new(end_points.to.latitude, end_points.to.longitude),
+            } },
+            .preset => |location| switch (location) {
+                .catalunya => .{ .center_size = .{ .center = .new(41.70, 1.75), .size = .new(300_000, 300_000) } },
+                .valencia => unreachable,
+            },
+        },
+        .detail = switch (command.detail) {
+            .fixed_size => |shape| .fromShape(.init(shape[0], shape[1])),
+            .resolution => |resolution| .fromStep(resolution.step()),
+        },
 
-        .half_life = parsed.options.@"half-life",
-        .luminosity = parsed.options.luminosity,
+        .half_life = command.half_life,
+        .luminosity = command.luminosity,
     };
 }
 

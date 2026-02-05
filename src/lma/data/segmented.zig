@@ -362,6 +362,17 @@ pub fn Segmented(Elem: type) type {
                 return &.{};
             }
         };
+
+        /// Return the slice of values corresponding to the header at position `index`
+        ///
+        /// `index` must be either a valid index for headers or null
+        pub fn valuesAt(self: *const Self, index: ?usize) []const Elem {
+            if (index) |idx| {
+                const header = self.headers.items[idx];
+                return self.array.items[header.start..][0..header.size];
+            }
+            return &.{};
+        }
     };
 }
 
@@ -605,4 +616,15 @@ test "epochIterator" {
     for (2..21) |idx|
         try std.testing.expect((iter.next() orelse failed).len == @as(usize, if (test_values.contains(idx)) 5 else 0));
     try std.testing.expect(iter.next() == null);
+}
+
+test "valuesAt" {
+    var data: Segmented(Dummy) = .init(std.testing.allocator);
+    defer data.deinit();
+    try randomSegments(Dummy, &data, 10, 5);
+
+    try std.testing.expect(data.valuesAt(null).len == 0);
+    for (data.array.items[10..15], data.valuesAt(2)) |sliced, located| {
+        try std.testing.expect(Dummy.eql(sliced, located));
+    }
 }

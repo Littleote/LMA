@@ -1,13 +1,16 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
-const lma = @import("lma");
-const float = lma.pipeline.float;
-const zlm = @import("zlm").as(float);
+
 const args = @import("args");
-const utils = @import("utils.zig");
+const lma = @import("lma");
+
 const Args = @import("Args.zig");
 const mapping = @import("map.zig");
+const utils = @import("utils.zig");
+
+pub const Float = lma.pipeline.holes.Float;
+const zlm = lma.pipeline.zlm(Float);
 
 pub fn main(init: std.process.Init) !void {
     const parsed: Args = try .parseNargs(init.gpa, init.io, init.minimal.args);
@@ -52,7 +55,6 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
     const scale = 1 / (freq * area_km);
 
     // Input directory
-    std.debug.assert(parsed.format.file == .bin and parsed.format.stage == .clusters);
     var input = try std.Io.Dir.cwd().openDir(io, parsed.input, .{});
     defer input.close(io);
 
@@ -107,11 +109,11 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
 
 pub const Params = struct {
     rotation: *const zlm.Mat3,
-    info: *const lma.pipeline.grid.Info,
+    info: *const lma.pipeline.grid.Info(Float),
     generator: *Args.Generator,
     overlay: []u8,
-    scaling: float,
-    decay: float,
+    scaling: Float,
+    decay: Float,
     snap: usize,
 };
 
@@ -129,34 +131,34 @@ pub fn makeImages(
     const shape = config.info.shape;
 
     // Map
-    const sources = try arena.alloc(float, shape.size);
-    const density = try arena.alloc(float, shape.size);
+    const sources = try arena.alloc(Float, shape.size);
+    const density = try arena.alloc(Float, shape.size);
     // Gaussian arrays to smooth data
     const step_km_inverse = zlm.vec2(1_000, 1_000).div(config.info.step);
-    const conv_h = try arena.alloc(float, @intFromFloat(1 + 2 * @round(step_km_inverse.x)));
-    const conv_v = try arena.alloc(float, @intFromFloat(1 + 2 * @round(step_km_inverse.x)));
+    const conv_h = try arena.alloc(Float, @intFromFloat(1 + 2 * @round(step_km_inverse.x)));
+    const conv_v = try arena.alloc(Float, @intFromFloat(1 + 2 * @round(step_km_inverse.x)));
     // Scores running mean buffer and total
-    var scores: lma.pipeline.grid.update.Window = try .init(arena, shape, 5);
-    const scoring = try arena.alloc(float, shape.size);
+    var scores: lma.pipeline.grid.update(Float).Window = try .init(arena, shape, 5);
+    const scoring = try arena.alloc(Float, shape.size);
     // Scores output contour and generated image
     const threshold = 0.9;
-    const scoring_threshold = try arena.alloc(float, shape.size);
-    const contour = try arena.alloc(float, shape.size);
+    const scoring_threshold = try arena.alloc(Float, shape.size);
+    const contour = try arena.alloc(Float, shape.size);
     const image = try arena.alloc(u8, shape.size);
     // Hole candidates processing order and results
     const order = try lma.pipeline.holes.makeOrderBuffer(arena, shape);
     const map = try arena.alloc(lma.pipeline.holes.Cluster, shape.size);
     // Auxiliary buffers
-    const aux = try arena.alloc(float, shape.size);
+    const aux = try arena.alloc(Float, shape.size);
 
     // Zero out top-down Map and total scores
     @memset(sources, 0);
     @memset(density, 0);
     @memset(scoring, 0);
 
-    // Calculate the gaussian blurr
-    lma.pipeline.grid.update.convolution.gaussian(conv_h, step_km_inverse.x);
-    lma.pipeline.grid.update.convolution.gaussian(conv_v, step_km_inverse.y);
+    // Calculate the gaussian blur
+    lma.pipeline.grid.update(Float).convolution.gaussian(conv_h, step_km_inverse.x);
+    lma.pipeline.grid.update(Float).convolution.gaussian(conv_v, step_km_inverse.y);
 
     // File name buffer
     var name_buffer: [32]u8 = undefined;
@@ -168,10 +170,10 @@ pub fn makeImages(
     defer seed_index.deinit(gpa);
 
     while (try config.generator.next(config.rotation)) |points| {
-        lma.pipeline.grid.update.triangular(shape, config.info, sources, points, .{ .scaling = config.scaling });
+        lma.pipeline.grid.update(Float).triangular(shape, config.info, sources, points, .{ .scaling = config.scaling });
         if (@mod(config.generator.epoch, config.snap) == 0) {
             @memcpy(density, sources);
-            lma.pipeline.grid.update.convolution.call(shape, density, aux, conv_h, conv_v);
+            lma.pipeline.grid.update(Float).convolution.call(shape, density, aux, conv_h, conv_v);
 
             // Generate all hole candidates
             lma.pipeline.holes.sort(density, order);
@@ -183,46 +185,46 @@ pub fn makeImages(
             });
             const size = try spill.assign(&seed, order, density, map);
             const info = try gpa.alloc(lma.pipeline.holes.Info, size);
-            const range: lma.pipeline.holes.ranges.Scaled = .{ .min = 0.1, .low = 2, .high = 4 };
-            lma.pipeline.holes.generateInfo(shape, range, seed_index.items, info, density, map);
+            const range: lma.pipeline.holes.Info.ranges.Scaled = .{ .min = 0.1, .low = 2, .high = 4 };
+            lma.pipeline.holes.Info.generateInfo(shape, range, seed_index.items, info, density, map);
             defer gpa.free(info);
 
             // Calculate the scores of all clusters
-            var def_buffer: [16]float = undefined;
+            var def_buffer: [16]Float = undefined;
             info[0].score = 0;
             for (info[1..]) |*cluster| {
                 cluster.score = 0;
                 if (cluster.escapes) continue;
                 const factor = 1.2;
-                const max_definition_score = comptime (1 - std.math.pow(float, factor, 16.0)) / (1 - factor);
+                const max_definition_score = comptime (1 - std.math.pow(Float, factor, 16.0)) / (1 - factor);
                 for (cluster.definition, &def_buffer, 0..) |total, *percent, i| {
-                    percent.* = lma.common.cast(float, total) / lma.common.cast(float, cluster.contour);
-                    const expected = lma.common.cast(float, i + 15) / 60.0;
-                    cluster.score = factor * cluster.score + @as(float, if (percent.* < expected) 1.0 else 0.0);
+                    percent.* = lma.common.cast(Float, total) / lma.common.cast(Float, cluster.contour);
+                    const expected = lma.common.cast(Float, i + 15) / 60.0;
+                    cluster.score = factor * cluster.score + @as(Float, if (percent.* < expected) 1.0 else 0.0);
                 }
                 cluster.score /= max_definition_score;
                 cluster.score *= std.math.clamp(1.5 - 4 * cluster.lowest, 0.2, 1);
-                cluster.score *= std.math.clamp(lma.common.cast(float, cluster.area) / 10.0, 0.2, 1);
+                cluster.score *= std.math.clamp(lma.common.cast(Float, cluster.area) / 10.0, 0.2, 1);
             }
 
             // Add scores to running window
             scores.setupNext(scoring);
             for (scores.get(), map) |*in, update| {
-                in.* += info[update.int()].score / lma.common.cast(float, scores.size);
+                in.* += info[update.int()].score / lma.common.cast(Float, scores.size);
             }
-            lma.pipeline.grid.update.morph(shape, scores.get(), aux, .init(3, 3), .dilate);
+            lma.pipeline.grid.update(Float).morph(shape, scores.get(), aux, .init(3, 3), .dilate);
             scores.apply(scoring);
 
             // Define lightning holes and their contour
             @memcpy(scoring_threshold, scoring);
-            lma.pipeline.grid.update.threshold(
+            lma.pipeline.grid.update(Float).threshold(
                 shape,
                 scoring_threshold,
                 threshold,
                 .{ .above = .{ .fixed = 255.0 } },
             );
             @memcpy(contour, scoring_threshold);
-            lma.pipeline.grid.update.morph(shape, contour, aux, .init(3, 3), .dilate);
+            lma.pipeline.grid.update(Float).morph(shape, contour, aux, .init(3, 3), .dilate);
             for (density, image, config.overlay, contour, scoring_threshold) |in, *out, over, c, b| {
                 out.* = if (c > b) 252 else if (over != 0) over else @intFromFloat(@min(@round(251.0 * in), 251.0));
             }
@@ -234,7 +236,7 @@ pub fn makeImages(
                 std.fmt.bufPrint(&name_buffer, "{d}.bmp", .{time}) catch unreachable,
                 &buffer,
                 shape,
-                float,
+                Float,
                 density,
                 &lma.pipeline.image.palettes.viridis,
             );
@@ -258,7 +260,7 @@ pub fn makeImages(
                 image,
                 &lma.pipeline.image.palettes.marked_viridis,
             );
-            lma.pipeline.grid.update.decay(shape, sources, config.decay);
+            lma.pipeline.grid.update(Float).decay(shape, sources, config.decay);
         }
     }
 }
@@ -268,7 +270,7 @@ fn save(io: std.Io, dir: std.Io.Dir, name: []const u8, buffer: []u8, shape: lma.
     defer file.close(io);
     var file_writer = file.writer(io, buffer);
     try switch (@typeInfo(T)) {
-        .float => if (T == float) lma.pipeline.image.floatToBMP(shape, values, palette, &file_writer.interface) else @compileError("Invalid type"),
+        .float => if (T == Float) lma.pipeline.image.floatToBMP(Float, shape, values, palette, &file_writer.interface) else @compileError("Invalid type"),
         .int => if (T == u8) lma.pipeline.image.bytesToBMP(shape, values, palette, &file_writer.interface) else lma.pipeline.image.intToBMP(T, shape, values, palette, &file_writer.interface),
         else => @compileError("Invalid type"),
     };

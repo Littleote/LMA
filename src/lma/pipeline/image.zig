@@ -1,5 +1,4 @@
 const std = @import("std");
-const float = @import("../pipeline.zig").float;
 const Shape = @import("grid.zig").Shape;
 
 pub const Color = packed struct(u24) {
@@ -139,8 +138,9 @@ pub fn intToBMP(
 }
 
 pub fn floatToBMP(
+    Float: type,
     shape: Shape,
-    values: []const float,
+    values: []const Float,
     palette: *const [256]Color,
     w: *std.Io.Writer,
 ) !void {

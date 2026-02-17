@@ -39,7 +39,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
     var load_stations = station != null;
     while (try iterator.next(io)) |entry| {
         var loaded = false;
-        var time: ?usize = null;
+        var time: ?u64 = null;
         var points: data.Points = .init(gpa);
         defer points.deinit();
         var stations: data.Stations = .init(gpa);
@@ -50,23 +50,28 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
             defer file.close(io);
             var file_reader = file.reader(io, &buffer);
             loaded = true;
-            time = data.dat_file.parseOutput(
-                &points,
-                if (load_stations) &stations else null,
-                &file_reader.interface,
-            ) catch blk: {
-                loaded = false;
-                const upper_bound = @divTrunc(try file_reader.getSize(), 70);
-                points.deinit();
-                points = .init(gpa);
-                file_reader.seekTo(0) catch unreachable;
-                data.dat_file.parsePoints(
+            time = blk: {
+                data.dat_file.parseOutput(
                     &points,
-                    @min(86400, upper_bound),
-                    upper_bound,
+                    if (load_stations) &stations else null,
                     &file_reader.interface,
-                ) catch continue;
-                break :blk if (points.headers.items.len == 0) null else points.headers.items[0].epoch;
+                ) catch {
+                    loaded = false;
+                    const upper_bound = @divTrunc(try file_reader.getSize(), 70);
+                    points.deinit();
+                    points = .init(gpa);
+                    file_reader.seekTo(0) catch unreachable;
+                    data.dat_file.parsePoints(
+                        &points,
+                        null,
+                        @min(86400, upper_bound),
+                        upper_bound,
+                        &file_reader.interface,
+                    ) catch continue;
+                    if (!points.empty()) break :blk points.first_epoch;
+                    break :blk null;
+                };
+                break :blk points.first_epoch;
             };
             if (time == null) continue;
         }

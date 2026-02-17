@@ -37,10 +37,10 @@ pub const ToA = extern struct {
     padding: u16 = 0,
 
     // CSV elements
-    pub inline fn toCsv(self: ToA, w: *Writer, header: data.segmented.Header, del: u8) Writer.Error!void {
+    pub inline fn toCsv(self: ToA, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.3}\n", .{
             del,
-            cast(f64, header.epoch) + cast(f64, self.nanosecond) / i30p2,
+            cast(f64, epoch) + cast(f64, self.nanosecond) / i30p2,
             self.dBm,
         });
     }
@@ -81,6 +81,8 @@ pub const ToA = extern struct {
 
 /// Points indicating the sources of VHF radiation the LMA system captured
 pub const Point = extern struct {
+    pub const mask_size: comptime_int = @typeInfo(@FieldType(Point, "station_mask")).int.bits;
+
     /// Nanoseconds since the start of the second
     /// Value expressed with fixed point 30.2
     nanosecond: u32,
@@ -106,10 +108,10 @@ pub const Point = extern struct {
     }
 
     // CSV elements
-    pub inline fn toCsv(self: Point, w: *Writer, header: data.segmented.Header, del: u8) Writer.Error!void {
+    pub inline fn toCsv(self: Point, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.8}{0c}{3d:.8}{0c}{4d:.3}{0c}{5d:.3}{0c}0x{6x:0>8}{0c}{7d:.2}\n", .{
             del,
-            cast(f64, header.epoch) + cast(f64, self.nanosecond) / i30p2,
+            cast(f64, epoch) + cast(f64, self.nanosecond) / i30p2,
             self.latitude,
             self.longitude,
             self.altitude,
@@ -227,10 +229,10 @@ pub const Clustered = extern struct {
     dBm: f16,
 
     // CSV elements
-    pub inline fn toCsv(self: Clustered, w: *Writer, header: data.segmented.Header, del: u8) Writer.Error!void {
+    pub inline fn toCsv(self: Clustered, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.8}{0c}{3d:.8}{0c}{4d:.3}{0c}{5d}{0c}{6d:.3}\n", .{
             del,
-            cast(f64, header.epoch) + cast(f64, self.nanosecond) / i30p2,
+            cast(f64, epoch) + cast(f64, self.nanosecond) / i30p2,
             self.latitude,
             self.longitude,
             self.altitude,

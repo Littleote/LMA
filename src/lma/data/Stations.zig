@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 const dat_file = @import("dat_file.zig");
+const lma = @import("../lma.zig");
 
 stations: std.ArrayList(Info),
 allocator: Allocator,
@@ -27,19 +28,19 @@ pub fn deinit(self: *Data) void {
 /// When delimiter is null, use a comma (`,`)
 pub fn toCsv(self: *const Data, w: *Writer, delimiter: ?u8) Writer.Error!void {
     const del = delimiter orelse ',';
-    const csv_columns: []const []const u8 = &.{ "Name", "Latitude", "Longitude", "Altitude", "Delay" };
+    const csv_columns: []const []const u8 = &.{ "Name", "Latitude", "Longitude", "Altitude", "Delay (ns)" };
     for (csv_columns, 1..) |column, idx| {
         try w.writeAll(column);
         try w.writeByte(if (idx == csv_columns.len) '\n' else del);
     }
     for (self.stations.items) |station| {
-        try w.print("{1s}{0c}{2d:.9}{0c}{3d:.9}{0c}{4d:.3}{0c}{5d}\n", .{
+        try w.print("{1s}{0c}{2d:.9}{0c}{3d:.9}{0c}{4d:.3}{0c}{5d:.1}\n", .{
             del,
             station.name orelse &.{},
             station.latitude,
             station.longitude,
             station.altitude,
-            station.delay,
+            std.time.ns_per_s * lma.constants.nano.fromNano(f32, station.delay),
         });
     }
     try w.flush();
@@ -48,16 +49,23 @@ pub fn toCsv(self: *const Data, w: *Writer, delimiter: ?u8) Writer.Error!void {
 test toCsv {
     var data: Data = .init(std.testing.allocator);
     defer data.deinit();
-    var buffer: [1024]u8 = undefined;
-    {
-        // Load some values into the data structure
-        const file = try std.Io.Dir.cwd().openFile(std.testing.io, "data/ToA/stations/stations.bin", .{ .mode = .read_only });
-        defer file.close(std.testing.io);
-        var file_reader = file.reader(std.testing.io, &buffer);
-        try data.fromBin(&file_reader.interface);
+
+    var rng: std.Random.DefaultPrng = .init(std.testing.random_seed);
+    const random = rng.random();
+    for (0..10) |_| {
+        const buf = try data.allocator.alloc(u8, random.intRangeAtMost(u8, 5, 120));
+        errdefer data.allocator.free(buf);
+        random.bytes(buf);
+        try data.stations.append(data.allocator, .{
+            .name = buf,
+            .latitude = 180 * random.float(f64) - 90,
+            .longitude = 360 * random.float(f64) - 180,
+            .delay = random.intRangeAtMost(i32, -4_000, 4_000),
+            .altitude = 2_000 * random.float(f32) - 1_000,
+        });
     }
 
-    var discard: Writer.Discarding = .init(&buffer);
+    var discard: Writer.Discarding = .init(&.{});
     try data.toCsv(&discard.writer, null);
 }
 
@@ -104,8 +112,8 @@ test "bin format round trip" {
             .name = buf,
             .latitude = 180 * random.float(f64) - 90,
             .longitude = 360 * random.float(f64) - 180,
-            .delay = 100 * random.float(f64),
-            .altitude = 2_000 * random.float(f64) - 1_000,
+            .delay = random.intRangeAtMost(i32, -4_000, 4_000),
+            .altitude = 2_000 * random.float(f32) - 1_000,
         });
     }
 
@@ -136,14 +144,14 @@ pub const Info = struct {
     name: ?[]const u8,
     latitude: f64,
     longitude: f64,
-    altitude: f64,
-    delay: f64,
+    altitude: f32,
+    delay: i32,
 
     pub const Packet = extern struct {
         latitude: f64,
         longitude: f64,
-        altitude: f64,
-        delay: f64,
+        altitude: f32,
+        delay: i32,
         name_length: u16,
     };
 
@@ -201,8 +209,8 @@ pub const Info = struct {
             .{
                 .latitude = self.latitude,
                 .longitude = self.longitude,
-                .altitude = @floatCast(self.altitude),
-                .delay = @floatCast(self.delay),
+                .altitude = self.altitude,
+                .delay = self.delay,
                 .name_length = @intCast(name.len),
             },
             name,

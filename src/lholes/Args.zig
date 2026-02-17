@@ -1,16 +1,20 @@
-const Args = @This();
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+
 const lma = @import("lma");
-const float = lma.pipeline.float;
 const transform = lma.pipeline.transform;
-const zlm = @import("zlm").as(float);
+const Detail = lma.pipeline.grid.Info(Float).Detail;
 const nargs = @import("nargs");
 const groups = nargs.groups;
 const params = nargs.params;
 const types = nargs.types;
+
+pub const Float = @import("main.zig").Float;
 pub const Generator = @import("Generator.zig");
+
+const Args = @This();
+
+const zlm = lma.pipeline.zlm(Float);
 
 /// Input file format for the lightning hole detection application
 pub const FileFormat = enum(u8) {
@@ -56,22 +60,22 @@ pub const Region = union(RegionType) {
         self: Region,
     ) zlm.Vec3 {
         return switch (self) {
-            .center_size => |center_size| transform.surfaceToXYZ(center_size.center),
+            .center_size => |center_size| transform.surfaceToXYZ(Float, center_size.center),
             .end_points => |end_points| blk: {
-                const origin = transform.surfaceToXYZ(end_points.origin);
-                const end = transform.surfaceToXYZ(end_points.end);
+                const origin = transform.surfaceToXYZ(Float, end_points.origin);
+                const end = transform.surfaceToXYZ(Float, end_points.end);
                 break :blk origin.add(end);
             },
         };
     }
 
-    pub fn generateInfo(self: Region, detail: Detail, rotation: *const zlm.Mat3) lma.pipeline.grid.Info {
+    pub fn generateInfo(self: Region, detail: Detail, rotation: *const zlm.Mat3) lma.pipeline.grid.Info(Float) {
         return switch (self) {
             .center_size => |center_size| .scale(detail, center_size.size),
             .end_points => |end_points| .limits(
                 detail,
-                transform.surfaceToPlane(end_points.origin, rotation),
-                transform.surfaceToPlane(end_points.end, rotation),
+                transform.surfaceToPlane(Float, end_points.origin, rotation),
+                transform.surfaceToPlane(Float, end_points.end, rotation),
             ),
         };
     }
@@ -94,8 +98,6 @@ const Resolution = enum(u8) {
         };
     }
 };
-const Detail = lma.pipeline.grid.Info.Detail;
-
 input: []const u8,
 format: Format,
 
@@ -105,10 +107,10 @@ ffmpeg: bool,
 
 region: Region,
 
-detail: lma.pipeline.grid.Info.Detail,
+detail: lma.pipeline.grid.Info(Float).Detail,
 
-half_life: float,
-luminosity: float,
+half_life: Float,
+luminosity: Float,
 
 pub fn deinit(self: *const Args, gpa: Allocator) void {
     gpa.free(self.input);
@@ -121,8 +123,8 @@ pub fn generator(self: Args, gpa: Allocator, io: std.Io) !*Generator {
 }
 
 const coord_parsers = .{
-    .latitude = types.Floating(float).interval(-90, 90, .closed),
-    .longitude = types.Floating(float).interval(-180, 180, .closed),
+    .latitude = types.Floating(Float).interval(-90, 90, .closed),
+    .longitude = types.Floating(Float).interval(-180, 180, .closed),
 };
 fn coord(name: []const u8, options: params.Mixed(@TypeOf(coord_parsers)).Options) params.Mixed(@TypeOf(coord_parsers)) {
     return params.mixed(name, coord_parsers, options);
@@ -150,7 +152,7 @@ pub fn parseNargs(gpa: Allocator, io: std.Io, cli: std.process.Args) !Args {
         .region = groups.exclusive("REGION", .{
             .center_scale = groups.incremental("CENTER & SCALE", .{
                 .center = coord("center", .{ .delimiter = ',' }),
-                .scale = params.param("scale", types.Floating(float).init, .array(2), .{ .delimiter = ',', .default = .{ 512, 512 } }),
+                .scale = params.param("scale", types.Floating(Float).init, .array(2), .{ .delimiter = ',', .default = .{ 512, 512 } }),
             }),
             .end_points = groups.incremental("END POINTS", .{
                 .from = coord("from", .{ .delimiter = ',' }),
@@ -163,8 +165,8 @@ pub fn parseNargs(gpa: Allocator, io: std.Io, cli: std.process.Args) !Args {
             .resolution = params.param("resolution", types.options(Resolution), .single, .{ .short = .auto, .default = .medium }),
         }, .resolution),
 
-        .half_life = params.param("half-life", types.Floating(float).init, .single, .{ .short = .auto, .default = 2.5 }),
-        .luminosity = params.param("luminosity", types.Floating(float).init, .single, .{ .short = .auto, .default = 1.0 }),
+        .half_life = params.param("half-life", types.Floating(Float).init, .single, .{ .short = .auto, .default = 2.5 }),
+        .luminosity = params.param("luminosity", types.Floating(Float).init, .single, .{ .short = .auto, .default = 1.0 }),
     });
 
     const ctx = .{ .allocator = gpa };
@@ -233,13 +235,13 @@ pub const ExternArgs = extern struct {
     ffmpeg: bool,
 
     region_type: RegionType,
-    region_first: Pair(float),
-    region_second: Pair(float),
+    region_first: Pair(Float),
+    region_second: Pair(Float),
 
     resolution: Resolution,
 
-    half_life: float,
-    luminosity: float,
+    half_life: Float,
+    luminosity: Float,
 
     pub fn toInner(self: *const ExternArgs) Args {
         return .{
@@ -265,8 +267,8 @@ pub const ExternArgs = extern struct {
     }
 };
 
-fn parseFloat(s: []const u8) !float {
-    return std.fmt.parseFloat(float, s) catch |err| {
+fn parseFloat(s: []const u8) !Float {
+    return std.fmt.parseFloat(Float, s) catch |err| {
         std.log.err("Failure to parse \"{s}\" as a float\n", .{s});
         return err;
     };
@@ -279,7 +281,7 @@ fn parseInt(Int: type, s: []const u8) !Int {
     };
 }
 
-fn parseCoords(s: []const u8) !struct { float, float } {
+fn parseCoords(s: []const u8) !struct { Float, Float } {
     const lat, const lon = std.mem.cutScalar(u8, s, ',') orelse {
         std.log.err("Failure to parse latitude and longitude from \"{s}\" due to missing coma separator\n", .{s});
         return error.Parsing;

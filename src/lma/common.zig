@@ -1,5 +1,23 @@
 const std = @import("std");
 
+/// Index and size for a subset of a slice
+pub const SubSlice = extern struct {
+    start: u32,
+    size: u32,
+
+    pub fn get(self: SubSlice, slice: anytype) @TypeOf(slice) {
+        return slice[self.start..][0..self.size];
+    }
+
+    pub fn getReference(self: SubSlice, T: type, slice: []T) []T {
+        return slice[self.start..][0..self.size];
+    }
+
+    pub fn getConst(self: SubSlice, T: type, slice: []const T) []const T {
+        return slice[self.start..][0..self.size];
+    }
+};
+
 /// Cast a numerical variable to a different precision (or signedness)
 /// Caller guarantees the cast is valid
 pub inline fn as(T: type, value: anytype) T {

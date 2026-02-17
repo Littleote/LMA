@@ -41,11 +41,12 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
     defer SaveInfo.bin_dir.?.close(io);
 
     var data: Clusters = .init(gpa);
+    errdefer data.deinit();
     var last_header = try data.headers.addOne(gpa);
-    var last_second: usize = 0;
-    var last_save: usize = @divFloor(last_second, save_frequency);
+    var last_second: u64 = 0;
+    var last_save: u64 = @divFloor(last_second, save_frequency);
     last_header.start = @intCast(data.array.items.len);
-    last_header.epoch = @intCast(last_second);
+    data.first_epoch = last_second;
     var group: std.Io.Group = .init;
 
     // Async saving
@@ -102,16 +103,17 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
                 group.async(io, saveFiles, .{ io, data, null });
                 const size = .{ .headers = data.headers.items.len, .array = data.array.items.len };
                 data = .init(gpa);
+                while (@divFloor(second, save_frequency) != last_save) : (last_save += 1) {
+                    data.first_epoch = last_save * save_frequency;
+                    group.async(io, saveFiles, .{ io, data, last_save });
+                }
+                data.first_epoch = last_save * save_frequency;
                 try data.headers.ensureTotalCapacity(gpa, size.headers);
                 try data.array.ensureTotalCapacity(gpa, size.array);
-
-                while (@divFloor(second, save_frequency) != last_save) : (last_save += 1) {
-                    group.async(io, saveFiles, .{ io, Clusters.init(gpa), last_save });
-                }
             }
-            last_header = try data.headers.addOne(gpa);
-            last_header.start = @intCast(data.array.items.len);
-            last_header.epoch = @intCast(second);
+            const delta = second - (data.first_epoch + data.headers.items.len) + 1;
+            try data.headers.appendNTimes(gpa, .{ .start = @intCast(data.array.items.len), .size = 0 }, delta);
+            last_header = &data.headers.items[data.headers.items.len - 1];
         }
         try data.array.append(gpa, .{
             .nanosecond = @intFromFloat(@round(4 * 1_000_000_000 * (time.fpart))),
@@ -149,7 +151,7 @@ fn saveFiles(io: std.Io, data: Clusters, save_time: ?usize) std.Io.Cancelable!vo
 fn saveCsv(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.Io.Cancelable!void {
     const time = utils.saveTime(
         save_time,
-        if (data.headers.items.len == 0) null else data.headers.items[0].epoch,
+        data.first_epoch,
         save_frequency,
     );
 
@@ -176,7 +178,7 @@ fn saveCsv(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.I
 fn saveBin(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.Io.Cancelable!void {
     const time = utils.saveTime(
         save_time,
-        if (data.headers.items.len == 0) null else data.headers.items[0].epoch,
+        data.first_epoch,
         save_frequency,
     );
 

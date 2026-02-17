@@ -1,12 +1,15 @@
-const Generator = @This();
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Reader = std.Io.Reader;
+
 const lma = @import("lma");
-const float = lma.pipeline.float;
-const zlm = @import("zlm").as(float);
+
 const Args = @import("Args.zig");
+const Float = @import("main.zig").Float;
+
+const Generator = @This();
+
+const zlm = lma.pipeline.zlm(Float);
 
 fn DataInstance(T: type) type {
     return struct {
@@ -28,7 +31,7 @@ const Data = union(Args.Stage) {
                 try generator.array.ensureTotalCapacity(generator.gpa, items.len);
                 for (items) |item| {
                     if (tag != .clusters or !item.cluster.isNoise()) {
-                        generator.array.appendAssumeCapacity(lma.pipeline.transform.surfaceToPlane(item, rotation));
+                        generator.array.appendAssumeCapacity(lma.pipeline.transform.surfaceToPlane(Float, item, rotation));
                     }
                 }
                 generator.epoch = data.iterator.epoch;
@@ -48,7 +51,7 @@ const Data = union(Args.Stage) {
 
     pub fn load(self: *Data, r: *Reader) !void {
         const generator: *Generator = @fieldParentPtr("data", self);
-        const end: ?usize = if (generator.current_file >= generator.files.items.len) generator.end else null;
+        const until: lma.data.segmented.IteratorMode = if (generator.current_file >= generator.files.items.len) .until(generator.end) else .all;
         switch (generator.format.stage) {
             .clusters => {
                 self.* = .{ .clusters = undefined };
@@ -59,16 +62,13 @@ const Data = union(Args.Stage) {
                         try self.clusters.data.fromBin(r);
                     },
                     .csv => {
-                        @panic("TODO");
-                        // try self.clusters.data.fromCsv(r, null, false);
+                        try self.clusters.data.fromCsv(r, null);
                     },
                     .dat => {
-                        @panic("TODO");
-                        // try self.clusters.data.fromCsv(r, null, true);
+                        @panic("Unsupported");
                     },
                 }
-                self.clusters.iterator = self.clusters.data.epochIterator(generator.epoch, .all);
-                self.clusters.iterator.end = end orelse self.clusters.iterator.end;
+                self.clusters.iterator = self.clusters.data.epochIterator(generator.epoch, until);
             },
             .points => {
                 self.* = .{ .points = undefined };
@@ -79,15 +79,13 @@ const Data = union(Args.Stage) {
                         try self.points.data.fromBin(r);
                     },
                     .csv => {
-                        @panic("TODO");
-                        // try self.points.data.fromCsv(r, null);
+                        try self.points.data.fromCsv(r, null);
                     },
                     .dat => {
                         _ = try lma.data.dat_file.parseOutput(&self.points.data, null, r);
                     },
                 }
-                self.points.iterator = self.points.data.epochIterator(generator.epoch, .all);
-                self.points.iterator.end = end orelse self.points.iterator.end;
+                self.points.iterator = self.points.data.epochIterator(generator.epoch, until);
             },
         }
     }

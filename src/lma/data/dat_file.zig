@@ -23,7 +23,7 @@ test toNative {
     const values = [_]u16{ 0x0001, 0x0010, 0x0100, 0x1000 };
     for (values, 0..) |value, idx| {
         std.testing.expect(value == toNative(bytes, idx)) catch |err| {
-            std.log.err("Falied to convert at index {d}. Expected {x}, but got {x}.\n", .{ idx, value, toNative(bytes, idx) });
+            std.log.err("Failed to convert at index {d}. Expected {x}, but got {x}.\n", .{ idx, value, toNative(bytes, idx) });
             return err;
         };
     }
@@ -58,7 +58,7 @@ test peekPreserve {
         .vtable = &DummyReader.vtable,
     };
 
-    // Works when seek is less than preseve target
+    // Works when seek is less than preserve target
     _ = peekPreserve(&r, 7, 3, false) catch unreachable;
     r.toss(3);
     _ = peekPreserve(&r, 7, 5, false) catch unreachable;
@@ -101,7 +101,7 @@ pub const toa = struct {
         try parser.parseAllHeaders(&file_reader.interface, gpa, &dat_headers);
 
         file_reader.seekTo(0) catch unreachable;
-        return parser.parse(&file_reader.interface, gpa, &dat_headers);
+        return parser.parse(&file_reader.interface, gpa, dat_headers.items);
     }
 
     /// Load a Time of Arrival '.dat' file from a reader
@@ -124,7 +124,7 @@ pub const toa = struct {
         try parser.parseAllHeaders(&reader, gpa, &dat_headers);
 
         reader.seek = 0;
-        return parser.parse(&reader, gpa, &dat_headers);
+        return parser.parse(&reader, gpa, dat_headers.items);
     }
 
     pub const Header = struct {
@@ -192,13 +192,13 @@ pub const toa = struct {
                                     r.toss(idx);
                                     break;
                                 } else {
-                                    // Keep u16 alignement and ignore bad match
+                                    // Keep u16 alignment and ignore bad match
                                     const discarded = 2 + (idx & even);
                                     consumed += discarded;
                                     r.toss(discarded);
                                 }
                             } else {
-                                // Keep u16 alignement
+                                // Keep u16 alignment
                                 const discarded = r.bufferedLen() & even;
                                 consumed += discarded;
                                 r.toss(discarded);
@@ -230,7 +230,7 @@ pub const toa = struct {
             };
         }
 
-        /// Proces an entire file saving the header metadata into the data struct
+        /// Process an entire file saving the header metadata into the data struct
         pub fn parseAllHeaders(
             self: Parser,
             r: *Reader,
@@ -260,13 +260,13 @@ pub const toa = struct {
             }
         }
 
-        /// Proces an entire file given the header metadata
+        /// Process an entire file given the header metadata
         /// saving the packet information into the data struct
         pub fn parse(
             self: Parser,
             r: *Reader,
             gpa: Allocator,
-            headers: *const std.ArrayList(Header),
+            headers: []const Header,
         ) error{
             ReadFailed,
             OutOfMemory,
@@ -274,7 +274,7 @@ pub const toa = struct {
         }!data.ToA {
             var parsed: data.ToA = .init(gpa);
             errdefer parsed.deinit();
-            if (headers.items.len == 0) return parsed;
+            if (headers.len == 0) return parsed;
             _ = self.nextPacketHeader(r, 0) catch |err| {
                 switch (err) {
                     error.ReadFailed => |new_error| return new_error,
@@ -293,13 +293,27 @@ pub const toa = struct {
                 }
             };
 
-            try parsed.headers.ensureTotalCapacityPrecise(gpa, headers.items.len);
-            for (headers.items) |header| {
+            parsed.first_epoch = headers[0].epoch;
+            const end_epoch = headers[headers.len - 1].epoch + 1;
+            var epoch: u64 = parsed.first_epoch;
+
+            try parsed.headers.ensureTotalCapacityPrecise(gpa, end_epoch - parsed.first_epoch);
+            for (headers) |header| {
+                if (epoch > header.epoch) {
+                    @branchHint(.cold);
+                    std.debug.print("Warning: Header {d} followed by header {d}. Truncating to latest appreance of the header.\n", .{ epoch - 1, header.epoch });
+                    parsed.headers.items.len = header.epoch - parsed.first_epoch;
+                } else {
+                    parsed.headers.appendNTimesAssumeCapacity(.{
+                        .start = @intCast(header.start),
+                        .size = 0,
+                    }, header.epoch - epoch);
+                }
                 parsed.headers.appendAssumeCapacity(.{
                     .start = @intCast(header.start),
                     .size = @intCast(header.size),
-                    .epoch = @intCast(header.epoch),
                 });
+                epoch = header.epoch + 1;
                 try parsed.array.ensureUnusedCapacity(gpa, header.size);
                 for (0..header.size) |_| {
                     const bytes = r.take(body) catch |err| {
@@ -524,13 +538,13 @@ pub const toa = struct {
     };
 };
 
-pub fn parseOutput(maybe_points: ?*data.Points, maybe_stations: ?*data.Stations, r: *Reader) !?usize {
-    var start_time: ?usize = null;
+pub fn parseOutput(maybe_points: ?*data.Points, maybe_stations: ?*data.Stations, r: *Reader) !void {
+    var start_time: ?u64 = null;
     var header_count: ?usize = null;
     var values_count: ?usize = null;
     var station_count: ?usize = null;
 
-    // Advance to station informtion
+    // Advance to station information
     while (try r.takeDelimiter('\n')) |line| {
         if (std.mem.startsWith(u8, line, "Number of seconds")) {
             header_count = try std.fmt.parseInt(usize, line[28..], 10);
@@ -547,7 +561,7 @@ pub fn parseOutput(maybe_points: ?*data.Points, maybe_stations: ?*data.Stations,
         }
     } else return error.EndOfStream;
 
-    if (maybe_points == null and maybe_stations == null) return start_time;
+    if (maybe_points == null and maybe_stations == null) return;
 
     // Parse station information
     if (maybe_stations) |stations| {
@@ -573,10 +587,10 @@ pub fn parseOutput(maybe_points: ?*data.Points, maybe_stations: ?*data.Stations,
                         current_station.longitude = try std.fmt.parseFloat(f64, token);
                     },
                     5 => {
-                        current_station.altitude = try std.fmt.parseFloat(f64, token);
+                        current_station.altitude = try std.fmt.parseFloat(f32, token);
                     },
                     6 => {
-                        current_station.delay = try std.fmt.parseFloat(f64, token);
+                        current_station.delay = 4 * try std.fmt.parseInt(i32, token, 10);
                     },
                     7, 8 => break,
                     else => unreachable,
@@ -603,14 +617,14 @@ pub fn parseOutput(maybe_points: ?*data.Points, maybe_stations: ?*data.Stations,
 
         if (values_count == 0) break :blk;
 
-        try parsePoints(points, header_count.? + 1, values_count.?, r);
+        try parsePoints(points, start_time, header_count.? + 1, values_count.?, r);
     }
 
-    // No else branch necessaryto synchronize the readers as all code paths end here
-    return start_time;
+    // No else branch necessary to synchronize the readers as all code paths end here
+    return;
 }
 
-pub fn parsePoints(points: *data.Points, headers: usize, entries: usize, r: *Reader) !void {
+pub fn parsePoints(points: *data.Points, start_epoch: ?u64, headers: usize, entries: usize, r: *Reader) !void {
     if (headers == 0 or entries == 0) return;
 
     // Parse data section
@@ -621,10 +635,14 @@ pub fn parsePoints(points: *data.Points, headers: usize, entries: usize, r: *Rea
 
     var last_epoch: [5]u8 = undefined;
     @memcpy(&last_epoch, peek_line[0..5]);
+    points.first_epoch = try parseEpoch(&last_epoch);
+    if (start_epoch != null and start_epoch.? < points.first_epoch) {
+        points.first_epoch = start_epoch.?;
+        _ = std.fmt.printInt(&last_epoch, start_epoch.?, 10, .lower, .{ .alignment = .right, .width = 5, .fill = ' ' });
+    }
     points.headers.appendAssumeCapacity(.{
         .start = 0,
         .size = 0,
-        .epoch = @intCast(try parseEpoch(&last_epoch)),
     });
     var last_header = &points.headers.items[0];
     defer last_header.size = @intCast(points.array.items.len - last_header.start);
@@ -632,48 +650,36 @@ pub fn parsePoints(points: *data.Points, headers: usize, entries: usize, r: *Rea
     while (try r.takeDelimiter('\n')) |line| {
         if (!std.mem.eql(u8, &last_epoch, line[0..5])) {
             @memcpy(&last_epoch, line[0..5]);
-            last_header.size = @intCast(points.array.items.len - last_header.start);
-            last_header = points.headers.addOneAssumeCapacity();
-            last_header.* = .{
-                .start = @intCast(points.array.items.len),
-                .size = 0,
-                .epoch = @intCast(try parseEpoch(&last_epoch)),
-            };
+            const array_size: u32 = @intCast(points.array.items.len);
+            last_header.size = array_size - last_header.start;
+            const current_epoch = points.first_epoch + points.headers.items.len - 1;
+            const target_epoch = try parseEpoch(&last_epoch);
+            if (target_epoch < points.first_epoch + points.headers.items.len) {
+                @branchHint(.cold);
+                return error.BrokenFile;
+            }
+            points.headers.appendNTimesAssumeCapacity(.{ .start = array_size, .size = 0 }, target_epoch - current_epoch);
+            last_header = &points.headers.items[points.headers.items.len - 1];
         }
         const current_value = points.array.addOneAssumeCapacity();
 
-        var iterator = std.mem.tokenizeScalar(u8, line, ' ');
-        var column: usize = 0;
-        while (iterator.next()) |token| {
-            if (token.len == 0) continue;
-            switch (column) {
-                0 => {
-                    current_value.nanosecond = 4 * try std.fmt.parseInt(u32, token[token.len - 9 ..], 10);
-                },
-                1 => {
-                    current_value.latitude = try std.fmt.parseFloat(f32, token);
-                },
-                2 => {
-                    current_value.longitude = try std.fmt.parseFloat(f32, token);
-                },
-                3 => {
-                    current_value.altitude = try std.fmt.parseFloat(f32, token);
-                },
-                4 => {
-                    current_value.measure_error = try std.fmt.parseFloat(f16, token);
-                },
-                5 => {
-                    current_value.dBm = try std.fmt.parseFloat(f16, token);
-                },
-                6 => {
-                    current_value.station_mask = try std.fmt.parseInt(u32, token[2..], 16);
-                },
-                else => unreachable,
-            }
-            column += 1;
-        }
-        std.debug.assert(column == 7);
-    }
+        var it = std.mem.tokenizeScalar(u8, line, ' ');
+        var token: []const u8 = it.next() orelse break;
+        current_value.nanosecond = 4 * try std.fmt.parseInt(u32, token[token.len - 9 ..], 10);
+        token = it.next() orelse break;
+        current_value.latitude = try std.fmt.parseFloat(f32, token);
+        token = it.next() orelse break;
+        current_value.longitude = try std.fmt.parseFloat(f32, token);
+        token = it.next() orelse break;
+        current_value.altitude = try std.fmt.parseFloat(f32, token);
+        token = it.next() orelse break;
+        current_value.measure_error = try std.fmt.parseFloat(f16, token);
+        token = it.next() orelse break;
+        current_value.dBm = try std.fmt.parseFloat(f16, token);
+        token = it.next() orelse break;
+        current_value.station_mask = try std.fmt.parseInt(u32, token[2..], 16);
+    } else return;
+    return error.BrokenFile;
 }
 
 comptime {

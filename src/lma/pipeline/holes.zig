@@ -1,15 +1,16 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lma = @import("../lma.zig");
-const pipe = lma.pipeline;
-const float = pipe.float;
-const grid = pipe.grid;
+const zlm = lma.pipeline.zlm;
+const grid = lma.pipeline.grid;
 const common = lma.common;
 
-const SortContext = struct {
-    values: []const float,
+pub const Float = f32;
 
-    pub fn init(values: []const float) SortContext {
+const SortContext = struct {
+    values: []const Float,
+
+    pub fn init(values: []const Float) SortContext {
         return .{ .values = values };
     }
 
@@ -74,7 +75,7 @@ pub const Seed = struct {
     }
 };
 
-pub fn findSeeds(gpa: Allocator, shape: grid.Shape, values: []const float, seeds: *std.ArrayList(usize)) error{OutOfMemory}!void {
+pub fn findSeeds(gpa: Allocator, shape: grid.Shape, values: []const Float, seeds: *std.ArrayList(usize)) error{OutOfMemory}!void {
     seeds.items.len = 0;
     const offsets: [4]isize = .{
         shape.offset(.left),
@@ -148,14 +149,14 @@ pub fn makeOrderBuffer(gpa: Allocator, shape: grid.Shape) error{OutOfMemory}![]u
     return buffer;
 }
 
-pub fn sort(values: []const float, order: []usize) void {
+pub fn sort(values: []const Float, order: []usize) void {
     std.sort.block(usize, order, SortContext.init(values), SortContext.lessThan);
 }
 
 pub const Spill = struct {
     pub const Conditions = struct {
-        relative: float = 1,
-        absolute: float = 0,
+        relative: Float = 1,
+        absolute: Float = 0,
     };
 
     gpa: Allocator,
@@ -164,7 +165,7 @@ pub const Spill = struct {
     conditions: Conditions,
 
     spill_height: Cluster,
-    floors: []float,
+    floors: []Float,
     mapping: []Cluster,
     guess_size: ?u16,
 
@@ -180,22 +181,22 @@ pub const Spill = struct {
         };
     }
 
-    fn canSpill(self: *Spill, cluster: Cluster, value: float) bool {
+    fn canSpill(self: *Spill, cluster: Cluster, value: Float) bool {
         if (self.spill_height.int() >= cluster.int()) return false;
         const floor = self.floors[cluster.int()];
-        const spills = value < @mulAdd(float, floor, self.conditions.relative, self.conditions.absolute);
+        const spills = value < @mulAdd(Float, floor, self.conditions.relative, self.conditions.absolute);
         self.spill_height = if (spills) self.spill_height else cluster;
         return spills;
     }
 
-    fn initStep(self: *Spill, seeds: *const Seed, values: []const float, map: []Cluster) error{OutOfMemory}!void {
+    fn initStep(self: *Spill, seeds: *const Seed, values: []const Float, map: []Cluster) error{OutOfMemory}!void {
         self.spill_height = .none;
         self.mapping = try self.gpa.alloc(Cluster, seeds.size);
         errdefer self.gpa.free(self.mapping);
         for (self.mapping, 0..) |*to, value| {
             to.* = .any(@intCast(value));
         }
-        self.floors = try self.gpa.alloc(float, seeds.size);
+        self.floors = try self.gpa.alloc(Float, seeds.size);
         errdefer self.gpa.free(self.floors);
         var idx = seeds.index.len;
         while (idx > 0) {
@@ -232,7 +233,7 @@ pub const Spill = struct {
         return lowest.int();
     }
 
-    pub fn assign(self: *Spill, seeds: *const Seed, order: []const usize, values: []const float, map: []Cluster) error{ OutOfMemory, Overflow }!u16 {
+    pub fn assign(self: *Spill, seeds: *const Seed, order: []const usize, values: []const Float, map: []Cluster) error{ OutOfMemory, Overflow }!u16 {
         @memset(map, .none);
         const offsets: [4]isize = .{
             self.shape.offset(.left),
@@ -281,155 +282,108 @@ pub const Spill = struct {
 pub const Info = struct {
     definition: [16]u16 = @splat(0),
     row_col: struct { u16, u16 },
-    lowest: float,
-    range_start: float,
-    range_end: float,
-    score: float,
+    lowest: Float,
+    range_start: Float,
+    range_end: Float,
+    score: Float,
     area: u32,
     contour: u16,
     cluster: Cluster,
     escapes: bool,
-};
 
-pub const ranges = struct {
-    pub const Scaled = struct {
-        min: float,
-        low: float,
-        high: float,
+    pub const ranges = struct {
+        pub const Scaled = struct {
+            min: Float,
+            low: Float,
+            high: Float,
 
-        pub fn start(self: Scaled, floor: float) float {
-            return (self.min + floor) * self.low;
-        }
+            pub fn start(self: Scaled, floor: Float) Float {
+                return (self.min + floor) * self.low;
+            }
 
-        pub fn end(self: Scaled, floor: float) float {
-            return (self.min + floor) * self.high;
-        }
-    };
-};
-
-pub fn generateInfo(shape: grid.Shape, range: anytype, seeds: []const usize, info: []Info, values: []const float, map: []const Cluster) void {
-    const offsets: [4]isize = .{
-        shape.offset(.left),
-        shape.offset(.top),
-        shape.offset(.right),
-        shape.offset(.bottom),
-    };
-    for (info, 0..) |*cluster, idx| {
-        cluster.* = .{
-            .cluster = .any(@intCast(idx)),
-            .row_col = undefined,
-            .lowest = std.math.inf(float),
-            .range_start = undefined,
-            .range_end = undefined,
-            .score = 0,
-            .area = 0,
-            .contour = 0,
-            .escapes = false,
+            pub fn end(self: Scaled, floor: Float) Float {
+                return (self.min + floor) * self.high;
+            }
         };
-    }
-    for (seeds) |seed| {
-        const cluster = &info[map[seed].int()];
-        if (values[seed] < cluster.lowest) {
-            cluster.lowest = values[seed];
-            cluster.range_start = range.start(cluster.lowest);
-            cluster.range_end = range.end(cluster.lowest);
-            const row, const col = shape.unravel(seed);
-            cluster.row_col = .{ @intCast(row), @intCast(col) };
+    };
+
+    pub fn generateInfo(shape: grid.Shape, range: anytype, seeds: []const usize, info: []Info, values: []const Float, map: []const Cluster) void {
+        const offsets: [4]isize = .{
+            shape.offset(.left),
+            shape.offset(.top),
+            shape.offset(.right),
+            shape.offset(.bottom),
+        };
+        for (info, 0..) |*cluster, idx| {
+            cluster.* = .{
+                .cluster = .any(@intCast(idx)),
+                .row_col = undefined,
+                .lowest = std.math.inf(Float),
+                .range_start = undefined,
+                .range_end = undefined,
+                .score = 0,
+                .area = 0,
+                .contour = 0,
+                .escapes = false,
+            };
         }
-    }
-    for (1..shape.rows - 1) |row| {
-        for (1..shape.columns - 1) |col| {
-            const idx = shape.ravel(row, col);
-            if (map[idx] == .none) {
-                @branchHint(.unpredictable);
-                for (offsets) |offset| {
-                    const cluster = &info[map[common.offset(usize, idx, offset) catch unreachable].int()];
-                    if (cluster.cluster == .none) continue;
-                    cluster.contour += 1;
-                    if (values[idx] >= cluster.range_end) continue;
-                    const base, const scale = .{ cluster.range_start, 16.0 / (cluster.range_end - cluster.range_start) };
-                    const jdx = common.cast(usize, std.math.clamp(
-                        @floor((values[idx] - base) * scale),
-                        0.0,
-                        16.0,
-                    ));
-                    cluster.definition[jdx] += 1;
+        for (seeds) |seed| {
+            const cluster = &info[map[seed].int()];
+            if (values[seed] < cluster.lowest) {
+                cluster.lowest = values[seed];
+                cluster.range_start = range.start(cluster.lowest);
+                cluster.range_end = range.end(cluster.lowest);
+                const row, const col = shape.unravel(seed);
+                cluster.row_col = .{ @intCast(row), @intCast(col) };
+            }
+        }
+        for (1..shape.rows - 1) |row| {
+            for (1..shape.columns - 1) |col| {
+                const idx = shape.ravel(row, col);
+                if (map[idx] == .none) {
+                    @branchHint(.unpredictable);
+                    for (offsets) |offset| {
+                        const cluster = &info[map[common.offset(usize, idx, offset) catch unreachable].int()];
+                        if (cluster.cluster == .none) continue;
+                        cluster.contour += 1;
+                        if (values[idx] >= cluster.range_end) continue;
+                        const base, const scale = .{ cluster.range_start, 16.0 / (cluster.range_end - cluster.range_start) };
+                        const jdx = common.cast(usize, std.math.clamp(
+                            @floor((values[idx] - base) * scale),
+                            0.0,
+                            16.0,
+                        ));
+                        cluster.definition[jdx] += 1;
+                    }
+                } else {
+                    @branchHint(.likely);
+                    const cluster = &info[map[idx].int()];
+                    cluster.area += 1;
                 }
-            } else {
-                @branchHint(.likely);
-                const cluster = &info[map[idx].int()];
-                cluster.area += 1;
+            }
+        }
+        for (1..shape.rows - 1) |row| {
+            for ([2]usize{ 1, shape.columns - 2 }) |col| {
+                const cluster = &info[map[shape.ravel(row, col)].int()];
+                cluster.contour += 1;
+                cluster.definition[0] += 1;
+                cluster.escapes = true;
+            }
+        }
+        for (1..shape.columns - 1) |col| {
+            for ([2]usize{ 1, shape.rows - 2 }) |row| {
+                const cluster = &info[map[shape.ravel(row, col)].int()];
+                cluster.contour += 1;
+                cluster.definition[0] += 1;
+                cluster.escapes = true;
+            }
+        }
+        for (info) |*cluster| {
+            var cum: u16 = 0;
+            for (&cluster.definition) |*def| {
+                cum += def.*;
+                def.* = cum;
             }
         }
     }
-    for (1..shape.rows - 1) |row| {
-        for ([2]usize{ 1, shape.columns - 2 }) |col| {
-            const cluster = &info[map[shape.ravel(row, col)].int()];
-            cluster.contour += 1;
-            cluster.definition[0] += 1;
-            cluster.escapes = true;
-        }
-    }
-    for (1..shape.columns - 1) |col| {
-        for ([2]usize{ 1, shape.rows - 2 }) |row| {
-            const cluster = &info[map[shape.ravel(row, col)].int()];
-            cluster.contour += 1;
-            cluster.definition[0] += 1;
-            cluster.escapes = true;
-        }
-    }
-    for (info) |*cluster| {
-        var cum: u16 = 0;
-        for (&cluster.definition) |*def| {
-            cum += def.*;
-            def.* = cum;
-        }
-    }
-}
-
-pub const ArrayInfo = std.MultiArrayList(Info);
-
-// pub fn closedShapes(comptime shape: grid.Shape, values: *const shape.ComptimeGrid(float), mask: *shape.ComptimeGrid(bool), config: Config) void {
-//     mask.* = @splat(@splat(true));
-//     for (0..shape.rows) |row| {
-//         mask[row][0] = false;
-//         mask[row][shape.columns - 1] = false;
-//     }
-//     for (0..shape.columns) |col| {
-//         mask[0][col] = false;
-//         mask[shape.rows - 1][col] = false;
-//     }
-//     var changed = true;
-//     var any = false;
-//     while (changed) {
-//         changed = false;
-//         any = false;
-//         for (1..shape.rows - 1) |row| {
-//             for (1..shape.columns - 1) |col| {
-//                 const value = values[row][col];
-//                 const is_hole = mask[row][col];
-//                 if (!is_hole) continue;
-//                 const is_outside = blk: {
-//                     const left = col - 1;
-//                     const top = row - 1;
-//                     const row_offsets: [4]usize = .{ 0, 1, 2, 1 };
-//                     const col_offsets: [4]usize = .{ 1, 0, 1, 2 };
-//                     for (row_offsets, col_offsets) |row_offset, col_offset| {
-//                         if (mask[top + row_offset][left + col_offset]) continue;
-//                         if (
-//                         // zig fmt: off
-//                             value <= config.min or
-//                             values[top + row_offset][left + col_offset] <= value + config.decrease or
-//                             config.max < value
-//                         // zig fmt: on
-//                         ) break :blk true;
-//                     }
-//                     break :blk false;
-//                 };
-//                 mask[row][col] = !is_outside;
-//                 changed = changed or is_outside;
-//                 any = any or !is_outside;
-//             }
-//         }
-//     }
-// }
+};

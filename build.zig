@@ -170,8 +170,14 @@ fn matchExe(b: *std.Build, options: std.Build.Module.CreateOptions) void {
         .name = "match",
         .root_module = b.createModule(options),
     });
+    b.installArtifact(match);
     const run_match = b.addRunArtifact(match);
-    run_match.addArgs(&.{});
+    run_match.addArgs(&.{
+        "-w=constant",
+        "-s=data/ToA/stations/stations.bin",
+        "-i=data/ToA/250712/bin/*_*_*_250712_120000.bin",
+        "-o=data/points/250712/csv/corr-12h-00min-00s.csv",
+    });
     const match_step = b.step("demo-match", "Run the demo for matching");
     match_step.dependOn(&run_match.step);
 }

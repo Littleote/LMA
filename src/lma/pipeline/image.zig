@@ -1,5 +1,5 @@
 const std = @import("std");
-const Shape = @import("grid.zig").Shape;
+const Grid = @import("Grid.zig");
 
 pub const Color = packed struct(u24) {
     blue: u8,
@@ -94,12 +94,12 @@ pub const palettes = struct {
 };
 
 const start_offset = 14 + 12 + 256 * 3;
-fn padding(shape: Shape) usize {
+fn padding(shape: Grid) usize {
     return 3 - @mod(shape.columns - 1, 4);
 }
 
 pub fn bytesToBMP(
-    shape: Shape,
+    shape: Grid,
     values: []const u8,
     palette: *const [256]Color,
     w: *std.Io.Writer,
@@ -118,7 +118,7 @@ pub fn bytesToBMP(
 
 pub fn intToBMP(
     Int: type,
-    shape: Shape,
+    shape: Grid,
     values: []const Int,
     palette: *const [256]Color,
     w: *std.Io.Writer,
@@ -139,7 +139,7 @@ pub fn intToBMP(
 
 pub fn floatToBMP(
     Float: type,
-    shape: Shape,
+    shape: Grid,
     values: []const Float,
     palette: *const [256]Color,
     w: *std.Io.Writer,
@@ -159,7 +159,7 @@ pub fn floatToBMP(
 }
 
 pub fn writeBMPHeader(
-    shape: Shape,
+    shape: Grid,
     palette: *const [256]Color,
     w: *std.Io.Writer,
 ) !void {
@@ -196,7 +196,7 @@ test bytesToBMP {
     var buffer: [1024]u8 = undefined;
     var file_writer = file.writer(std.testing.io, &buffer);
 
-    const shape: Shape = .init(255, 255);
+    const shape: Grid = .init(255, 255);
     const values = try gpa.alloc(u8, shape.size);
     defer gpa.free(values);
 

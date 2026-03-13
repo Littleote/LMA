@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const lma = @import("lma.zig");
-pub const grid = @import("pipeline/grid.zig");
+pub const Grid = @import("pipeline/Grid.zig");
 pub const holes = @import("pipeline/holes.zig");
 pub const image = @import("pipeline/image.zig");
 pub const match = @import("pipeline/match.zig");

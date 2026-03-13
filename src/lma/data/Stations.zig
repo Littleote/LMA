@@ -1,11 +1,12 @@
-const Data = @This();
-
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
-const dat_file = @import("dat_file.zig");
+
 const lma = @import("../lma.zig");
+const dat_file = @import("dat_file.zig");
+
+const Data = @This();
 
 stations: std.ArrayList(Info),
 allocator: Allocator,
@@ -40,7 +41,7 @@ pub fn toCsv(self: *const Data, w: *Writer, delimiter: ?u8) Writer.Error!void {
             station.latitude,
             station.longitude,
             station.altitude,
-            std.time.ns_per_s * lma.constants.nano.fromNano(f32, station.delay),
+            std.time.ns_per_s * lma.nano.fromNano(f32, station.delay),
         });
     }
     try w.flush();
@@ -137,7 +138,7 @@ test "bin format round trip" {
 }
 
 pub fn fromDat(self: *Data, r: *Reader) !void {
-    _ = try dat_file.parseOutput(null, self, r);
+    _ = try dat_file.output.parse(r, null, self);
 }
 
 pub const Info = struct {

@@ -1,9 +1,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+
 const lma = @import("../lma.zig");
 const zlm = lma.pipeline.zlm;
-const grid = lma.pipeline.grid;
-const common = lma.common;
+const Grid = lma.pipeline.Grid;
+const cast = lma.cast;
+const indexing = lma.indexing;
 
 pub const Float = f32;
 
@@ -75,7 +77,7 @@ pub const Seed = struct {
     }
 };
 
-pub fn findSeeds(gpa: Allocator, shape: grid.Shape, values: []const Float, seeds: *std.ArrayList(usize)) error{OutOfMemory}!void {
+pub fn findSeeds(gpa: Allocator, shape: Grid, values: []const Float, seeds: *std.ArrayList(usize)) error{OutOfMemory}!void {
     seeds.items.len = 0;
     const offsets: [4]isize = .{
         shape.offset(.left),
@@ -87,8 +89,8 @@ pub fn findSeeds(gpa: Allocator, shape: grid.Shape, values: []const Float, seeds
         const idx = shape.ravel(1, 1);
         const value = values[idx];
         var is_min = true;
-        is_min = is_min and value <= values[common.offset(usize, idx, offsets[2]) catch unreachable];
-        is_min = is_min and value <= values[common.offset(usize, idx, offsets[3]) catch unreachable];
+        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2]) catch unreachable];
+        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3]) catch unreachable];
         if (is_min) {
             try seeds.append(gpa, idx);
         }
@@ -97,9 +99,9 @@ pub fn findSeeds(gpa: Allocator, shape: grid.Shape, values: []const Float, seeds
         const idx = shape.ravel(row, 1);
         const value = values[idx];
         var is_min = true;
-        is_min = is_min and value < values[common.offset(usize, idx, offsets[1]) catch unreachable];
-        is_min = is_min and value <= values[common.offset(usize, idx, offsets[2]) catch unreachable];
-        is_min = is_min and value <= values[common.offset(usize, idx, offsets[3]) catch unreachable];
+        is_min = is_min and value < values[indexing.offset(usize, idx, offsets[1]) catch unreachable];
+        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2]) catch unreachable];
+        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3]) catch unreachable];
         if (is_min) {
             try seeds.append(gpa, idx);
         }
@@ -108,9 +110,9 @@ pub fn findSeeds(gpa: Allocator, shape: grid.Shape, values: []const Float, seeds
         const idx = shape.ravel(1, col);
         const value = values[idx];
         var is_min = true;
-        is_min = is_min and value < values[common.offset(usize, idx, offsets[0]) catch unreachable];
-        is_min = is_min and value <= values[common.offset(usize, idx, offsets[2]) catch unreachable];
-        is_min = is_min and value <= values[common.offset(usize, idx, offsets[3]) catch unreachable];
+        is_min = is_min and value < values[indexing.offset(usize, idx, offsets[0]) catch unreachable];
+        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2]) catch unreachable];
+        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3]) catch unreachable];
         if (is_min) {
             try seeds.append(gpa, idx);
         }
@@ -120,10 +122,10 @@ pub fn findSeeds(gpa: Allocator, shape: grid.Shape, values: []const Float, seeds
             const idx = shape.ravel(row, col);
             const value = values[idx];
             var is_min = true;
-            is_min = is_min and value < values[common.offset(usize, idx, offsets[0]) catch unreachable];
-            is_min = is_min and value < values[common.offset(usize, idx, offsets[1]) catch unreachable];
-            is_min = is_min and value <= values[common.offset(usize, idx, offsets[2]) catch unreachable];
-            is_min = is_min and value <= values[common.offset(usize, idx, offsets[3]) catch unreachable];
+            is_min = is_min and value < values[indexing.offset(usize, idx, offsets[0]) catch unreachable];
+            is_min = is_min and value < values[indexing.offset(usize, idx, offsets[1]) catch unreachable];
+            is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2]) catch unreachable];
+            is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3]) catch unreachable];
             if (is_min) {
                 try seeds.append(gpa, idx);
             }
@@ -133,8 +135,8 @@ pub fn findSeeds(gpa: Allocator, shape: grid.Shape, values: []const Float, seeds
     sort(values, seeds.items);
 }
 
-pub fn makeOrderBuffer(gpa: Allocator, shape: grid.Shape) error{OutOfMemory}![]usize {
-    const inner_shape: grid.Shape = .init(shape.rows - 2, shape.columns - 2);
+pub fn makeOrderBuffer(gpa: Allocator, shape: Grid) error{OutOfMemory}![]usize {
+    const inner_shape: Grid = .init(shape.rows - 2, shape.columns - 2);
     const buffer = try gpa.alloc(usize, inner_shape.size);
     errdefer buffer;
 
@@ -160,7 +162,7 @@ pub const Spill = struct {
     };
 
     gpa: Allocator,
-    shape: grid.Shape,
+    shape: Grid,
 
     conditions: Conditions,
 
@@ -169,7 +171,7 @@ pub const Spill = struct {
     mapping: []Cluster,
     guess_size: ?u16,
 
-    pub fn init(gpa: Allocator, shape: grid.Shape, conditions: Conditions) Spill {
+    pub fn init(gpa: Allocator, shape: Grid, conditions: Conditions) Spill {
         return .{
             .gpa = gpa,
             .shape = shape,
@@ -249,7 +251,7 @@ pub const Spill = struct {
         for (order) |idx| {
             defer options.items.len = 0;
             for (offsets) |offset|
-                self.mapping[map[common.offset(usize, idx, offset) catch unreachable].int()].addToSet(&options);
+                self.mapping[map[indexing.offset(usize, idx, offset) catch unreachable].int()].addToSet(&options);
             if (options.items.len == 1) {
                 @branchHint(.likely);
                 map[idx] = options.items[0];
@@ -307,7 +309,7 @@ pub const Info = struct {
         };
     };
 
-    pub fn generateInfo(shape: grid.Shape, range: anytype, seeds: []const usize, info: []Info, values: []const Float, map: []const Cluster) void {
+    pub fn generateInfo(shape: Grid, range: anytype, seeds: []const usize, info: []Info, values: []const Float, map: []const Cluster) void {
         const offsets: [4]isize = .{
             shape.offset(.left),
             shape.offset(.top),
@@ -343,12 +345,12 @@ pub const Info = struct {
                 if (map[idx] == .none) {
                     @branchHint(.unpredictable);
                     for (offsets) |offset| {
-                        const cluster = &info[map[common.offset(usize, idx, offset) catch unreachable].int()];
+                        const cluster = &info[map[indexing.offset(usize, idx, offset) catch unreachable].int()];
                         if (cluster.cluster == .none) continue;
                         cluster.contour += 1;
                         if (values[idx] >= cluster.range_end) continue;
                         const base, const scale = .{ cluster.range_start, 16.0 / (cluster.range_end - cluster.range_start) };
-                        const jdx = common.cast(usize, std.math.clamp(
+                        const jdx = cast.to(usize, std.math.clamp(
                             @floor((values[idx] - base) * scale),
                             0.0,
                             16.0,

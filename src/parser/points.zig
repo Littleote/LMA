@@ -51,27 +51,27 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
             var file_reader = file.reader(io, &buffer);
             loaded = true;
             time = blk: {
-                data.dat_file.parseOutput(
+                data.dat_file.output.parse(
+                    &file_reader.interface,
                     &points,
                     if (load_stations) &stations else null,
-                    &file_reader.interface,
                 ) catch {
                     loaded = false;
                     const upper_bound = @divTrunc(try file_reader.getSize(), 70);
                     points.deinit();
                     points = .init(gpa);
                     file_reader.seekTo(0) catch unreachable;
-                    data.dat_file.parsePoints(
+                    data.dat_file.output.parsePoints(
+                        &file_reader.interface,
                         &points,
                         null,
                         @min(86400, upper_bound),
                         upper_bound,
-                        &file_reader.interface,
                     ) catch continue;
-                    if (!points.empty()) break :blk points.first_epoch;
+                    if (!points.empty()) break :blk points.start_epoch;
                     break :blk null;
                 };
-                break :blk points.first_epoch;
+                break :blk points.start_epoch;
             };
             if (time == null) continue;
         }

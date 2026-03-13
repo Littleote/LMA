@@ -4,10 +4,10 @@ const Io = std.Io;
 const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 const builtin = @import("builtin");
-const lma = @import("../lma.zig");
-const common = lma.common;
 
-pub const Header = common.SubSlice;
+const lma = @import("../lma.zig");
+const cast = lma.cast;
+pub const Header = lma.SubSlice;
 
 pub const Config = struct {
     version: usize,
@@ -18,6 +18,11 @@ pub const Search = enum {
     at_least,
     exact,
     at_most,
+};
+
+pub const Shift = struct {
+    forward: u32 = 0,
+    backward: u32 = 0,
 };
 
 pub const IteratorMode = union(enum) {
@@ -35,7 +40,8 @@ pub fn Segmented(Elem: type) type {
     return struct {
         const Self = @This();
 
-        first_epoch: u64 = 0,
+        /// Epoch corresponding to the first header
+        start_epoch: u64 = 0,
         headers: std.ArrayList(Header) = .empty,
         array: std.ArrayList(Elem) = .empty,
         allocator: Allocator,
@@ -53,52 +59,70 @@ pub fn Segmented(Elem: type) type {
             return self.headers.items.len == 0 or self.array.items.len == 0;
         }
 
+        /// Epoch corresponding to one past the last header
+        pub fn end_epoch(self: *const Self) u64 {
+            return self.start_epoch + self.headers.items.len;
+        }
+
         pub const ParseError = (Reader.DelimiterError || Allocator.Error || error{ InvalidHeader, InvalidValue, UnsupportedVersion });
 
         /// Write segments to custom binary format
         pub fn toBin(self: *const Self, w: *Writer) Writer.Error!void {
             // File Header
-            try w.print("LMA-{s}-{d:0>3}\n", .{ Elem.bin_tag, Elem.bin_version });
-            try w.writeInt(u64, self.first_epoch, .little);
+            try w.print("LMA-{s}-{d:0>3}\n", .{ Elem.bin.tag, Elem.bin.version });
+            try w.writeInt(u64, self.start_epoch, .little);
             try w.writeInt(u32, @intCast(self.headers.items.len), .little);
             try w.writeInt(u32, @intCast(self.array.items.len), .little);
+
+            var start: u32 = 0;
             for (self.headers.items) |header| {
-                try w.writeStruct(header, .little);
-                try w.writeSliceEndian(Elem, self.array.items[header.start..][0..header.size], .little);
+                const saved_header: Header = .{ .start = start, .size = header.size };
+                try w.writeStruct(saved_header, .little);
+                try w.writeSliceEndian(Elem, header.getConst(Elem, self.array.items), .little);
+                start += header.size;
             }
             try w.flush();
         }
 
+        fn fromBinHeader(r: *Reader) Self.ParseError!u8 {
+            const header_len = comptime 3 + 1 + Elem.bin.tag.len + 1 + 3 + 1;
+            const header = try r.take(header_len);
+            var header_match: bool = true;
+            header_match &= std.mem.eql(u8, header[0..4], "LMA-");
+            header_match &= std.mem.eql(u8, header[4..][0..Elem.bin.tag.len], Elem.bin.tag);
+            header_match &= header[4 + Elem.bin.tag.len] == '-';
+            const version_string = header[5 + Elem.bin.tag.len ..][0..3];
+            header_match &= header[header.len - 1] == '\n';
+            if (!header_match) return error.InvalidHeader;
+            return std.fmt.parseInt(u8, version_string, 10) catch return error.InvalidHeader;
+        }
+
         /// Read segments from custom binary format
         pub fn fromBin(self: *Self, r: *Reader) Self.ParseError!void {
-            const version: u8 = blk: {
-                const header_len = comptime 3 + 1 + Elem.bin_tag.len + 1 + 3 + 1;
-                const header = try r.take(header_len);
-                var header_match: bool = true;
-                header_match &= std.mem.eql(u8, header[0..4], "LMA-");
-                header_match &= std.mem.eql(u8, header[4..][0..Elem.bin_tag.len], Elem.bin_tag);
-                header_match &= header[4 + Elem.bin_tag.len] == '-';
-                const version_string = header[5 + Elem.bin_tag.len ..][0..3];
-                header_match &= header[header.len - 1] == '\n';
-                if (!header_match) return error.InvalidHeader;
-                break :blk std.fmt.parseInt(u8, version_string, 10) catch return error.InvalidHeader;
-            };
-            switch (version) {
-                1 => {
-                    self.first_epoch = try r.takeInt(u64, .little);
-                    const headers = try r.takeInt(u32, .little);
-                    const elements = try r.takeInt(u32, .little);
-                    try self.headers.ensureTotalCapacityPrecise(self.allocator, headers);
-                    errdefer self.headers.deinit(self.allocator);
-                    self.headers.items.len = headers;
-                    try self.array.ensureTotalCapacityPrecise(self.allocator, elements);
-                    errdefer self.array.deinit(self.allocator);
-                    self.array.items.len = elements;
+            const version: u8 = try Self.fromBinHeader(r);
 
-                    for (0..headers) |idx| {
-                        self.headers.items[idx] = try r.takeStruct(Header, .little);
-                        const header = self.headers.items[idx];
-                        try r.readSliceEndian(Elem, self.array.items[header.start..][0..header.size], .little);
+            self.start_epoch = try r.takeInt(u64, .little);
+            const headers = try r.takeInt(u32, .little);
+            const elements = try r.takeInt(u32, .little);
+            try self.headers.ensureTotalCapacityPrecise(self.allocator, headers);
+            errdefer self.headers.deinit(self.allocator);
+            try self.array.ensureTotalCapacityPrecise(self.allocator, elements);
+            errdefer self.array.deinit(self.allocator);
+            switch (version) {
+                inline 0...Elem.bin.version => |comptime_version| {
+                    for (0..headers) |_| {
+                        self.headers.appendAssumeCapacity(try r.takeStruct(Header, .little));
+                        const header = self.headers.getLast();
+                        const slice = self.array.addManyAsSliceAssumeCapacity(header.size);
+                        if (comptime_version == Elem.bin.version)
+                            try r.readSliceEndian(Elem, slice, .little)
+                        else {
+                            for (slice) |*element| {
+                                const Layout = Elem.bin.Layout[comptime_version];
+                                const layout: Layout = try r.takeStruct(Layout, .little);
+                                element.* = Elem.bin.update(comptime_version, layout);
+                            }
+                        }
                     }
                 },
                 else => return error.UnsupportedVersion,
@@ -108,12 +132,13 @@ pub fn Segmented(Elem: type) type {
         /// Write segmented data to a CSV file
         /// When delimiter is null, use a comma (`,`)
         pub fn toCsv(self: *const Self, w: *Writer, delimiter: ?u8) Writer.Error!void {
+            if (!@hasDecl(Elem, "csv")) @compileError("Type " ++ @typeName(Elem) ++ " doesn't support writting/reading to CSV.");
             const del = delimiter orelse ',';
-            for (Elem.csv_columns, 1..) |column, idx| {
+            for (Elem.csv.columns, 1..) |column, idx| {
                 try w.writeAll(column);
-                try w.writeByte(if (idx == Elem.csv_columns.len) '\n' else del);
+                try w.writeByte(if (idx == Elem.csv.columns.len) '\n' else del);
             }
-            for (self.headers.items, self.first_epoch..) |header, epoch| {
+            for (self.headers.items, self.start_epoch..) |header, epoch| {
                 for (self.array.items[header.start..][0..header.size]) |value| {
                     try value.toCsv(w, epoch, del);
                 }
@@ -124,13 +149,14 @@ pub fn Segmented(Elem: type) type {
         /// Read data from CSV file as segments
         /// When delimiter is null, the most common delimiters are tested
         pub fn fromCsv(self: *Self, r: *Reader, delimiter: ?u8) Self.ParseError!void {
+            if (!@hasDecl(Elem, "csv")) @compileError("Type " ++ @typeName(Elem) ++ " doesn't support writting/reading to CSV.");
             // Read CSV header
             const csv_header = try r.takeDelimiter('\n') orelse return error.InvalidHeader;
             const del = delimiter orelse blk: {
                 const common_delimiters = [_]u8{ ',', ';', '\t', '|' };
                 for (common_delimiters) |del| {
                     const columns = 1 + std.mem.countScalar(u8, csv_header, del);
-                    if (columns == Elem.csv_columns.len) break :blk del;
+                    if (columns == Elem.csv.columns.len) break :blk del;
                 }
                 return error.InvalidHeader;
             };
@@ -141,8 +167,8 @@ pub fn Segmented(Elem: type) type {
                 else => return err,
             };
             var first_value: Elem = undefined;
-            self.first_epoch = try first_value.fromCsv(first_line, del);
-            var last_epoch: u64 = self.first_epoch;
+            self.start_epoch = try first_value.fromCsv(first_line, del);
+            var last_epoch: u64 = self.start_epoch;
 
             // Parse entries
             errdefer self.deinit();
@@ -169,7 +195,7 @@ pub fn Segmented(Elem: type) type {
         }
 
         test "csv columns" {
-            if (!@hasDecl(Elem, "dummyValue")) return error.SkipZigTest;
+            if (!@hasDecl(Elem, "csv")) return error.SkipZigTest;
             var data: Segmented(Elem) = .init(std.testing.allocator);
             defer data.deinit();
             try randomSegments(Elem, &data, &orderedEpochs(3), 5);
@@ -185,7 +211,7 @@ pub fn Segmented(Elem: type) type {
                 std.log.err("Missing CSV header in buffer\n{s}\n", .{writer.written()});
                 return error.InvalidHeader;
             };
-            const columns_delimiters = Elem.csv_columns.len - 1;
+            const columns_delimiters = Elem.csv.columns.len - 1;
             if (std.mem.countScalar(u8, csv_header, del) != columns_delimiters) {
                 std.log.err("Delimiter used in header\n{s}\n", .{csv_header});
                 return error.InvalidHeader;
@@ -205,7 +231,7 @@ pub fn Segmented(Elem: type) type {
         }
 
         test "csv format round trip" {
-            if (!@hasDecl(Elem, "dummyValue")) return error.SkipZigTest;
+            if (!@hasDecl(Elem, "csv")) return error.SkipZigTest;
             var data: Segmented(Elem) = .init(std.testing.allocator);
             defer data.deinit();
             try randomSegments(Elem, &data, &orderedEpochs(10), 5);
@@ -237,28 +263,120 @@ pub fn Segmented(Elem: type) type {
             var new_data: Self = .init(gpa);
             errdefer new_data.deinit();
 
-            new_data.headers = try self.headers.clone(gpa);
-            new_data.array = try self.array.clone(gpa);
+            new_data.start_epoch = self.start_epoch;
+            try new_data.headers.appendSlice(gpa, self.headers.items);
+            try new_data.array.appendSlice(gpa, self.array.items);
 
             return new_data;
         }
 
-        // pub fn append(self: *Self, other: *const Self) error{OutOfMemory}!T {
-        //     const data: *T = @alignCast(@fieldParentPtr("segments", self));
-        //     const extra_data: *const T = @alignCast(@fieldParentPtr("segments", other));
+        /// Create a new segmented data with all segments combined
+        pub fn concatenate(segments: []const Self, gpa: Allocator) error{ OverlappingHeader, OutOfMemory }!Self {
+            var elements: usize = segments[0].array.items.len;
+            for (1..segments.len) |idx| {
+                elements += segments[idx].array.items.len;
+                if (segments[idx - 1].end_epoch() > segments[idx].start_epoch) {
+                    @branchHint(.unlikely);
+                    return error.OverlappingHeader;
+                }
+            }
+            const headers = segments[segments.len - 1].end_epoch() - segments[0].start_epoch;
 
-        //     const same_day = data.header.last().epoch < extra_data.header.items[0].epoch;
-        //     const old_len = data.header.items.len;
+            var new_data: Self = .init(gpa);
+            errdefer new_data.deinit();
 
-        //     data.header.appendSlice(data.gpa, extra_data.header.items);
-        //     data.array.appendSlice(data.gpa, extra_data.array.items);
+            new_data.start_epoch = segments[0].start_epoch;
+            try new_data.headers.ensureTotalCapacityPrecise(gpa, headers);
+            try new_data.array.ensureTotalCapacityPrecise(gpa, elements);
+            new_data.headers.appendSliceAssumeCapacity(segments[0].headers.items);
+            new_data.array.appendSliceAssumeCapacity(segments[0].array.items);
+            for (1..segments.len) |idx| {
+                const start: u32 = @intCast(new_data.array.items.len);
+                new_data.headers.appendNTimesAssumeCapacity(.{ .start = start, .size = 0 }, segments[idx].start_epoch - segments[idx - 1].end_epoch());
+                const slice = new_data.headers.addManyAsSliceAssumeCapacity(segments[idx].headers.items.len);
+                @memcpy(slice, segments[idx].headers.items);
+                for (slice) |*header| header.start += start;
+                new_data.array.appendSliceAssumeCapacity(segments[idx].array.items);
+            }
 
-        //     if (!same_day) {
-        //         for (old_len..data.header.items.len) |idx| {
-        //             data.header.items[idx].epoch += 24 * 60 * 60;
-        //         }
-        //     }
-        // }
+            return new_data;
+        }
+
+        /// Remove all unreferenced subslices from array
+        pub fn compress(self: *Self) void {
+            var elements: u32 = 0;
+            for (self.headers.items) |header| elements += header.size;
+            if (elements == self.array.items.len) return;
+
+            var start: u32 = 0;
+            for (self.headers.items) |*header| {
+                const new_header: Header = .{ .start = start, .size = header.size };
+                @memmove(new_header.getReference(Elem, self.array.items), header.getReference(Elem, self.array.items));
+                header.* = new_header;
+                start += header.size;
+            }
+
+            self.array.items.len = elements;
+        }
+
+        /// Apply a function to the subslices and shift the given amount of data to the previous or earlier epoch
+        pub fn epochApplyShift(self: *Self, ctx: anytype, comptime shift: fn (@TypeOf(ctx), u64, []Elem) Shift) error{OutOfMemory}!void {
+            if (self.empty()) return;
+            var idx: u32 = 0;
+            var last_shift = shift(ctx, self.start_epoch + idx, self.headers.items[idx].getReference(Elem, self.array.items));
+            if (last_shift.backward != 0) {
+                const header = &self.headers.items[0];
+                const start = header.start;
+                header.start += last_shift.backward;
+                header.size -= last_shift.backward;
+                try self.headers.insert(self.allocator, 0, .{ .start = start, .size = last_shift.backward });
+                self.start_epoch -= 1;
+                idx += 1;
+            }
+            idx += 1;
+            while (idx < self.headers.items.len) : (idx += 1) {
+                const new_shift = shift(ctx, self.start_epoch + idx, self.headers.items[idx].getReference(Elem, self.array.items));
+                defer last_shift = new_shift;
+                if (last_shift.forward != 0 or new_shift.backward != 0) {
+                    const last_header = &self.headers.items[idx - 1];
+                    const new_header = &self.headers.items[idx];
+                    const compressed = last_header.start + last_header.size == new_header.start;
+
+                    if (last_shift.forward == 0) {
+                        if (!compressed) @memmove(
+                            self.array.items[last_header.start + last_header.size ..][0..new_shift.backward],
+                            self.array.items[new_header.start..][0..new_shift.backward],
+                        );
+                        last_header.size += new_shift.backward;
+                        new_header.start += new_shift.backward;
+                        new_header.size -= new_shift.backward;
+                    } else if (new_shift.backward == 0) {
+                        last_header.size -= last_shift.forward;
+                        new_header.start -= last_shift.forward;
+                        new_header.size += last_shift.forward;
+                        if (!compressed) @memmove(
+                            self.array.items[new_header.start..][0..last_shift.forward],
+                            self.array.items[last_header.start + last_header.size ..][0..last_shift.forward],
+                        );
+                    } else {
+                        const backward = last_header.start + last_header.size - new_shift.backward;
+                        const forward = new_header.start + last_shift.forward;
+                        std.mem.reverse(Elem, self.array.items[new_header.start..][0..new_shift.backward]);
+                        std.mem.reverse(Elem, self.array.items[backward..][0..last_shift.forward]);
+                        std.mem.reverse(Elem, self.array.items[backward..forward]);
+                        last_header.size = last_header.size + new_shift.backward - last_shift.forward;
+                        new_header.start = new_header.start + new_shift.backward - last_shift.forward;
+                        new_header.size = new_header.size + last_shift.forward - new_shift.backward;
+                    }
+                }
+            }
+            if (last_shift.forward != 0) {
+                const header = &self.headers.items[self.headers.items.len - 1];
+                const start = header.start + header.size - last_shift.forward;
+                header.size -= last_shift.forward;
+                try self.headers.append(self.allocator, .{ .start = start, .size = last_shift.forward });
+            }
+        }
 
         /// Find the index of a header with a specific epoch
         /// If no valid index is found, return null instead
@@ -268,16 +386,16 @@ pub fn Segmented(Elem: type) type {
             // Short-circuit for the empty case
             if (headers.len == 0) return null;
 
-            if (epoch < self.first_epoch) return switch (search) {
+            if (epoch < self.start_epoch) return switch (search) {
                 .at_least => 0,
                 .exact, .at_most => null,
             };
-            if (self.first_epoch + self.headers.items.len <= epoch) return switch (search) {
+            if (self.start_epoch + self.headers.items.len <= epoch) return switch (search) {
                 .at_least, .exact => null,
                 .at_most => @intCast(self.headers.items.len - 1),
             };
 
-            return @intCast(epoch - self.first_epoch);
+            return @intCast(epoch - self.start_epoch);
         }
 
         /// Create a view of the data, containing the specified epoch range
@@ -290,7 +408,7 @@ pub fn Segmented(Elem: type) type {
             const end_idx = (self.epochIndex(end - 1, .at_most) orelse return view) + 1;
             if (start_idx == end_idx) return view;
 
-            view.first_epoch = self.first_epoch + start_idx;
+            view.start_epoch = self.start_epoch + start_idx;
             view.headers.items = self.headers.items[start_idx..end_idx];
             view.array = self.array;
 
@@ -303,9 +421,9 @@ pub fn Segmented(Elem: type) type {
             if (self.headers.items.len == 0 and start == null) return .init(self, 0, 0);
             return .init(
                 self,
-                start orelse self.first_epoch,
+                start orelse self.start_epoch,
                 switch (mode) {
-                    .all => self.first_epoch + self.headers.items.len,
+                    .all => self.start_epoch + self.headers.items.len,
                     .until_epoch => |epoch| epoch,
                 },
             );
@@ -334,6 +452,11 @@ pub fn Segmented(Elem: type) type {
                 self.header = if (header_idx + 1 >= self.data.headers.items.len) null else header_idx + 1;
                 return header.getReference(Elem, self.data.array.items);
             }
+
+            pub fn nextEpoch(self: *@This()) ?struct { epoch: u64, values: []Elem } {
+                const epoch = self.epoch;
+                return if (self.next()) |values| .{ .epoch = epoch, .values = values } else null;
+            }
         };
 
         /// Return the slice of values corresponding to the header at position `index`
@@ -342,7 +465,7 @@ pub fn Segmented(Elem: type) type {
         pub fn valuesAt(self: *const Self, index: ?u32) []const Elem {
             if (index) |idx| {
                 const header = self.headers.items[idx];
-                return self.array.items[header.start..][0..header.size];
+                return header.getConst(Elem, self.array.items);
             }
             return &.{};
         }
@@ -368,7 +491,9 @@ const Dummy = extern struct {
         return epoch;
     }
 
-    pub const csv_columns: []const []const u8 = &.{ "Epoch", "Value" };
+    pub const csv = struct {
+        pub const columns: []const []const u8 = &.{ "Epoch", "Value" };
+    };
 
     pub inline fn eql(first: Dummy, second: Dummy) bool {
         return first.value == second.value;
@@ -376,14 +501,51 @@ const Dummy = extern struct {
 
     pub const approxEql = Dummy.eql;
 
-    pub fn dummyValue(rand: std.Random) Dummy {
-        return .{
-            .value = rand.int(u32),
-        };
+    pub fn lower(_: void, first: Dummy, second: Dummy) bool {
+        return first.value < second.value;
     }
 
-    pub const bin_tag = "dummy";
-    pub const bin_version = 1;
+    pub fn dummyValue(rand: std.Random) Dummy {
+        return .{ .value = rand.int(u32) };
+    }
+
+    pub const bin = struct {
+        pub const tag = "dummy";
+        pub const version = 2;
+        pub const Layout: [version + 1]type = .{
+            extern struct {
+                value: u16,
+                pub fn dummyValue(rand: std.Random) @This() {
+                    return .{ .value = rand.int(u16) };
+                }
+                pub const bin = struct {
+                    pub const tag = "dummy";
+                    pub const version = 0;
+                };
+                pub fn update(self: @This()) Layout[1] {
+                    return .{ .value = self.value };
+                }
+            },
+            extern struct {
+                value: u16,
+                padding: u16 = 0,
+                pub fn update(self: @This()) Layout[2] {
+                    return .{ .value = self.value };
+                }
+            },
+            Dummy,
+        };
+
+        pub fn updateInner(comptime from: u8, comptime to: u8, elem: Layout[from]) Layout[to] {
+            if (from == to) return elem;
+            return updateInner(from + 1, to, elem.update());
+        }
+
+        pub fn update(comptime initial_version: u8, elem: Layout[initial_version]) Dummy {
+            if (initial_version == version) @compileError("Update code called when already on the latest version.");
+            return updateInner(initial_version, version, elem);
+        }
+    };
 };
 
 inline fn orderedEpochs(comptime count: usize) [count]u64 {
@@ -393,12 +555,12 @@ inline fn orderedEpochs(comptime count: usize) [count]u64 {
 }
 
 fn randomSegments(Elem: type, data: *Segmented(Elem), epochs: []const u64, size: u32) !void {
-    data.first_epoch = epochs[0];
+    data.start_epoch = epochs[0];
     const last_epoch = epochs[epochs.len - 1] + 1;
-    const epoch_count = last_epoch - data.first_epoch;
+    const epoch_count = last_epoch - data.start_epoch;
     try data.headers.ensureTotalCapacity(data.allocator, epoch_count);
     try data.array.ensureTotalCapacity(data.allocator, epochs.len * size);
-    var epoch = data.first_epoch;
+    var epoch = data.start_epoch;
     for (epochs, 0..) |target_epoch, i| {
         while (epoch < target_epoch) : (epoch += 1) {
             data.headers.appendAssumeCapacity(.{ .start = @intCast(size * i), .size = 0 });
@@ -428,10 +590,58 @@ test "bin format round trip" {
     var reader: Reader = .fixed(writer.written());
     try read_data.fromBin(&reader);
 
-    try std.testing.expect(data.first_epoch == read_data.first_epoch);
-    try std.testing.expect(std.mem.eql(Header, data.headers.items, read_data.headers.items));
+    try std.testing.expect(data.start_epoch == read_data.start_epoch);
+    try std.testing.expectEqualSlices(Header, data.headers.items, read_data.headers.items);
     for (data.array.items, read_data.array.items) |original, read| {
         try std.testing.expect(Dummy.eql(original, read));
+    }
+}
+
+test "bin format update" {
+    const DummyOld = Dummy.bin.Layout[0];
+    var data: Segmented(DummyOld) = .init(std.testing.allocator);
+    defer data.deinit();
+    try randomSegments(DummyOld, &data, &.{ 2, 5, 9, 12, 13, 14, 15, 16, 18, 24 }, 5);
+
+    // Write to a buffer and read from it with a new Segmented instance
+    var writer: Writer.Allocating = .init(data.allocator);
+    defer writer.deinit();
+    try data.toBin(&writer.writer);
+
+    var read_data: Segmented(Dummy) = .init(std.testing.allocator);
+    defer read_data.deinit();
+    var reader: Reader = .fixed(writer.written());
+    try read_data.fromBin(&reader);
+
+    try std.testing.expect(data.start_epoch == read_data.start_epoch);
+    try std.testing.expectEqualSlices(Header, data.headers.items, read_data.headers.items);
+    for (data.array.items, read_data.array.items) |original, read| {
+        try std.testing.expect(original.value == read.value);
+    }
+}
+
+test "bin format uncompressed" {
+    var complete: Segmented(Dummy) = .init(std.testing.allocator);
+    defer complete.deinit();
+    try randomSegments(Dummy, &complete, &.{ 2, 3, 4, 7, 8, 9, 13, 14, 15, 16, 17, 18 }, 5);
+
+    var range: Segmented(Dummy) = try complete.epochRange(5, 10).copy(std.testing.allocator);
+    defer range.deinit();
+
+    // Write to a buffer and read from it with a new Segmented instance
+    var writer: Writer.Allocating = .init(range.allocator);
+    defer writer.deinit();
+    try range.toBin(&writer.writer);
+    range.compress();
+
+    var read_data: Segmented(Dummy) = .init(std.testing.allocator);
+    defer read_data.deinit();
+    var reader: Reader = .fixed(writer.written());
+    try read_data.fromBin(&reader);
+
+    try std.testing.expectEqualSlices(Header, range.headers.items, read_data.headers.items);
+    for (range.array.items, read_data.array.items) |original, destination| {
+        try std.testing.expect(Dummy.eql(original, destination));
     }
 }
 
@@ -443,9 +653,106 @@ test "copy" {
     var dest = try origin.copy(origin.allocator);
     defer dest.deinit();
 
-    try std.testing.expect(std.mem.eql(Header, origin.headers.items, dest.headers.items));
+    try std.testing.expectEqualSlices(Header, origin.headers.items, dest.headers.items);
     for (origin.array.items, dest.array.items) |original, destination| {
         try std.testing.expect(Dummy.eql(original, destination));
+    }
+}
+
+test "concatenate" {
+    var complete: Segmented(Dummy) = .init(std.testing.allocator);
+    defer complete.deinit();
+    try randomSegments(Dummy, &complete, &.{ 2, 3, 4, 7, 8, 9, 13, 14, 15, 16, 17, 18 }, 5);
+
+    var reconstructed: Segmented(Dummy) = try .concatenate(&.{
+        complete.epochRange(0, 5),
+        complete.epochRange(5, 10),
+        complete.epochRange(10, 20),
+    }, std.testing.allocator);
+    defer reconstructed.deinit();
+    reconstructed.compress();
+
+    try std.testing.expectEqualSlices(Header, complete.headers.items, reconstructed.headers.items);
+    for (complete.array.items, reconstructed.array.items) |original, destination| {
+        try std.testing.expect(Dummy.eql(original, destination));
+    }
+}
+
+test "compress" {
+    var complete: Segmented(Dummy) = .init(std.testing.allocator);
+    defer complete.deinit();
+    try randomSegments(Dummy, &complete, &orderedEpochs(10), 5);
+
+    var compressed = try complete.epochRange(3, 7).copy(std.testing.allocator);
+    defer compressed.deinit();
+    compressed.compress();
+
+    try std.testing.expect(compressed.array.items.len == 20);
+    for ([4]u64{ 3, 4, 5, 6 }) |epoch| {
+        const expected = complete.valuesAt(complete.epochIndex(epoch, .exact));
+        const actual = compressed.valuesAt(compressed.epochIndex(epoch, .exact));
+        try std.testing.expectEqualSlices(Dummy, expected, actual);
+    }
+}
+
+fn applyShiftSetConst(_: void, value: u64, slice: []Dummy) Shift {
+    if (slice.len == 0) return .{};
+    @memset(slice, .{ .value = @intCast(value) });
+    if (value % 3 == 0) @memset(slice[0..2], .{ .value = @intCast(value + 1) });
+    if (value % 5 == 0) @memset(slice[2..4], .{ .value = @intCast(value - 1) });
+    return .{};
+}
+
+fn applyShiftTest(_: void, value: u64, slice: []Dummy) Shift {
+    if (slice.len == 0) return .{};
+    std.sort.insertion(Dummy, slice, {}, Dummy.lower);
+    const first: u32 = if (value == slice[0].value) 0 else 2;
+    const last: u32 = if (value == slice[slice.len - 1].value) 0 else 2;
+    return .{ .backward = first, .forward = last };
+}
+
+fn applyShiftIsEpoch(failure: *?u64, value: u64, slice: []Dummy) Shift {
+    for (slice) |elem| {
+        if (elem.value != value)
+            failure.* = value;
+    }
+    return .{};
+}
+
+test "epochApplyShift" {
+    var data: Segmented(Dummy) = .init(std.testing.allocator);
+    defer data.deinit();
+    const epochs = [_]u64{ 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };
+    try randomSegments(Dummy, &data, &epochs, 10);
+
+    var failure: ?u64 = null;
+    try data.epochApplyShift({}, applyShiftSetConst);
+    try data.epochApplyShift({}, applyShiftTest);
+    try data.epochApplyShift(&failure, applyShiftIsEpoch);
+
+    if (failure) |epoch| {
+        std.debug.print("Expected: {d}, but found: {any}\n", .{ epoch, data.valuesAt(data.epochIndex(epoch, .exact)) });
+        return error.ExpectedEqual;
+    }
+}
+
+test "epochApplyShift uncompressed" {
+    var data: Segmented(Dummy) = .init(std.testing.allocator);
+    defer data.deinit();
+    const epochs = [_]u64{ 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };
+    try randomSegments(Dummy, &data, &epochs, 10);
+    for (data.headers.items) |*header| {
+        header.size = 5;
+    }
+
+    var failure: ?u64 = null;
+    try data.epochApplyShift({}, applyShiftSetConst);
+    try data.epochApplyShift({}, applyShiftTest);
+    try data.epochApplyShift(&failure, applyShiftIsEpoch);
+
+    if (failure) |epoch| {
+        std.debug.print("Expected: {d}, but found: {any}\n", .{ epoch, data.valuesAt(data.epochIndex(epoch, .exact)) });
+        return error.ExpectedEqual;
     }
 }
 
@@ -493,13 +800,13 @@ test "epochRange" {
 
     // Outside both
     const view1 = data.epochRange(0, 30);
-    try std.testing.expect(view1.first_epoch == 2);
-    try std.testing.expect(view1.first_epoch + view1.headers.items.len == 21);
+    try std.testing.expect(view1.start_epoch == 2);
+    try std.testing.expect(view1.start_epoch + view1.headers.items.len == 21);
 
     // In range
     const view2 = data.epochRange(4, 14);
-    try std.testing.expect(view2.first_epoch == 4);
-    try std.testing.expect(view2.first_epoch + view2.headers.items.len == 14);
+    try std.testing.expect(view2.start_epoch == 4);
+    try std.testing.expect(view2.start_epoch + view2.headers.items.len == 14);
 }
 
 test "epochIterator" {

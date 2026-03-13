@@ -4,7 +4,8 @@ const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 
 const lma = @import("lma");
-const grid = lma.pipeline.grid;
+const Grid = lma.pipeline.Grid;
+const cast = lma.cast;
 
 const Float = @import("main.zig").Float;
 
@@ -33,12 +34,12 @@ pub fn load(gpa: Allocator, context: *const Context, canvas: []u8, r: *Reader) !
 
 pub const Context = struct {
     rotation: zlm.Mat3,
-    info: grid.Info(Float),
+    bounds: Grid.Bounds(Float),
     color: u8,
 
     pub fn transform(self: *const Context, coord: zlm.Vec2) zlm.Vec2 {
         const point = lma.pipeline.transform.surfaceToPlane(Float, coord, &self.rotation);
-        return point.sub(self.info.origin).div(self.info.step);
+        return point.sub(self.bounds.origin).div(self.bounds.step);
     }
 };
 
@@ -49,18 +50,18 @@ fn parsePair(value: std.json.Value) zlm.Vec2 {
 
 fn drawLine(context: *const Context, canvas: []u8, a: zlm.Vec2, b: zlm.Vec2) void {
     const delta = b.sub(a);
-    const count = 1 + lma.common.cast(usize, @round(@max(@abs(delta.x), @abs(delta.y))));
-    const step = delta.scale(1 / lma.common.cast(Float, count));
+    const count = 1 + cast.to(usize, @round(@max(@abs(delta.x), @abs(delta.y))));
+    const step = delta.scale(1 / cast.to(Float, count));
     for (0..count) |idx| {
-        drawAt(context, canvas, a.add(step.scale(lma.common.cast(Float, idx))));
+        drawAt(context, canvas, a.add(step.scale(cast.to(Float, idx))));
     }
 }
 
 fn drawAt(context: *const Context, canvas: []u8, a: zlm.Vec2) void {
     const x = @round(a.x);
     const y = @round(a.y);
-    if (x >= 0 and y >= 0 and x < lma.common.cast(Float, context.info.shape.columns) and y < lma.common.cast(Float, context.info.shape.rows)) {
-        const idx = context.info.shape.ravel(lma.common.cast(usize, y), lma.common.cast(usize, x));
+    if (x >= 0 and y >= 0 and x < cast.to(Float, context.bounds.grid.columns) and y < cast.to(Float, context.bounds.grid.rows)) {
+        const idx = context.bounds.grid.ravel(cast.to(usize, y), cast.to(usize, x));
         canvas[idx] = context.color;
     }
 }

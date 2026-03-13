@@ -1,8 +1,14 @@
 const std = @import("std");
 
+var emit_bin: bool = true;
+var maybe_date_time: ?DateTime = null;
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const single_threaded = b.option(bool, "single-threaded", "Generate the executables in single threaded mode.") orelse false;
+    emit_bin = !(b.option(bool, "no-bin", "Skip emitting the binary.") orelse false);
+    maybe_date_time = DateTime.addOption(b);
 
     const nargs = b.dependency("nice_args", .{
         .target = target,
@@ -21,26 +27,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .module = zlm, .name = "zlm" },
         },
-    });
-
-    parserExe(b, .{
-        .root_source_file = b.path("src/parser/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .module = lma, .name = "lma" },
-            .{ .module = nargs, .name = "nargs" },
-        },
-    });
-
-    matchExe(b, .{
-        .root_source_file = b.path("src/match-toa/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .module = lma, .name = "lma" },
-            .{ .module = nargs, .name = "nargs" },
-        },
+        .single_threaded = single_threaded,
     });
 
     const filter_option = b.option([]const u8, "test-filter", "Select a subset of tests to run");
@@ -54,130 +41,163 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_lma_tests.step);
 
-    lightningHoles(b, .{
-        .root_source_file = b.path("src/lholes/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .module = lma, .name = "lma" },
-            .{ .module = zlm, .name = "zlm" },
-            .{ .module = nargs, .name = "nargs" },
-        },
-    });
-}
-
-fn parserExe(b: *std.Build, options: std.Build.Module.CreateOptions) void {
-    const parser_targets: ParserTargets = .{
-        .toa = b.option(
-            bool,
-            "parse-toa",
-            "Parse the '.dat' ToA files and generate the corresponding '.bin' and '.csv' files",
-        ),
-
-        .points = b.option(
-            bool,
-            "parse-points",
-            "Parse the '.dat' points file and generate the corresponding '.bin' and '.csv' files",
-        ),
-
-        .clusters = b.option(
-            bool,
-            "parse-clusters",
-            "Parse the '.csv' clustered file and generate the corresponding chunked '.bin' and '.csv' files",
-        ),
-    };
-    const parse_all = b.option(
-        bool,
-        "parse-all",
-        "Equivalent to setting all parse options to this value. Doesn't override the parse options already specified",
-    );
-
-    const parser = b.addExecutable(.{
+    parserExe(b, b.addExecutable(.{
         .name = "parser",
-        .root_module = b.createModule(options),
-    });
-    b.installArtifact(parser);
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/parser/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .module = lma, .name = "lma" },
+                .{ .module = nargs, .name = "nargs" },
+            },
+            .single_threaded = single_threaded,
+        }),
+    }));
 
-    const parser_step = b.step(
-        "parser",
-        "Parse the selected files and generate the corresponding '.bin' and '.csv' files",
-    );
-    const default = parse_all orelse if (parser_targets.any_set()) !parser_targets.any_true(false) else false;
-    parser_targets.add_targets(b, parser, parser_step, default);
+    matchExe(b, b.addExecutable(.{
+        .name = "match",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/match-toa/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .module = lma, .name = "lma" },
+                .{ .module = nargs, .name = "nargs" },
+            },
+            .single_threaded = single_threaded,
+        }),
+    }));
+
+    holesExe(b, b.addExecutable(.{
+        .name = "holes",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lholes/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .module = lma, .name = "lma" },
+                .{ .module = zlm, .name = "zlm" },
+                .{ .module = nargs, .name = "nargs" },
+            },
+        }),
+    }));
 }
 
-const ParserTargets = struct {
-    toa: ?bool,
-    points: ?bool,
-    clusters: ?bool,
+const DateTime = struct {
+    date: [6]u8,
+    time: [6]u8,
 
-    pub fn any_set(self: ParserTargets) bool {
-        return (self.toa != null) or (self.points != null) or (self.clusters != null);
-    }
-
-    pub fn any_true(self: ParserTargets, default: bool) bool {
-        return (self.toa orelse default) or (self.points orelse default) or (self.clusters orelse default);
-    }
-
-    pub fn add_targets(
-        self: ParserTargets,
-        b: *std.Build,
-        exe: *std.Build.Step.Compile,
-        step: *std.Build.Step,
-        default: bool,
-    ) void {
-        if (self.toa orelse default) {
-            const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "-i=data/ToA/250712/sources", "toa" });
-            step.dependOn(&run.step);
+    pub fn addOption(b: *std.Build) ?DateTime {
+        const input = b.option([]const u8, "date", "Date to use as input in the format 'YYMMDD-HHMMSS'") orelse return null;
+        bad_input: {
+            const date, const time = std.mem.cutScalar(u8, input, '-') orelse break :bad_input;
+            if (std.mem.replacementSize(u8, date, "/", "") != 6 or std.mem.replacementSize(u8, time, ":", "") != 6) break :bad_input;
+            var self: DateTime = .{ .date = undefined, .time = undefined };
+            _ = std.mem.replace(u8, date, "/", "", &self.date);
+            _ = std.mem.replace(u8, time, ":", "", &self.time);
+            // std.fmt.parseInt(u32, &self.date, 10);
+            return self;
         }
-        if (self.points orelse default) {
-            const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "-i=data/points/250712/output", "points", "-s=data/ToA/stations" });
-            step.dependOn(&run.step);
-        }
-        if (self.clusters orelse default) {
-            const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "-i=data/lightnings/250712/XCALMA_250712.csv", "clusters" });
-            step.dependOn(&run.step);
-        }
-        const install = b.addInstallArtifact(exe, .{});
-        step.dependOn(&install.step);
+        std.log.err("Expected -Ddate to be in the form 'YYMMDD-HHMMSS', but received '{s}'", .{input});
+        b.invalid_user_input = true;
+        return null;
     }
 };
 
-fn lightningHoles(b: *std.Build, options: std.Build.Module.CreateOptions) void {
-    const lightning_holes = b.addExecutable(.{
-        .name = "holes",
-        .root_module = b.createModule(options),
-    });
-    b.installArtifact(lightning_holes);
+const ParseStage = packed struct(u3) {
+    pub const BuildOptions = enum {
+        none,
+        toa,
+        points,
+        clusters,
+        all,
+    };
 
-    const run_demo_grid = b.addRunArtifact(lightning_holes);
-    run_demo_grid.addArgs(&.{
-        "--region=catalunya",
-        "-r=high",
-        "-i=data/lightnings/240802/bin",
-        "--cat-map",
-        "--ffmpeg",
-    });
-    const demo_grid_step = b.step("demo-holes", "Run the demo for the lightning holes detection");
-    demo_grid_step.dependOn(&run_demo_grid.step);
+    pub fn init(options: BuildOptions) ParseStage {
+        return switch (options) {
+            .none => .{},
+            .toa => .{ .toa = true },
+            .points => .{ .points = true },
+            .clusters => .{ .clusters = true },
+            .all => .{ .toa = true, .points = true, .clusters = true },
+        };
+    }
+
+    toa: bool = false,
+    points: bool = false,
+    clusters: bool = false,
+};
+
+fn parserExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
+    const step = b.step(
+        "parser",
+        "Parse the selected files and generate the corresponding '.bin' and '.csv' files",
+    );
+
+    step.dependOn(if (emit_bin) &b.addInstallArtifact(exe, .{}).step else &exe.step);
+    b.getInstallStep().dependOn(step);
+
+    // DEMO
+    const stage: ParseStage = .init(b.option(
+        ParseStage.BuildOptions,
+        "stage",
+        "Stage to parse, generating the corresponding '.bin' and '.csv' files.",
+    ) orelse .none);
+
+    if (maybe_date_time) |date_time| {
+        if (stage.toa) {
+            const run = b.addRunArtifact(exe);
+            run.addArgs(&.{ "-i=data/ToA/" ++ date_time.date ++ "/sources", "toa" });
+            step.dependOn(&run.step);
+        }
+        if (stage.points) {
+            const run = b.addRunArtifact(exe);
+            run.addArgs(&.{ "-i=data/points/" ++ date_time.date ++ "/output", "points", "-s=data/ToA/stations" });
+            step.dependOn(&run.step);
+        }
+        if (stage.clusters) {
+            const run = b.addRunArtifact(exe);
+            run.addArgs(&.{ "-i=data/lightnings/" ++ date_time.date ++ "/XCALMA_" ++ date_time.date ++ ".csv", "clusters" });
+            step.dependOn(&run.step);
+        }
+    }
 }
 
-fn matchExe(b: *std.Build, options: std.Build.Module.CreateOptions) void {
-    const match = b.addExecutable(.{
-        .name = "match",
-        .root_module = b.createModule(options),
-    });
-    b.installArtifact(match);
-    const run_match = b.addRunArtifact(match);
-    run_match.addArgs(&.{
-        "-w=constant",
-        "-s=data/ToA/stations/stations.bin",
-        "-i=data/ToA/250712/bin/*_*_*_250712_120000.bin",
-        "-o=data/points/250712/csv/corr-12h-00min-00s.csv",
-    });
-    const match_step = b.step("demo-match", "Run the demo for matching");
-    match_step.dependOn(&run_match.step);
+fn holesExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
+    const step = b.step("holes", "Showcase of the hole detection functionality.");
+    step.dependOn(if (emit_bin) &b.addInstallArtifact(exe, .{}).step else &exe.step);
+    b.getInstallStep().dependOn(step);
+
+    // DEMO
+    if (maybe_date_time) |date_time| {
+        const run_demo_grid = b.addRunArtifact(exe);
+        run_demo_grid.addArgs(&.{
+            "--region=catalunya",
+            "-r=high",
+            "-i=data/lightnings/" ++ date_time.date ++ "/bin",
+            "--cat-map",
+            "--ffmpeg",
+        });
+        step.dependOn(&run_demo_grid.step);
+    }
+}
+
+fn matchExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
+    const step = b.step("match", "Match a set of station data '.bin' files and locate the sources using time of arrival.");
+    step.dependOn(if (emit_bin) &b.addInstallArtifact(exe, .{}).step else &exe.step);
+    b.getInstallStep().dependOn(step);
+
+    // DEMO
+    if (maybe_date_time) |date_time| {
+        const run_match = b.addRunArtifact(exe);
+        run_match.addArgs(&.{
+            "-w=constant",
+            "-s=data/ToA/stations/stations.bin",
+            "-i=data/ToA/" ++ date_time.date ++ "/bin/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".bin",
+            "-o=data/points/" ++ date_time.date ++ "/csv/corr-" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.csv",
+            "-d=data/points/" ++ date_time.date ++ "/output/CUSTOM_" ++ date_time.date ++ "_" ++ date_time.time ++ "_0600.dat",
+        });
+        step.dependOn(&run_match.step);
+    }
 }

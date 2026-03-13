@@ -46,7 +46,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
     var last_second: u64 = 0;
     var last_save: u64 = @divFloor(last_second, save_frequency);
     last_header.start = @intCast(data.array.items.len);
-    data.first_epoch = last_second;
+    data.start_epoch = last_second;
     var group: std.Io.Group = .init;
 
     // Async saving
@@ -104,14 +104,14 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
                 const size = .{ .headers = data.headers.items.len, .array = data.array.items.len };
                 data = .init(gpa);
                 while (@divFloor(second, save_frequency) != last_save) : (last_save += 1) {
-                    data.first_epoch = last_save * save_frequency;
+                    data.start_epoch = last_save * save_frequency;
                     group.async(io, saveFiles, .{ io, data, last_save });
                 }
-                data.first_epoch = last_save * save_frequency;
+                data.start_epoch = last_save * save_frequency;
                 try data.headers.ensureTotalCapacity(gpa, size.headers);
                 try data.array.ensureTotalCapacity(gpa, size.array);
             }
-            const delta = second - (data.first_epoch + data.headers.items.len) + 1;
+            const delta = second - (data.start_epoch + data.headers.items.len) + 1;
             try data.headers.appendNTimes(gpa, .{ .start = @intCast(data.array.items.len), .size = 0 }, delta);
             last_header = &data.headers.items[data.headers.items.len - 1];
         }
@@ -122,7 +122,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
             .altitude = try std.fmt.parseFloat(f32, iterator.next().?),
             .dBm = try std.fmt.parseFloat(f16, iterator.next().?),
             // Both 0 and -1 Indicate a noise value
-            .cluster = @enumFromInt(lma.common.as(u32, @max(0, try std.fmt.parseInt(isize, iterator.next().?, 10)))),
+            .cluster = @enumFromInt(lma.cast.as(u32, @max(0, try std.fmt.parseInt(isize, iterator.next().?, 10)))),
         });
     }
     last_header.size = @intCast(data.array.items.len - last_header.start);
@@ -151,7 +151,7 @@ fn saveFiles(io: std.Io, data: Clusters, save_time: ?usize) std.Io.Cancelable!vo
 fn saveCsv(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.Io.Cancelable!void {
     const time = utils.saveTime(
         save_time,
-        data.first_epoch,
+        data.start_epoch,
         save_frequency,
     );
 
@@ -178,7 +178,7 @@ fn saveCsv(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.I
 fn saveBin(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.Io.Cancelable!void {
     const time = utils.saveTime(
         save_time,
-        data.first_epoch,
+        data.start_epoch,
         save_frequency,
     );
 

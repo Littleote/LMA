@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 
 const lma = @import("lma");
 const transform = lma.pipeline.transform;
-const Detail = lma.pipeline.grid.Info(Float).Detail;
+const Detail = lma.pipeline.Grid.Bounds(Float).Detail;
 const nargs = @import("nargs");
 const groups = nargs.groups;
 const params = nargs.params;
@@ -69,7 +69,7 @@ pub const Region = union(RegionType) {
         };
     }
 
-    pub fn generateInfo(self: Region, detail: Detail, rotation: *const zlm.Mat3) lma.pipeline.grid.Info(Float) {
+    pub fn generateBounds(self: Region, detail: Detail, rotation: *const zlm.Mat3) lma.pipeline.Grid.Bounds(Float) {
         return switch (self) {
             .center_size => |center_size| .scale(detail, center_size.size),
             .end_points => |end_points| .limits(
@@ -107,7 +107,7 @@ ffmpeg: bool,
 
 region: Region,
 
-detail: lma.pipeline.grid.Info(Float).Detail,
+detail: Detail,
 
 half_life: Float,
 luminosity: Float,
@@ -207,7 +207,7 @@ pub fn parseNargs(gpa: Allocator, io: std.Io, cli: std.process.Args) !Args {
             },
         },
         .detail = switch (command.detail) {
-            .fixed_size => |shape| .fromShape(.init(shape[0], shape[1])),
+            .fixed_size => |shape| .fromGrid(.init(shape[0], shape[1])),
             .resolution => |resolution| .fromStep(resolution.step()),
         },
 

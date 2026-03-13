@@ -1,27 +1,29 @@
 const std = @import("std");
 
 const lma = @import("lma");
-const max_stations = lma.constants.max_stations;
 const match = lma.pipeline.match;
 const nargs = @import("nargs");
 
+const max_stations = 32;
+const sol = lma.pipeline.solver(Precise);
 const root = nargs.groups.any("match", .{
     .weight_mode = nargs.params.param("weights", nargs.types.options(lma.pipeline.match.Weights), .single, .{ .short = .auto, .default = .decibels }),
     .station = nargs.params.param("station", nargs.types.io.File.initDefaults(.open_file), .single, .{ .short = .auto }),
     .input = nargs.params.param("ipnut", nargs.types.io.Glob.init, .single, .{ .short = .auto }),
     .output = nargs.params.param("output", nargs.types.io.File.initDefaults(.create_file), .single, .{ .short = .auto }),
+    .dat_output = nargs.params.param("dat-output", nargs.types.unset(nargs.types.io.File.initDefaults(.create_file)), .single, .{ .short = .auto, .default = @as(?[]u8, null) }),
 });
 
 pub const Float = f32;
 pub const Precise = f64;
 
 const max_distance = 200_000.0;
-const global_shift: u32 = 100_000_000;
+const global_shift: u32 = 50_000_000;
 const max_matches: usize = @intFromFloat(1 + @ceil(max_distance / lma.constants.c / 0.000_080));
-const min_stations: usize = 5;
+const min_stations: usize = 6;
 
 fn correlation_size(dist: Float, step: match.Step) usize {
-    return 1 + 2 * lma.common.cast(usize, @round(0 + @min(max_distance, dist) / lma.constants.c / step.step));
+    return 1 + 4 * lma.cast.to(usize, @round(@min(max_distance, dist) / lma.constants.c / step.step));
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -45,27 +47,16 @@ pub fn main(init: std.process.Init) !void {
         try stations.fromBin(&file_reader.interface);
     }
     const count: u32 = @intCast(stations.stations.items.len);
-    const shape: lma.pipeline.grid.Shape = .init(count, count);
+    // const shape: lma.pipeline.Grid = .init(count, count);
     if (count > max_stations) @panic("Station limit reached.");
 
     var shift_buffer: [max_stations]u32 = undefined;
     const shifts: []u32 = shift_buffer[0..count];
-    var points_buffer: [max_stations]lma.pipeline.zlm(Precise).Vec3 = undefined;
-    const points: []lma.pipeline.zlm(Precise).Vec3 = points_buffer[0..count];
+    var points_buffer: [max_stations]sol.Point = undefined;
+    const points: []sol.Point = points_buffer[0..count];
     for (stations.stations.items, points, shifts) |station, *point, *delay| {
         delay.* = global_shift - @as(u32, @bitCast(station.delay));
         point.* = lma.pipeline.transform.gpsToXYZ(Precise, station);
-    }
-
-    var distance_matrix_buffer: [max_stations * max_stations]Float = undefined;
-    const distance_matrix: []Float = distance_matrix_buffer[0..shape.size];
-    var time_matrix_buffer: [max_stations * max_stations]u32 = undefined;
-    const time_matrix: []u32 = time_matrix_buffer[0..shape.size];
-    for (points, 0..) |point1, row| {
-        for (points, 0..) |point2, col| {
-            distance_matrix[shape.ravel(row, col)] = @floatCast(point1.sub(point2).length());
-            time_matrix[shape.ravel(row, col)] = lma.constants.nano.toNano(distance_matrix[shape.ravel(row, col)] / lma.constants.c);
-        }
     }
 
     // Load ToA signals
@@ -73,10 +64,33 @@ pub fn main(init: std.process.Init) !void {
     var full_signal_buffer: [max_stations]lma.data.ToA = @splat(.init(init.gpa));
     const full_signals: []lma.data.ToA = full_signal_buffer[0..count];
     defer for (full_signals) |*signal| signal.deinit();
+
+    var date: ?[6]u8 = null;
+    var time: ?[6]u8 = null;
+
     while (try options.input.next()) |entry| {
-        var split = std.mem.splitScalar(u8, entry.basename, '_');
-        // CODE_GROUP_NAME_DATE_TIME
-        _, _, const name = .{ split.next().?, split.next().?, split.next().? };
+        // CODE_GROUP_FULL_NAME_DATE_TIME.dat
+        const stem, _ = std.mem.cutScalarLast(u8, entry.basename, '.').?;
+        var split = std.mem.splitScalar(u8, stem, '_');
+        _, _ = .{ split.next().?, split.next().? };
+
+        var back_split = std.mem.splitBackwardsScalar(u8, split.rest(), '_');
+        const file_time, const file_date, const name = .{ back_split.next().?, back_split.next().?, back_split.next().? };
+
+        if (file_date.len != 6 or file_time.len != 6) {
+            std.debug.print("Invalid file name: {s}\n", .{entry.basename});
+            std.debug.print("Date: {s}, Time: {s}\n", .{ file_date, file_time });
+            return error.WrongFormat;
+        }
+        if (date == null and time == null) {
+            date = file_date[0..6].*;
+            time = file_time[0..6].*;
+        } else {
+            if (!std.mem.eql(u8, &date.?, file_date) or !std.mem.eql(u8, &time.?, file_time)) {
+                std.debug.print("Invalid file name: {s}\n", .{entry.basename});
+                return error.WrongFormat;
+            }
+        }
 
         const file = try entry.dir.openFile(init.io, entry.basename, .{});
         defer file.close(init.io);
@@ -94,28 +108,106 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Prepare output signal
-    var output: lma.data.Points = .init(init.gpa);
-    output.first_epoch = 12 * 60 * 60;
+    const start_time = blk: {
+        const hour = try std.fmt.parseInt(u32, time.?[0..2], 10);
+        const minute = try std.fmt.parseInt(u32, time.?[2..4], 10);
+        const second = try std.fmt.parseInt(u32, time.?[4..6], 10);
+        break :blk (hour * 60 + minute) * 60 + second;
+    };
+
+    // Run program asynchronously divided by minutes
+    const minutes = 10;
+    var completed: usize = 0;
+    var futures: [minutes]std.Io.Future(error{ Canceled, OutOfMemory }!lma.data.Points) = undefined;
+    var outputs: [minutes]lma.data.Points = undefined;
+    for (0..minutes) |idx| {
+        futures[idx] = init.io.async(run, .{ init.io, init.gpa, points, full_signals, weight_mode, .init(@intCast(start_time + idx * 1 * 60), 1 * 60) });
+    }
+    defer {
+        for (0..minutes) |idx| {
+            if (idx < completed) {
+                outputs[idx].deinit();
+            } else {
+                outputs[idx] = futures[idx].cancel(init.io) catch continue;
+                outputs[idx].deinit();
+            }
+        }
+    }
+    for (0..minutes) |idx| {
+        completed = idx;
+        outputs[idx] = try futures[idx].await(init.io);
+    }
+    var output: lma.data.Points = try .concatenate(&outputs, init.gpa);
     defer output.deinit();
+
+    output.epochApplyShift({}, sortSegment) catch unreachable;
+    try output.epochApplyShift({}, shiftBack);
+    output.epochApplyShift({}, sortSegment) catch unreachable;
+
+    std.debug.print("Total Queries: {d}\n", .{Solver.queries});
+    std.debug.print("Total Linear Matches: {d}\n", .{Solver.matches});
+    std.debug.print("Total Linear Matches Refined: {d}\n", .{Solver.tuned});
+    std.debug.print("Total L-M Matches: {d}\n", .{Solver.solutions});
+
+    {
+        var file_writer = options.output.writer(init.io, &buffer);
+        try output.toCsv(&file_writer.interface, null);
+    }
+    if (options.dat_output) |dat_file| {
+        var file_writer = dat_file.writer(init.io, &buffer);
+        try lma.data.dat_file.output.print(&file_writer.interface, &output, &stations);
+    }
+
+    std.debug.print("Total points: {d}\n", .{output.array.items.len});
+}
+
+pub fn run(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    stations: []sol.Point,
+    full_signals: []const lma.data.ToA,
+    weight_mode: lma.pipeline.match.Weights,
+    span: lma.SubSlice,
+) error{ Canceled, OutOfMemory }!lma.data.Points {
+    Solver.local_queries = 0;
+    Solver.local_matches = 0;
+    Solver.local_tuned = 0;
+    Solver.local_solutions = 0;
+    defer {
+        _ = @atomicRmw(usize, &Solver.queries, .Add, Solver.local_queries, .monotonic);
+        _ = @atomicRmw(usize, &Solver.matches, .Add, Solver.local_matches, .monotonic);
+        _ = @atomicRmw(usize, &Solver.tuned, .Add, Solver.local_tuned, .monotonic);
+        _ = @atomicRmw(usize, &Solver.solutions, .Add, Solver.local_solutions, .monotonic);
+    }
+
+    const count: u32 = @intCast(stations.len);
+    const shape: lma.pipeline.Grid = .init(count, count);
+
+    // Calculate distance and time matrix
+    var distance_matrix_buffer: [max_stations * max_stations]Float = undefined;
+    const distance_matrix: []Float = distance_matrix_buffer[0..shape.size];
+    var time_matrix_buffer: [max_stations * max_stations]u32 = undefined;
+    const time_matrix: []u32 = time_matrix_buffer[0..shape.size];
+    for (stations, 0..) |station1, row| {
+        for (stations, 0..) |station2, col| {
+            distance_matrix[shape.ravel(row, col)] = @floatCast(station1.sub(station2).length());
+            time_matrix[shape.ravel(row, col)] = lma.nano.toNano(distance_matrix[shape.ravel(row, col)] / lma.constants.c);
+        }
+    }
+
+    // Prepare output signal
+    var output: lma.data.Points = .init(gpa);
+    output.start_epoch = span.start;
+    errdefer output.deinit();
 
     // Stack allocate buffer for all signals data
     var signal_buffer: [max_stations][]const lma.data.types.ToA = @splat(&.{});
     const signals: [][]const lma.data.types.ToA = signal_buffer[0..count];
 
-    var weight_buffer: [max_stations]std.ArrayList(Float) = @splat(.empty);
-    const weights: []std.ArrayList(Float) = weight_buffer[0..count];
-    defer for (weights) |*weight| weight.deinit(init.gpa);
-
-    // Stack allocate for the division
-    const subdivisions = 5;
-
-    var split_index_buffer: [max_stations][subdivisions]match.Split = undefined;
-    const split_indexes: [][subdivisions]match.Split = split_index_buffer[0..count];
-    var split_signal_buffer: [max_stations][]const lma.data.types.ToA = @splat(&.{});
-    const split_signal: [][]const lma.data.types.ToA = split_signal_buffer[0..count];
-    var split_weight_buffer: [max_stations][]Float = @splat(&.{});
-    const split_weights: [][]Float = split_weight_buffer[0..count];
+    var weight_arrays: [max_stations]std.ArrayList(Float) = @splat(.empty);
+    defer for (&weight_arrays) |*weight_array| weight_array.deinit(gpa);
+    var weight_buffer: [max_stations][]Float = @splat(&.{});
+    const weights: [][]Float = weight_buffer[0..count];
 
     // Stack and heap allocate cross-correlation buffer
     const step: match.Step = comptime .fromStep(0.000_004_000);
@@ -132,8 +224,8 @@ pub fn main(init: std.process.Init) !void {
     var unscaled_correlation_buffer: [correlation_size(max_distance, step)]Float = undefined;
     var corr_matrix_buffer: [max_stations * max_stations]?[]Float = @splat(null);
     const corr_matrix: []?[]Float = corr_matrix_buffer[0..shape.size];
-    var corr_values_buffer = try init.gpa.alloc(Float, corr_values_buffer_size);
-    defer init.gpa.free(corr_values_buffer);
+    var corr_values_buffer = try gpa.alloc(Float, corr_values_buffer_size);
+    defer gpa.free(corr_values_buffer);
 
     var corr_values_buffer_index: usize = 0;
     for (0..count) |row| {
@@ -149,117 +241,298 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    var merged: std.ArrayList(match.Signal) = .empty;
-    defer merged.deinit(init.gpa);
     var sources: std.ArrayList(lma.data.types.Point) = .empty;
-    defer sources.deinit(init.gpa);
+    defer sources.deinit(gpa);
 
-    for (0..10 * 60) |t| {
-        const header = try output.headers.addOne(init.gpa);
-        header.* = .{ .start = @intCast(output.array.items.len), .size = 0 };
-        defer header.size = @intCast(output.array.items.len - header.start);
-
-        for (full_signals, signals, weights, split_indexes) |full_signal, *signal, *weight, *split_index| {
-            signal.* = full_signal.valuesAt(full_signal.epochIndex(12 * 60 * 60 + t, .exact));
-            weight.clearRetainingCapacity();
-            const weight_slice = try weight.addManyAsSlice(init.gpa, signal.len);
-            weight_mode.calculate(signal.*, weight_slice);
-            match.splitTime(signal.*, split_index);
+    for (span.start..span.end()) |time| {
+        try io.checkCancel();
+        var size: usize = 0;
+        for (full_signals, signals, weight_arrays[0..count], weights) |full_signal, *signal, *weight_array, *weight| {
+            signal.* = full_signal.valuesAt(full_signal.epochIndex(time, .exact));
+            weight_array.clearRetainingCapacity();
+            weight.* = try weight_array.addManyAsSlice(gpa, signal.len);
+            weight_mode.calculate(signal.*, weight.*);
+            size += signal.len;
         }
 
-        for (0..subdivisions) |division| {
-            var size: usize = 0;
-            for (0..count) |idx| {
-                const div_index = split_indexes[idx][division];
-                split_signal[idx] = div_index.get(signals[idx]);
-                split_weights[idx] = div_index.get(weights[idx].items);
-                size += split_signal[idx].len;
-            }
-            merged.clearRetainingCapacity();
-            try merged.ensureTotalCapacity(init.gpa, size);
-            sources.clearRetainingCapacity();
-            try sources.ensureTotalCapacity(init.gpa, size);
+        sources.clearRetainingCapacity();
+        try sources.ensureTotalCapacity(gpa, size);
 
-            match.correlationMatrix(split_signal, split_weights, &unscaled_correlation_buffer, step, corr_matrix);
-            match.mergeSignals(split_signal, &merged);
+        const solver: Solver = .{ .points = stations };
+        sources.items = match.match(
+            .{ .max_network = 32, .min_candidates = min_stations, .pairing_window = max_matches },
+            signals,
+            weights,
+            &.{
+                .step = step,
+                .shape = shape,
+                .search = .exhaustive,
+                // .{
+                //     .min_pair_corr = 0.5,
+                //     .min_base_corr = 1.5,
+                //     .min_cum_corr = 1.5,
+                //     .corr_limit = 3.0,
+                //     .attempts = .count(3),
+                // },
+                // Config for plane detection
+                .corr = .{
+                    .matrix = corr_matrix,
+                    .aux_buffer = &unscaled_correlation_buffer,
+                    .window_size = lma.nano.ratio, // / 5,
+                    .refresh_rate = lma.nano.ratio, // / 10,
+                },
+                .time_matrix = time_matrix,
+            },
+            sources.allocatedSlice(),
+            &solver,
+            Solver.solve,
+        );
 
-            const solver: Solver = .{ .points = points };
-            match.synchornize(
-                max_matches,
-                min_stations,
-                merged.items,
-                &sources,
-                .{ .step = step, .shape = shape, .active_stations = active_stations, .corr_matrix = corr_matrix, .time_matrix = time_matrix },
-                &solver,
-                Solver.solve,
-            );
-            try output.array.appendSlice(init.gpa, sources.items);
-        }
-        // Sort last block
-        // Shift back and adjust previous header
+        try output.headers.append(gpa, .init(@intCast(output.array.items.len), @intCast(sources.items.len)));
+        try output.array.appendSlice(gpa, sources.items);
     }
 
-    {
-        var file_writer = options.output.writer(init.io, &buffer);
-        try output.toCsv(&file_writer.interface, null);
-    }
+    try io.checkCancel();
+    return output;
+}
 
-    std.debug.print("Total points: {d}\n", .{output.array.items.len});
+fn cutoffTime(time: u32, point: lma.data.types.Point) bool {
+    return time > point.nanosecond;
+}
+
+fn sortSegment(_: void, _: u64, slice: []lma.data.types.Point) lma.data.segmented.Shift {
+    std.sort.block(lma.data.types.Point, slice, {}, lma.data.types.Point.earlier);
+    return .{};
+}
+
+fn shiftBack(_: void, _: u64, slice: []lma.data.types.Point) lma.data.segmented.Shift {
+    const split: u32 = @intCast(std.sort.partitionPoint(lma.data.types.Point, slice, global_shift, cutoffTime));
+    var idx: u32 = 0;
+    while (idx < split) : (idx += 1) {
+        slice[idx].nanosecond += lma.nano.ratio - global_shift;
+    }
+    while (idx < slice.len) : (idx += 1) {
+        slice[idx].nanosecond -= global_shift;
+    }
+    return .{ .backward = split };
 }
 
 const Solver = struct {
+    threadlocal var local_queries: usize = 0;
+    var queries: usize = 0;
+    threadlocal var local_matches: usize = 0;
+    var matches: usize = 0;
+    threadlocal var local_tuned: usize = 0;
+    var tuned: usize = 0;
+    threadlocal var local_solutions: usize = 0;
+    var solutions: usize = 0;
+
+    const Buffer = struct {
+        const Object = struct {
+            point: sol.Point,
+            time: sol.Float,
+            err: sol.Float = std.math.inf(Float),
+            index: u16,
+            station: u16,
+        };
+
+        len: usize = 0,
+        points: [max_stations]sol.Point = undefined,
+        times: [max_stations]sol.Float = undefined,
+        err: [max_stations]sol.Float = undefined,
+        indexes: [max_stations]u16 = undefined,
+        stations: [max_stations]u16 = undefined,
+        keys: [max_stations]?u16 = @splat(null),
+
+        pub inline fn append(self: *Buffer, obj: Object) u16 {
+            const key: u16 = @intCast(if (self.keys[obj.station]) |idx| idx else blk: {
+                const key = self.len;
+                self.len += 1;
+                break :blk key;
+            });
+
+            self.points[key] = obj.point;
+            self.times[key] = obj.time;
+            self.err[key] = obj.err;
+            self.indexes[key] = obj.index;
+            self.stations[key] = obj.station;
+            self.keys[obj.station] = key;
+            return key;
+        }
+    };
+
     points: []const lma.pipeline.zlm(Precise).Vec3,
 
     inline fn fromNano(nanosecond: u32) Precise {
-        return lma.constants.nano.fromNano(Precise, nanosecond);
+        return lma.nano.fromNano(Precise, nanosecond);
     }
 
     inline fn square(value: anytype) @TypeOf(value) {
         return value * value;
     }
 
-    pub fn solve(self: *const Solver, signals: []const match.Signal) ?lma.data.types.Point {
-        var biases: [min_stations - 1]Precise = undefined;
-        var coefficients: [min_stations - 1]@Vector(4, Precise) = undefined;
-        const center = self.points[signals[0].station];
-        const time = fromNano(signals[0].nanosecond);
-        for (1..min_stations) |station| {
-            const delta = self.points[signals[station].station].sub(center);
-            const delta_t = lma.constants.c * (fromNano(signals[station].nanosecond) - time);
-            biases[station - 1] = delta.length2() - square(delta_t);
-            coefficients[station - 1] = .{ 2 * delta.x, 2 * delta.y, 2 * delta.z, -2 * delta_t };
+    pub fn solve(self: *const Solver, matched: []const match.Signal, candidates: []const match.Signal, skip: []u32) ?lma.data.types.Point {
+        Solver.local_queries += 1;
+        var buffers: Buffer = .{};
+
+        const c = lma.constants.c / lma.constants.refractive_index.air_up_to(8_000);
+        const xyz_rms = (0.000_000_040 * c);
+        const xyz_rms_squared = xyz_rms * xyz_rms;
+        const xyz_center = self.points[matched[0].station];
+        const t_center = fromNano(matched[0].nanosecond);
+        _ = buffers.append(.{
+            .point = .zero,
+            .time = 0,
+            .station = matched[0].station,
+            .index = matched[0].index,
+        });
+
+        var guess: sol.Guess = blk: {
+            // Calculate centered coefficients
+            var biases: [min_stations - 1]sol.Float = undefined;
+            var coefficients: [min_stations - 1]sol.Vec = undefined;
+            for (matched[1..], 0..) |signal, idx| {
+                const key = buffers.append(.{
+                    .point = self.points[signal.station].sub(xyz_center),
+                    .time = c * (fromNano(signal.nanosecond) - t_center),
+                    .index = signal.index,
+                    .station = signal.station,
+                });
+                const delta = buffers.points[key];
+                const delta_t = buffers.times[key];
+                biases[idx] = delta.length2() - square(delta_t);
+                coefficients[idx] = .{ 2 * delta.x, 2 * delta.y, 2 * delta.z, -2 * delta_t };
+            }
+
+            // Solve linear system
+            const arr: [4]sol.Float = sol.linear.solveFixed(min_stations - 1, coefficients, biases);
+            const xyz: sol.Point = .new(arr[0], arr[1], arr[2]);
+            const t: sol.Float = arr[3];
+            if (xyz.length() > max_distance) return null;
+
+            // Assert the solution is reasonable
+            var max_error: sol.Float = 0;
+            for (0..buffers.len) |key| {
+                const delta = buffers.points[key].sub(xyz).length();
+                const delta_t = buffers.times[key] - t;
+                if (delta_t <= 0) return null;
+                buffers.err[key] = @abs(delta - delta_t);
+                max_error = @max(max_error, buffers.err[key]);
+            }
+
+            if (max_error > 1_000) return null;
+
+            // Flip height
+            var gps = lma.pipeline.transform.xyzToGPS(f32, xyz.add(xyz_center));
+            gps.z = @abs(gps.z);
+            Solver.local_matches += 1;
+            break :blk .{ .point = lma.pipeline.transform.gpsToXYZ(sol.Float, gps).sub(xyz_center), .time = t };
+        };
+
+        guess = blk: {
+            const points: []sol.Point = buffers.points[0..buffers.len];
+            const times: []sol.Float = buffers.times[0..buffers.len];
+
+            // Solve quadratic optimization with L-M
+            const arr: [4]sol.Float = sol.lm.solve(
+                points,
+                times,
+                guess,
+                .{ .max_iterations = 100, .min_gradient = 10, .min_improvement = 100 },
+            );
+            const xyz: sol.Point = .new(arr[0], arr[1], arr[2]);
+            const t: sol.Float = arr[3];
+            if (xyz.length() > max_distance) return null;
+
+            // Assert the solution is reasonable
+            var max_error: sol.Float = 0;
+            for (0..buffers.len) |key| {
+                const delta = buffers.points[key].sub(xyz).length();
+                const delta_t = buffers.times[key] - t;
+                if (delta_t <= 0) return null;
+                buffers.err[key] = @abs(delta - delta_t);
+                max_error = @max(buffers.err[key], max_error);
+            }
+
+            if (max_error > 500) return null;
+            // const chi_sq = sol.lm.solutionError(points, times, guess) / xyz_rms_squared / lma.cast.to(sol.Float, buffers.len - 4);
+            // if (chi_sq > 50) return null;
+
+            Solver.local_tuned += 1;
+            break :blk .{ .point = xyz, .time = t };
+        };
+
+        // Extract coefficients
+        for (candidates) |signal| {
+            const point = self.points[signal.station].sub(xyz_center);
+            const time = c * (fromNano(signal.nanosecond) - t_center);
+            const err = @abs(guess.time + point.sub(guess.point).length() - time);
+            if (err > 1_000) continue;
+            if (buffers.keys[signal.station]) |key| {
+                if (err > buffers.err[key]) continue;
+            }
+            _ = buffers.append(.{
+                .point = point,
+                .time = time,
+                .err = err,
+                .index = signal.index,
+                .station = signal.station,
+            });
         }
 
-        const point = lma.pipeline.solver(Precise).approxSolve(coefficients, biases);
-        const arr: [4]Precise = point;
-        if (lma.pipeline.zlm(Precise).vec3(arr[0], arr[1], arr[2]).length() > max_distance) return null;
-        const xyz: lma.pipeline.zlm(Precise).Vec3 = center.add(.new(arr[0], arr[1], arr[2]));
-        const t = time + arr[3] / lma.constants.c;
+        guess = blk: {
+            if (buffers.len < 5) return null;
+            const points: []sol.Point = buffers.points[0..buffers.len];
+            const times: []sol.Float = buffers.times[0..buffers.len];
+
+            // Solve quadratic optimization with L-M
+            const arr: [4]sol.Float = sol.lm.solve(points, times, guess, .{ .max_iterations = 100 });
+            const xyz: sol.Point = .new(arr[0], arr[1], arr[2]);
+            const t: sol.Float = arr[3];
+            if (xyz.length() > max_distance) return null;
+
+            // Assert the solution is reasonable
+            var max_error: sol.Float = 0;
+            for (0..buffers.len) |key| {
+                const delta = buffers.points[key].sub(xyz).length();
+                const delta_t = buffers.times[key] - t;
+                if (delta_t <= 0) return null;
+                buffers.err[key] = @abs(delta - delta_t);
+                max_error = @max(buffers.err[key], max_error);
+            }
+
+            if (max_error > 250) return null;
+            // const chi_sq = sol.lm.solutionError(buffers.points[0..buffers.len], buffers.times[0..buffers.len], guess) /
+            //     (xyz_rms * xyz_rms) / lma.cast.to(sol.Float, buffers.len - 4);
+            // if (chi_sq > 10) return null;
+
+            break :blk .{ .point = xyz, .time = t };
+        };
+
+        const chi_sq = sol.lm.solutionError(buffers.points[0..buffers.len], buffers.times[0..buffers.len], guess) /
+            xyz_rms_squared / lma.cast.to(sol.Float, buffers.len - 4);
+        const xyz = guess.point.add(xyz_center);
+        const t = guess.time / c + t_center;
+        if (t <= 0) return null;
+        if (chi_sq > 10) return null;
+        const gps = lma.pipeline.transform.xyzToGPS(f32, xyz);
+        const nano = lma.nano.toNano(t);
         var mask: u32 = 0;
-        var max_error: Precise = 0;
-        for (0..min_stations) |station| {
-            const delta = self.points[signals[station].station].sub(xyz).length();
-            const delta_t = fromNano(signals[station].nanosecond) - t;
-            mask |= @as(u32, 1) << @intCast(signals[station].station);
-            if (delta_t <= 0) return null;
-            max_error = @max(max_error, @abs(delta / lma.constants.c - delta_t));
+        for (0..buffers.len) |key| {
+            mask |= @as(u32, 1) << @intCast(buffers.stations[key]);
+            if (buffers.err[key] < 100)
+                skip[buffers.stations[key]] |= @as(u32, 1) << @intCast(buffers.indexes[key]);
         }
+        Solver.local_solutions += 1;
 
-        const threshold = 0.000_010;
-        if (max_error < threshold) {
-            const gps = lma.pipeline.transform.xyzToGPS(f32, xyz);
-            if (t <= 0) return null;
-            const nano = lma.constants.nano.toNano(t);
-            return .{
-                .nanosecond = nano,
-                .latitude = gps.x,
-                .longitude = gps.y,
-                .altitude = gps.z,
-                .station_mask = mask,
-                .measure_error = @floatCast(max_error / threshold),
-                .dBm = 0,
-            };
-        }
-        return null;
+        return .{
+            .nanosecond = nano,
+            .latitude = gps.x,
+            .longitude = gps.y,
+            .altitude = gps.z,
+            .station_mask = mask,
+            .measure_error = @floatCast(chi_sq),
+            .dBm = 0,
+        };
     }
 };

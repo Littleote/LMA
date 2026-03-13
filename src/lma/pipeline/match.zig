@@ -4,7 +4,7 @@ const lma = @import("../lma.zig");
 const common = lma.common;
 const ToA = lma.data.types.ToA;
 const Point = lma.data.types.Point;
-const max_stations = lma.constants.max_stations;
+pub const SubSlice = lma.SubSlice;
 
 pub const Float = f32;
 
@@ -21,7 +21,7 @@ pub const Step = struct {
     pub fn fromPower(pow: i8) Step {
         const shift: u5 = @intCast(pow + 2);
         return .{
-            .step = lma.constants.nano.fromNano(Float, @as(u32, 1) << shift),
+            .step = lma.nano.fromNano(Float, @as(u32, 1) << shift),
             .shift = shift,
         };
     }
@@ -51,6 +51,8 @@ pub const Weights = enum {
     cumulative,
     /// Constant value set for all observations
     constant,
+    /// Combination of a baseline constant value and the rescaled decibels
+    @"const+decibels",
 
     inline fn binning(dBm: f16) usize {
         return @intFromFloat(@trunc(std.math.clamp(dBm + 90, 0, 119)));
@@ -62,22 +64,24 @@ pub const Weights = enum {
             .power => {
                 const factor = @log2(10.0) / 10.0;
                 // Upscale power by 100_000 to make the mean order of magnitude around 1
-                for (slice, weights) |toa, *w| w.* = @exp2(16.5 + factor * lma.common.as(Float, toa.dBm));
+                for (slice, weights) |toa, *w| w.* = @exp2(16.5 + factor * lma.cast.as(Float, toa.dBm));
             },
             .decibels => {
-                // Downscale decibels by 50 to make the mean of the vales around 1
-                for (slice, weights) |toa, *w| w.* = (lma.common.as(Float, toa.dBm) + 75.0) / 50.0;
+                // Downscale decibels by 100 to make the vales around 1
+                for (slice, weights) |toa, *w| w.* = lma.cast.as(Float, toa.dBm) / 100.0 + 1.0;
             },
             .cumulative => {
                 var bins: [120]Float = @splat(0);
-                // Set the total to 2 to make the mean of the vales around 1
-                const inc = 2.0 / lma.common.cast(Float, slice.len);
+                const inc = 1.0 / lma.cast.to(Float, slice.len);
                 for (slice) |toa| bins[binning(toa.dBm)] += inc;
                 for (1..120) |idx| bins[idx] += bins[idx - 1];
                 for (slice, weights) |toa, *w| w.* = bins[binning(toa.dBm)];
             },
             .constant => {
                 @memset(weights, 1);
+            },
+            .@"const+decibels" => {
+                for (slice, weights) |toa, *w| w.* = lma.cast.as(Float, toa.dBm) / 100.0 + 2.0;
             },
         }
     }
@@ -94,43 +98,19 @@ pub const Signal = struct {
     index: u16,
 };
 
-/// Find the index of the first value with time equal or less than requested
-fn findTime(slice: []const ToA, time: u32) u32 {
-    // Short-circuit for the empty case
-    if (slice.len == 0) return 0;
-
-    // Binary search of the nanosecond
-    var low: u32 = 0;
-    var high: u32 = @intCast(slice.len);
-    var size: u32 = high - low;
-
-    while (size > 1) {
-        const probe = low + @divFloor(size, 2);
-        if (slice[probe].nanosecond < time) {
-            low = probe + 1;
-        } else if (time < slice[probe].nanosecond) {
-            high = probe;
-        } else {
-            return probe;
-        }
-        size = high - low;
-    }
-    low = high - 1;
-    return if (slice[low].nanosecond < time) high else low;
+fn before(time: u32, toa: ToA) bool {
+    return toa.nanosecond < time;
 }
 
-pub const Split = lma.common.SubSlice;
+/// Find the index of the first value with time equal or less than requested
+fn findTime(slice: []const ToA, time: u32) u32 {
+    return @intCast(std.sort.partitionPoint(ToA, slice, time, before));
+}
 
-pub fn splitTime(slice: []const ToA, splits: []Split) void {
-    var last: u32 = 0;
-    for (splits, 1..) |*split, division| {
-        const end: u32 = @intCast(findTime(slice, @intCast(division * lma.constants.nano.ratio / splits.len)));
-        split.* = .{
-            .start = last,
-            .size = end - last,
-        };
-        last = end;
-    }
+/// Find the SubSlice for the given time span
+pub fn getSpan(slice: []const ToA, span: SubSlice) SubSlice {
+    const start = findTime(slice, span.start);
+    return .init(start, findTime(slice[start..], span.end()));
 }
 
 /// Find the correlation between the sparse signals x and y.
@@ -144,6 +124,7 @@ pub fn correlation(signal_x: []const ToA, weights_x: []const Float, signal_y: []
     var low: u32 = 0;
     var high: u32 = 0;
     var upper: u32 = 0;
+    @memset(corr, 0);
     for (signal_x, weights_x) |x, wx| {
         const threshold = x.nanosecond +| above;
         var backoff: u5 = 0;
@@ -166,36 +147,36 @@ pub fn correlation(signal_x: []const ToA, weights_x: []const Float, signal_y: []
 }
 
 /// Translates and reescales the correlation to map the first and third quantile
-/// to -0.5 and 0.5 respectively.
+/// to approximately -0.5 and 0.5 respectively.
 pub fn quantileScale(unscaled: []const Float, scaled: []Float) void {
     @memcpy(scaled, unscaled);
     std.sort.block(Float, scaled, {}, std.sort.asc(Float));
-    const divFloor = std.math.divFloor;
-    const divCeil = std.math.divCeil;
-    const q1 = (scaled[divFloor(usize, scaled.len - 1, 4) catch unreachable] +
-        scaled[divCeil(usize, scaled.len - 1, 4) catch unreachable]) / 2;
-    const q3 = (scaled[divFloor(usize, 3 * (scaled.len - 1), 4) catch unreachable] +
-        scaled[divCeil(usize, 3 * (scaled.len - 1), 4) catch unreachable]) / 2;
+    const ceil: usize = if ((scaled.len - 1) % 4 != 0) 1 else 0;
+    const q1_idx: usize = @divFloor(scaled.len - 1, 4);
+    const q3_idx: usize = @divFloor(3 * (scaled.len - 1), 4);
+    const q1 = (scaled[q1_idx] + scaled[q1_idx + ceil]) / 2;
+    const q3 = (scaled[q3_idx] + scaled[q3_idx + ceil]) / 2;
     const iqr = q3 - q1;
     const center = (q1 + q3) / 2;
     for (unscaled, scaled) |c, *s| s.* = (c - center) / iqr;
 }
 
-/// Computes the lower triangle of the matrix of scaled cross-correlation vectors
+/// Computes the lower triangle of the matrix of scaled cross-correlation vectors for the given time span.
 /// If the upper triangle is non-null makes a copy with the reversed cross-correlation vectors
-pub fn correlationMatrix(signals: []const []const ToA, weights: []const []const Float, aux_buffer: []Float, step: Step, corr_matrix: []?[]Float) void {
+pub fn newCorrelationMatrix(signals: []const []const ToA, weights: []const []const Float, aux_buffer: []Float, span: SubSlice, step: Step, corr_matrix: []const ?[]Float) void {
     const stations: u32 = @intCast(signals.len);
-    const shape: lma.pipeline.grid.Shape = .init(stations, stations);
+    const shape: lma.pipeline.Grid = .init(stations, stations);
     for (0..stations) |row| {
+        const row_split = getSpan(signals[row], span);
         for (0..row) |col| {
+            const col_split = getSpan(signals[col], span);
             const corr = corr_matrix[shape.ravel(row, col)] orelse continue;
             const unscaled = aux_buffer[0..corr.len];
-            @memset(unscaled, 0);
             correlation(
-                signals[row],
-                weights[row],
-                signals[col],
-                weights[col],
+                row_split.getConst(ToA, signals[row]),
+                row_split.getConst(Float, weights[row]),
+                col_split.getConst(ToA, signals[col]),
+                col_split.getConst(Float, weights[col]),
                 unscaled,
                 step,
             );
@@ -208,161 +189,233 @@ pub fn correlationMatrix(signals: []const []const ToA, weights: []const []const 
     }
 }
 
-/// Merges the signals by order of arrival.
-/// In case of ties, use the earlier station
-pub fn mergeSignals(signals: []const []const ToA, merged: *std.ArrayList(Signal)) void {
-    const stations = signals.len;
-    std.debug.assert(stations <= max_stations);
-    const max_nano: u32 = std.math.maxInt(u32);
-    var index: [max_stations]u16 = @splat(0);
-    var nano_buffer: [max_stations]u32 = @splat(max_nano);
-    const nanos: []u32 = nano_buffer[0..stations];
-    for (0..stations) |idx| nanos[idx] = if (signals[idx].len > 0) signals[idx][0].nanosecond else max_nano;
-    while (true) {
-        var earliest = nanos[0];
-        var earsliest_idx: usize = 0;
-        for (nanos[1..], 1..) |nano, idx| {
-            if (earliest > nano) {
-                earliest = nano;
-                earsliest_idx = idx;
-            }
-        }
-        if (earliest == max_nano) {
-            @branchHint(.unlikely);
-            break;
-        }
-        merged.appendAssumeCapacity(.{
-            .nanosecond = earliest,
-            .station = @intCast(earsliest_idx),
-            .index = index[earsliest_idx],
-        });
-        index[earsliest_idx] += 1;
-        if (index[earsliest_idx] == signals[earsliest_idx].len) {
-            @branchHint(.unlikely);
-            nanos[earsliest_idx] = max_nano;
-        } else {
-            @branchHint(.likely);
-            nanos[earsliest_idx] = signals[earsliest_idx][index[earsliest_idx]].nanosecond;
-        }
-    }
-}
-
-pub const SyncOptions = struct {
-    step: Step,
-    shape: lma.pipeline.grid.Shape,
-    active_stations: usize,
-    min_station_corr: Float = -0.5,
-    min_total_corr: Float = 1.5,
-    min_increase_corr: Float = 0.5,
-    limit_max_corr: Float = 20.0,
-    yolo: bool = true,
-    corr_matrix: []const ?[]const Float,
-    time_matrix: []const u32,
-
-    pub const bad_value: Float = -1_000.0;
+pub const Config = struct {
+    max_network: u16,
+    min_candidates: u16,
+    pairing_window: u16,
 };
 
-inline fn getCorrelation(
+pub const Options = struct {
+    pub const Search = struct {
+        pub const Attempts = enum(u16) {
+            single = 1,
+            unlimited = std.math.maxInt(u16),
+            _,
+
+            pub fn count(value: u16) Attempts {
+                return @enumFromInt(value);
+            }
+        };
+
+        min_pair_corr: Float,
+        min_base_corr: Float,
+        min_cum_corr: Float,
+        corr_limit: Float,
+        attempts: Attempts,
+
+        pub const bad_value: Float = -1_000.0;
+
+        pub const yolo: Search = .{
+            .min_pair_corr = 0.0,
+            .min_base_corr = 1.5,
+            .min_cum_corr = 1.0,
+            .corr_limit = 10.0,
+            .attempts = .single,
+        };
+
+        pub const exhaustive: Search = .{
+            .min_pair_corr = 0.5,
+            .min_base_corr = 2.0,
+            .min_cum_corr = 1.5,
+            .corr_limit = 5.0,
+            .attempts = .unlimited,
+        };
+
+        pub const unrestricted: Search = .{
+            .min_pair_corr = 0.0,
+            .min_base_corr = 0.0,
+            .min_cum_corr = 0.0,
+            .corr_limit = 10.0,
+            .attempts = .count(3),
+        };
+    };
+
+    pub const Correlation = struct {
+        matrix: []const ?[]Float,
+        aux_buffer: []Float,
+        window_size: u32,
+        refresh_rate: u32,
+
+        pub fn endpoints(self: Correlation, start: u32) SubSlice {
+            const from = start +| (self.refresh_rate / 2) -| (self.window_size / 2);
+            const to = start +| (self.refresh_rate / 2) +| (self.window_size / 2);
+            return .initRange(from, to);
+        }
+    };
+
+    step: Step,
+    shape: lma.pipeline.Grid,
+
+    search: Search,
+    corr: Correlation,
+    time_matrix: []const u32,
+};
+
+inline fn queryCorrelation(
     reference: Signal,
     candidates: []const Signal,
-    corr: []Float,
-    options: SyncOptions,
-) void {
-    for (candidates, corr) |candidate, *corr_value| {
+    corr_buffer: []Float,
+    options: *const Options,
+) []Float {
+    for (candidates, corr_buffer[0..candidates.len]) |candidate, *corr_value| {
         corr_value.* = blk: {
-            if (reference.station == candidate.station) break :blk SyncOptions.bad_value;
+            if (reference.station == candidate.station) break :blk Options.Search.bad_value;
             const idx = options.shape.ravel(reference.station, candidate.station);
             const max_time = options.time_matrix[idx];
             const delta = @max(reference.nanosecond, candidate.nanosecond) - @min(reference.nanosecond, candidate.nanosecond);
-            if (delta > max_time) break :blk SyncOptions.bad_value;
-            const corr_true_value = options.step.get(options.corr_matrix[idx] orelse break :blk SyncOptions.bad_value, reference.nanosecond, candidate.nanosecond);
-            break :blk if (corr_true_value < options.min_station_corr) SyncOptions.bad_value else @min(options.limit_max_corr, corr_true_value);
+            if (delta > max_time) break :blk Options.Search.bad_value;
+            const corr_true_value = options.step.get(options.corr.matrix[idx] orelse break :blk Options.Search.bad_value, reference.nanosecond, candidate.nanosecond);
+            break :blk if (corr_true_value < options.search.min_pair_corr) Options.Search.bad_value else @min(options.search.corr_limit, corr_true_value);
         };
     }
+    return corr_buffer[0..candidates.len];
 }
 
-inline fn syncInner(
+inline fn matchInner(
+    comptime config: Config,
     comptime depth: usize,
-    comptime buffer_size: usize,
-    signal_corr: [][buffer_size]Float,
     candidates: []const Signal,
-    selected: []Signal,
-    options: SyncOptions,
+    matches: *[config.min_candidates]Signal,
+    weights: []Float,
+    skips: []u32,
+    options: *const Options,
     context: anytype,
-    solve: fn (@TypeOf(context), []const Signal) ?Point,
+    solve: fn (@TypeOf(context), []const Signal, []const Signal, []u32) ?Point,
 ) ?Point {
-    while (true) {
-        const best = std.sort.argMax(Float, signal_corr[0][0..candidates.len], {}, std.sort.asc(Float)) orelse break;
-        if (signal_corr[0][best] < options.min_total_corr) break;
-        selected[depth] = candidates[best];
+    if (depth == 0) {
+        return solve(context, matches, candidates, skips);
+    } else {
+        var weight_buffer: [config.max_network * config.pairing_window]Float = undefined;
+        for (0..@intFromEnum(options.search.attempts)) |_| {
+            const best = std.sort.argMax(Float, weights, {}, std.sort.asc(Float)) orelse break;
+            if (weights[best] < options.search.min_base_corr) break;
+            matches[config.min_candidates - depth] = candidates[best];
 
-        if (depth == 0) {
-            return solve(context, selected);
-        } else {
-            getCorrelation(candidates[best], candidates, signal_corr[1][0..candidates.len], options);
-            for (0..candidates.len) |idx| signal_corr[1][idx] += signal_corr[0][idx] - options.min_increase_corr;
-            if (syncInner(
+            const new_weights = queryCorrelation(candidates[best], candidates, &weight_buffer, options);
+            for (weights, new_weights) |w, *nw| nw.* += w - options.search.min_cum_corr;
+
+            if (matchInner(
+                config,
                 depth - 1,
-                buffer_size,
-                signal_corr[1..],
                 candidates,
-                selected,
+                matches,
+                new_weights,
+                skips,
                 options,
                 context,
                 solve,
-            )) |point| {
-                return point;
-            }
+            )) |point| return point;
+            weights[best] = Options.Search.bad_value;
         }
-        signal_corr[0][best] = -100;
-        if (options.yolo) break;
+        return null;
     }
-    return null;
 }
 
-pub fn synchornize(
-    comptime station_candidates: usize,
-    comptime min_stations: usize,
-    merged: []const Signal,
-    points: *std.ArrayList(Point),
-    options: SyncOptions,
+pub fn match(
+    comptime config: Config,
+    signals: []const []const ToA,
+    weights: []const []const Float,
+    options: *const Options,
+    point_buffer: []Point,
     context: anytype,
-    solve: fn (@TypeOf(context), []const Signal) ?Point,
-) void {
-    const depth = min_stations - 1;
-    const max_candidates: usize = options.active_stations * station_candidates;
-    var corr_buffer: [min_stations][max_stations * station_candidates]Float = undefined;
-    var selected_buffer: [min_stations]Signal = undefined;
+    solve: fn (@TypeOf(context), []const Signal, []const Signal, []u32) ?Point,
+) []Point {
+    std.debug.assert(signals.len <= config.max_network);
+    const max_nano: u32 = std.math.maxInt(u32);
+    var points: std.ArrayList(Point) = .initBuffer(point_buffer);
 
-    for (merged, 1..) |signal, low| {
-        selected_buffer[depth] = signal;
-        const high = @min(merged.len, low + max_candidates);
-        const candidates = merged[low..high];
-        getCorrelation(signal, candidates, corr_buffer[0][0..candidates.len], options);
-        if (syncInner(
-            depth - 1,
-            max_stations * station_candidates,
-            &corr_buffer,
-            candidates,
-            &selected_buffer,
+    // Merge
+    var index: [config.max_network]u16 = @splat(0);
+    var nano_buffer: [config.max_network]u32 = undefined;
+    var skips: [config.max_network]u32 = @splat(0);
+    for (0..signals.len) |idx| nano_buffer[idx] = if (signals[idx].len > 0) signals[idx][0].nanosecond else max_nano;
+    const nanos: []u32 = nano_buffer[0..signals.len];
+
+    // Correlation
+    var last_update: u32 = std.sort.min(u32, nanos, {}, std.sort.asc(u32)) orelse unreachable;
+    newCorrelationMatrix(signals, weights, options.corr.aux_buffer, options.corr.endpoints(last_update), options.step, options.corr.matrix);
+
+    // Matching
+    var matches: [config.min_candidates]Signal = @splat(.{ .nanosecond = 4_000_000_000, .index = 99, .station = 99 });
+    var candidate_buffer: [config.max_network * config.pairing_window]Signal = undefined;
+    var weight_buffer: [config.max_network * config.pairing_window]Float = undefined;
+
+    while (true) {
+        const idx = std.sort.argMin(u32, nanos, {}, std.sort.asc(u32)) orelse unreachable;
+        defer {
+            index[idx] += 1;
+            skips[idx] >>= 1;
+            nanos[idx] = if (index[idx] >= signals[idx].len) max_nano else signals[idx][index[idx]].nanosecond;
+        }
+        // End after processing all
+        if (nanos[idx] == max_nano) {
+            @branchHint(.unlikely);
+            break;
+        }
+        // Skip already matched signals
+        if (skips[idx] & 1 == 1) {
+            @branchHint(.unlikely);
+            continue;
+        }
+        // Update outdated correlation matrix
+        if (nanos[idx] > last_update + options.corr.refresh_rate) {
+            @branchHint(.unlikely);
+            last_update = nanos[idx];
+            newCorrelationMatrix(signals, weights, options.corr.aux_buffer, options.corr.endpoints(last_update), options.step, options.corr.matrix);
+        }
+
+        // Match buffer
+        const initial: Signal = .{
+            .nanosecond = nanos[idx],
+            .index = 0,
+            .station = @intCast(idx),
+        };
+        matches[0] = initial;
+        var candidates: std.ArrayList(Signal) = .initBuffer(&candidate_buffer);
+
+        // Get all possible paired signals
+        for (0..signals.len) |station| {
+            const signal = signals[station][index[station]..];
+            for (signal[0..@min(signal.len, config.pairing_window)], 0..) |toa, bit_idx| {
+                if (nanos[idx] + options.time_matrix[options.shape.ravel(idx, station)] < toa.nanosecond) break;
+                if ((skips[station] >> @intCast(bit_idx)) & 1 == 1) continue;
+                candidates.appendAssumeCapacity(.{
+                    .nanosecond = toa.nanosecond,
+                    .index = @intCast(bit_idx),
+                    .station = @intCast(station),
+                });
+            }
+        }
+
+        // std.debug.print("CANDIDATES:\n", .{});
+        // for (candidates.items) |c| {
+        //     std.debug.print("\t{any}\n", .{c});
+        // }
+
+        if (matchInner(
+            config,
+            config.min_candidates - 1,
+            candidates.items,
+            &matches,
+            queryCorrelation(initial, candidates.items, &weight_buffer, options),
+            skips[0..signals.len],
             options,
             context,
             solve,
-        )) |point| {
+        )) |point|
             points.appendAssumeCapacity(point);
-        }
     }
-}
-
-fn randomToA(signal: []ToA, rand: std.Random) void {
-    var nanosecond: u32 = 0;
-    for (signal) |*entry| {
-        nanosecond += 10 + common.cast(u32, (@round(1_000 * @min(100.0, rand.floatExp(Float)))));
-        entry.* = .{
-            .nanosecond = nanosecond,
-            .dBm = common.as(f16, 200.0 * rand.float(Float) - 120.0),
-        };
-    }
+    return points.items;
 }
 
 inline fn getToA(scale: u32, comptime times: []const u32) [times.len]ToA {
@@ -377,44 +430,30 @@ inline fn getToA(scale: u32, comptime times: []const u32) [times.len]ToA {
 }
 
 test findTime {
-    var buffer: [512]ToA = undefined;
-    var rng: std.Random.DefaultPrng = .init(std.testing.random_seed);
-    const random = rng.random();
-    randomToA(&buffer, random);
+    var buffer: [16]ToA = getToA(16, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
 
     try std.testing.expect(findTime(&buffer, 0) == 0);
-    try std.testing.expect(findTime(&buffer, std.math.maxInt(u32)) == 512);
-    try std.testing.expect(findTime(&buffer, buffer[123].nanosecond) == 123);
-    try std.testing.expect(findTime(&buffer, buffer[321].nanosecond + 5) == 322);
-    try std.testing.expect(findTime(&buffer, buffer[98].nanosecond - 5) == 98);
+    try std.testing.expect(findTime(&buffer, std.math.maxInt(u32)) == 16);
+    try std.testing.expect(findTime(&buffer, buffer[12].nanosecond) == 12);
+    try std.testing.expect(findTime(&buffer, buffer[3].nanosecond + 5) == 4);
+    try std.testing.expect(findTime(&buffer, buffer[9].nanosecond - 5) == 9);
 }
 
-test splitTime {
-    const extremes: [10]ToA = getToA(4, &.{ 0, 199_999_999, 200_000_000, 399_999_999, 400_000_000, 599_999_999, 600_000_000, 799_999_999, 800_000_000, 999_999_999 });
-    var splits: [5]Split = undefined;
-    const expected: [5]Split = .{
-        .{ .start = 0, .size = 2 },
-        .{ .start = 2, .size = 2 },
-        .{ .start = 4, .size = 2 },
-        .{ .start = 6, .size = 2 },
-        .{ .start = 8, .size = 2 },
-    };
+test getSpan {
+    var sequence: [16]ToA = getToA(1, &.{ 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 });
 
-    splitTime(&extremes, &splits);
-
-    try std.testing.expectEqualSlices(Split, &expected, &splits);
+    try std.testing.expectEqual(SubSlice.initRange(3, 7), getSpan(&sequence, .initRange(7, 11)));
+    try std.testing.expectEqual(SubSlice.initRange(0, 1), getSpan(&sequence, .initRange(1, 5)));
+    try std.testing.expectEqual(SubSlice.initRange(13, 16), getSpan(&sequence, .initRange(17, 23)));
 }
 
 test "autocorrelation" {
-    var signal: [512]ToA = undefined;
-    var weights: [512]Float = @splat(1);
-    var corr_buffer: [5]Float = @splat(0);
-    var rng: std.Random.DefaultPrng = .init(std.testing.random_seed);
-    const random = rng.random();
-    randomToA(&signal, random);
+    var signal: [16]ToA = getToA(16, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    var weights: [16]Float = @splat(1);
+    var corr_buffer: [5]Float = @splat(std.math.nan(Float));
 
     correlation(&signal, &weights, &signal, &weights, &corr_buffer, .fromPower(-1));
-    try std.testing.expect(corr_buffer[corr_buffer.len >> 1] == 512.0);
+    try std.testing.expect(corr_buffer[corr_buffer.len >> 1] == 16.0);
     corr_buffer[corr_buffer.len >> 1] = 0;
     try std.testing.expect(std.mem.allEqual(Float, &corr_buffer, 0));
 }
@@ -425,7 +464,7 @@ test correlation {
     const weights_x: [length]Float = .{ 10, 10, 1, 5, 8, 4, 3, 8, 3, 1, 1, 5, 6, 6, 7, 9, 5, 2, 5, 10 };
     const signal_y: [length]ToA = getToA(4, &.{ 6, 16, 25, 35, 40, 44, 45, 49, 55, 56, 59, 63, 72, 74, 78, 82, 86, 94, 95, 97 });
     const weights_y: [length]Float = .{ 9, 2, 2, 8, 10, 10, 4, 7, 8, 3, 1, 4, 6, 10, 5, 5, 7, 5, 5, 4 };
-    var corr: [21]Float = @splat(0);
+    var corr: [21]Float = undefined;
     const expected: [21]Float = .{ 69, 79, 98, 100, 86, 5, 48, 81, 167, 135, 140, 162, 91, 139, 63, 9, 89, 119, 107, 45, 82 };
 
     correlation(&signal_x, &weights_x, &signal_y, &weights_y, &corr, .fromPower(0));
@@ -443,33 +482,33 @@ test quantileScale {
     try std.testing.expectEqualSlices(Float, &expected, &scaled);
 }
 
-test mergeSignals {
-    const length = 74;
-    const signals: [5][]const ToA = .{
-        &getToA(1, &.{ 15, 19, 23, 31, 41, 61, 80, 85, 92, 105, 107, 114, 122, 137, 155 }),
-        &getToA(1, &.{ 27, 36, 46, 66, 83, 103, 109, 125, 141, 142, 161, 165, 183, 203, 223 }),
-        &getToA(1, &.{ 32, 40, 41, 43, 53, 54, 65, 69, 81, 100, 103, 104, 105 }),
-        &getToA(1, &.{ 21, 28, 37, 55, 71, 76, 86, 97, 99, 101, 109, 119, 123, 130 }),
-        &getToA(1, &.{ 27, 42, 61, 62, 77, 81, 94, 105, 117, 122, 129, 134, 150, 154, 167, 172, 181 }),
-    };
+// test mergeSignals {
+//     const length = 74;
+//     const signals: [5][]const ToA = .{
+//         &getToA(1, &.{ 15, 19, 23, 31, 41, 61, 80, 85, 92, 105, 107, 114, 122, 137, 155 }),
+//         &getToA(1, &.{ 27, 36, 46, 66, 83, 103, 109, 125, 141, 142, 161, 165, 183, 203, 223 }),
+//         &getToA(1, &.{ 32, 40, 41, 43, 53, 54, 65, 69, 81, 100, 103, 104, 105 }),
+//         &getToA(1, &.{ 21, 28, 37, 55, 71, 76, 86, 97, 99, 101, 109, 119, 123, 130 }),
+//         &getToA(1, &.{ 27, 42, 61, 62, 77, 81, 94, 105, 117, 122, 129, 134, 150, 154, 167, 172, 181 }),
+//     };
 
-    var buffer: [length]Signal = undefined;
-    var merged: std.ArrayList(Signal) = .initBuffer(&buffer);
-    mergeSignals(&signals, &merged);
+//     var buffer: [length]Signal = undefined;
+//     var merged: std.ArrayList(Signal) = .initBuffer(&buffer);
+//     mergeSignals(&signals, &merged);
 
-    const expected_times: [length]u32 = .{ 15, 19, 21, 23, 27, 27, 28, 31, 32, 36, 37, 40, 41, 41, 42, 43, 46, 53, 54, 55, 61, 61, 62, 65, 66, 69, 71, 76, 77, 80, 81, 81, 83, 85, 86, 92, 94, 97, 99, 100, 101, 103, 103, 104, 105, 105, 105, 107, 109, 109, 114, 117, 119, 122, 122, 123, 125, 129, 130, 134, 137, 141, 142, 150, 154, 155, 161, 165, 167, 172, 181, 183, 203, 223 };
-    const expected_stations: [length]u16 = .{ 0, 0, 3, 0, 1, 4, 3, 0, 2, 1, 3, 2, 0, 2, 4, 2, 1, 2, 2, 3, 0, 4, 4, 2, 1, 2, 3, 3, 4, 0, 2, 4, 1, 0, 3, 0, 4, 3, 3, 2, 3, 1, 2, 2, 0, 2, 4, 0, 1, 3, 0, 4, 3, 0, 4, 3, 1, 4, 3, 4, 0, 1, 1, 4, 4, 0, 1, 1, 4, 4, 4, 1, 1, 1 };
-    const expected_index: [length]u16 = .{ 0, 1, 0, 2, 0, 0, 1, 3, 0, 1, 2, 1, 4, 2, 1, 3, 2, 4, 5, 3, 5, 2, 3, 6, 3, 7, 4, 5, 4, 6, 8, 5, 4, 7, 6, 8, 6, 7, 8, 9, 9, 5, 10, 11, 9, 12, 7, 10, 6, 10, 11, 8, 11, 12, 9, 12, 7, 10, 13, 11, 13, 8, 9, 12, 13, 14, 10, 11, 14, 15, 16, 12, 13, 14 };
+//     const expected_times: [length]u32 = .{ 15, 19, 21, 23, 27, 27, 28, 31, 32, 36, 37, 40, 41, 41, 42, 43, 46, 53, 54, 55, 61, 61, 62, 65, 66, 69, 71, 76, 77, 80, 81, 81, 83, 85, 86, 92, 94, 97, 99, 100, 101, 103, 103, 104, 105, 105, 105, 107, 109, 109, 114, 117, 119, 122, 122, 123, 125, 129, 130, 134, 137, 141, 142, 150, 154, 155, 161, 165, 167, 172, 181, 183, 203, 223 };
+//     const expected_stations: [length]u16 = .{ 0, 0, 3, 0, 1, 4, 3, 0, 2, 1, 3, 2, 0, 2, 4, 2, 1, 2, 2, 3, 0, 4, 4, 2, 1, 2, 3, 3, 4, 0, 2, 4, 1, 0, 3, 0, 4, 3, 3, 2, 3, 1, 2, 2, 0, 2, 4, 0, 1, 3, 0, 4, 3, 0, 4, 3, 1, 4, 3, 4, 0, 1, 1, 4, 4, 0, 1, 1, 4, 4, 4, 1, 1, 1 };
+//     const expected_index: [length]u16 = .{ 0, 1, 0, 2, 0, 0, 1, 3, 0, 1, 2, 1, 4, 2, 1, 3, 2, 4, 5, 3, 5, 2, 3, 6, 3, 7, 4, 5, 4, 6, 8, 5, 4, 7, 6, 8, 6, 7, 8, 9, 9, 5, 10, 11, 9, 12, 7, 10, 6, 10, 11, 8, 11, 12, 9, 12, 7, 10, 13, 11, 13, 8, 9, 12, 13, 14, 10, 11, 14, 15, 16, 12, 13, 14 };
 
-    for (0..length) |idx| {
-        const expected: Signal = .{
-            .nanosecond = expected_times[idx],
-            .station = expected_stations[idx],
-            .index = expected_index[idx],
-        };
-        if (!std.meta.eql(merged.items[idx], expected)) {
-            std.debug.print("Expected:\n{any}\nFound:\n{any}\nIn position: {d}\n", .{ expected, merged.items[idx], idx });
-            return error.TestExpectedEqual;
-        }
-    }
-}
+//     for (0..length) |idx| {
+//         const expected: Signal = .{
+//             .nanosecond = expected_times[idx],
+//             .station = expected_stations[idx],
+//             .index = expected_index[idx],
+//         };
+//         if (!std.meta.eql(merged.items[idx], expected)) {
+//             std.debug.print("Expected:\n{any}\nFound:\n{any}\nIn position: {d}\n", .{ expected, merged.items[idx], idx });
+//             return error.TestExpectedEqual;
+//         }
+//     }
+// }

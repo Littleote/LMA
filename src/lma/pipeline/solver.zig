@@ -120,61 +120,54 @@ pub fn solver(T: type) type {
         };
 
         pub const Point = lma.pipeline.zlm(Float).Vec3;
-        pub const Guess = struct { point: Point, time: Float };
+        pub const Guess = Vec;
 
         pub const lm = levenberg_marquardt;
         pub const levenberg_marquardt = struct {
-            pub fn solutionError(points: []const Point, times: []const Float, guess: Guess) Float {
-                var err: Float = 0;
-                for (points, times) |point, time| {
-                    const delta = point.sub(guess.point);
-                    const dist = delta.length();
+            pub fn solutionError(data: []const Vec, source: Vec) Float {
+                const space: Vec = .{ 1, 1, 1, 0 };
+                const time: Vec = .{ 0, 0, 0, 1 };
 
-                    const err_i = guess.time + dist - time;
+                var err: Float = 0;
+                for (data) |signal_i| {
+                    const delta = source - signal_i;
+                    const space_delta = delta * space;
+                    const time_delta = @reduce(.Add, delta * time);
+                    const dist = @sqrt(@reduce(.Add, space_delta * delta));
+
+                    const err_i = time_delta + dist;
                     err += err_i * err_i;
                 }
                 return err;
             }
 
-            inline fn gradientSystem(points: []const Point, times: []const Float, guess: Guess) struct { [4]Vec, Vec } {
+            inline fn gradientSystem(data: []const Vec, source: Vec) struct { [4]Vec, Vec } {
+                const space: Vec = .{ 1, 1, 1, 0 };
+                const time: Vec = .{ 0, 0, 0, 1 };
+
                 var mat: [4]Vec = @splat(@splat(0));
                 var bias: Vec = @splat(0);
-                var total_err: Float = 0;
-                for (points, times) |point, time| {
-                    const delta = guess.point.sub(point);
-                    const dist = delta.length();
+                for (data) |signal_i| {
+                    const delta = source - signal_i;
+                    const space_delta = delta * space;
+                    const time_delta = @reduce(.Add, delta * time);
+                    const dist = @sqrt(@reduce(.Add, space_delta * delta));
 
-                    const err: Float = guess.time + dist - time;
-                    total_err += err * err;
-                    const jac_arr: [4]Float = .{ delta.x / dist, delta.y / dist, delta.z / dist, 1 };
-                    const jac: Vec = jac_arr;
+                    const err_i = time_delta + dist;
+                    const jac = space_delta / @as(Vec, @splat(dist)) + time;
+                    const jac_arr: [4]Float = jac;
 
                     for (jac_arr, 0..) |elem, r| mat[r] += jac * @as(Vec, @splat(elem));
-                    bias -= jac * @as(Vec, @splat(err));
+                    bias -= jac * @as(Vec, @splat(err_i));
                 }
                 return .{ mat, bias };
             }
 
-            fn gradient(points: []const Point, times: []const Float, guess: Guess, lambda: Float) Vec {
-                var mat: [4]Vec, const bias: Vec = gradientSystem(points, times, guess);
+            inline fn gradient(mat: [4]Vec, bias: Vec, lambda: Float) Vec {
+                var damp_mat: [4]Vec = undefined;
                 const damping: Vec = .{ 1 + lambda, 1, 1, 1 };
-                inline for (0..4) |r| {
-                    mat[r] = mat[r] * std.simd.rotateElementsRight(damping, r);
-                }
-                return linear.solveInner(mat, bias);
-            }
-
-            inline fn dampenedSolution(mat: *[4]Vec, bias: Vec, guess: Guess, lambda: Float) struct { Guess, Float } {
-                const damping: Vec = .{ 1 + lambda, 1, 1, 1 };
-                inline for (0..4) |r| mat[r] = mat[r] * std.simd.rotateElementsRight(damping, r);
-                const delta: Vec = linear.solveInner(mat.*, bias);
-                const norm: Float = @reduce(.Add, delta * delta);
-                const arr: [4]Float = delta;
-                inline for (0..4) |r| mat[r] = mat[r] / std.simd.rotateElementsRight(damping, r);
-                return .{ .{
-                    .point = guess.point.add(.new(arr[0], arr[1], arr[2])),
-                    .time = guess.time + arr[3],
-                }, norm };
+                inline for (0..4) |r| damp_mat[r] = mat[r] * std.simd.rotateElementsRight(damping, r);
+                return linear.solveInner(damp_mat, bias);
             }
 
             pub const LMOptions = struct {
@@ -186,80 +179,64 @@ pub fn solver(T: type) type {
             /// Give an approximate solution to the ToA problem by solving the argument minimization problem
             ///
             /// NOTE: Expects time to be transformed into spatial distance (multiplied by the speed of light constant)
-            pub fn solve(points: []const Point, times: []const Float, guess: Guess, options: LMOptions) Vec {
+            pub fn solve(data: []const Vec, initial_guess: Vec, options: LMOptions) Vec {
                 var lambda: Float = 1e-4;
                 const nu: Float = 2;
-                var best_guess = guess;
-                var best_err = lm.solutionError(points, times, guess) - options.min_improvement;
+                var source: Vec = initial_guess;
+                var best_err = lm.solutionError(data, initial_guess) - options.min_improvement;
                 for (0..options.max_iterations) |_| {
-                    var mat: [4]Vec, const bias: Vec = gradientSystem(points, times, best_guess);
+                    const mat: [4]Vec, const bias: Vec = gradientSystem(data, source);
+
+                    // Decrease lambda
                     const dec_lambda = lambda / nu;
-                    const dec_guess, const dec_norm = dampenedSolution(&mat, bias, best_guess, dec_lambda);
-                    const dec_err = solutionError(points, times, dec_guess);
-                    var new_guess, var new_norm = dampenedSolution(&mat, bias, best_guess, lambda);
-                    var new_err = solutionError(points, times, new_guess);
+                    const dec_grad = gradient(mat, bias, dec_lambda);
+                    const dec_err = solutionError(data, source + dec_grad);
 
-                    while (new_err >= best_err and dec_err > new_err) {
+                    // Keep lambda
+                    var grad = gradient(mat, bias, lambda);
+                    var err = solutionError(data, source + grad);
+
+                    if (dec_err < err) {
+                        lambda = dec_lambda;
+                        grad = dec_grad;
+                        err = dec_err;
+                    } else while (err >= best_err) {
                         const inc_lambda = lambda * nu;
-                        const inc_guess, const inc_norm = dampenedSolution(&mat, bias, best_guess, lambda);
-                        const inc_err = solutionError(points, times, new_guess);
+                        const inc_grad = gradient(mat, bias, inc_lambda);
+                        const inc_err = solutionError(data, source + inc_grad);
 
-                        if (inc_err < new_err) {
+                        if (inc_err < err) {
                             lambda = inc_lambda;
-                            new_guess = inc_guess;
-                            new_norm = inc_norm;
-                            new_err = inc_err;
+                            grad = inc_grad;
+                            err = inc_err;
                         } else break;
                     }
 
-                    if (dec_norm < new_err) {
-                        lambda = dec_lambda;
-                        new_guess = dec_guess;
-                        new_norm = dec_norm;
-                        new_err = dec_err;
-                    }
-
-                    if (best_err <= new_err) break;
-                    best_guess = new_guess;
-                    best_err = new_err - options.min_improvement;
-                    if (new_norm <= options.min_gradient * options.min_gradient) break;
+                    if (best_err <= err) break;
+                    source += grad;
+                    best_err = err - options.min_improvement;
+                    if (@reduce(.Add, grad * grad) <= options.min_gradient * options.min_gradient) break;
                 }
-                return .{
-                    best_guess.point.x,
-                    best_guess.point.y,
-                    best_guess.point.z,
-                    best_guess.time,
-                };
+                return source;
             }
 
             /// Give an approximate solution to the ToA problem by solving the argument minimization problem
             ///
             /// NOTE: Expects time to be transformed into spatial distance (multiplied by the speed of light constant)
-            pub fn solveBasic(points: []const Point, times: []const Float, guess: Guess, options: LMOptions) Vec {
-                var best_guess = guess;
-                var best_err = lm.solutionError(points, times, guess) - options.min_improvement;
+            pub fn solveBasic(data: []const Vec, initial_guess: Vec, options: LMOptions) Vec {
+                var source: Vec = initial_guess;
+                var best_err = lm.solutionError(data, initial_guess) - options.min_improvement;
                 for (0..options.max_iterations) |_| {
-                    const mat: [4]Vec, const bias: Vec = gradientSystem(points, times, best_guess);
-                    const delta: Vec = linear.solveInner(mat, bias);
-                    const new_norm: Float = @reduce(.Add, delta * delta);
-                    const arr: [4]Float = delta;
-                    const new_guess: Guess = .{
-                        .point = guess.point.add(.new(arr[0], arr[1], arr[2])),
-                        .time = guess.time + arr[3],
-                    };
-                    const new_err = solutionError(points, times, new_guess);
+                    const mat: [4]Vec, const bias: Vec = gradientSystem(data, source);
+                    const grad: Vec = linear.solveInner(mat, bias);
+                    const err = solutionError(data, source + grad);
 
-                    if (new_norm <= options.min_gradient * options.min_gradient) break;
-                    best_guess = new_guess;
-                    if (best_err <= new_err) break;
-                    best_err = new_err - options.min_improvement;
+                    if (best_err <= err) break;
+                    source += grad;
+                    best_err = err - options.min_improvement;
+                    if (@reduce(.Add, grad * grad) <= options.min_gradient * options.min_gradient) break;
                 }
-                return .{
-                    best_guess.point.x,
-                    best_guess.point.y,
-                    best_guess.point.z,
-                    best_guess.time,
-                };
+                return source;
             }
         };
     };
@@ -334,18 +311,12 @@ test "lm.solve" {
     const tolerance: sol.Float = 1e-3;
     const actual = sol.lm.solve(
         &.{
-            .new(0, 0, 0),
-            .new(1, 0, 0),
-            .new(0, 1, 0),
-            .new(0, 0, 1),
+            .{ 0, 0, 0, 1 + @sqrt(14.0) },
+            .{ 1, 0, 0, 1 + @sqrt(13.0) },
+            .{ 0, 1, 0, 1 + @sqrt(11.0) },
+            .{ 0, 0, 1, 1 + @sqrt(9.0) },
         },
-        &.{
-            1 + @sqrt(14.0),
-            1 + @sqrt(13.0),
-            1 + @sqrt(11.0),
-            1 + @sqrt(9.0),
-        },
-        .{ .point = .new(2, 2, 2), .time = 1 },
+        .{ 2, 2, 2, 1 },
         .{ .min_gradient = 1e-12, .min_improvement = 0 },
     );
     if (!(@reduce(.Max, @abs(actual - expected)) < tolerance)) {
@@ -372,17 +343,17 @@ test "lm.solve with noise" {
         .new(6, 3, 4),
     };
     const noise: [8]sol.Float = .{ 0.1, -0.1, 0.0, -0.2, 0.2, 0.0, 0.1, -0.1 };
-    const toa: [8]sol.Float = blk: {
-        var buf: [8]sol.Float = undefined;
-        for (stations, noise, &buf) |station, offset, *toa| {
-            toa.* = time + station.distance(source) + offset;
+    const data: [8]sol.Vec = blk: {
+        var buf: [8]sol.Vec = undefined;
+        for (stations, noise, &buf) |station, offset, *signal_i| {
+            signal_i.* = .{ station.x, station.y, station.z, time + station.distance(source) + offset };
         }
         break :blk buf;
     };
 
     const expected: sol.Vec = .{ source.x, source.y, source.z, time };
     const tolerance: sol.Float = 0.5;
-    const actual = sol.lm.solve(&stations, &toa, .{ .point = .new(5, 5, 5), .time = time + 5 }, .{});
+    const actual = sol.lm.solve(&data, .{ 5, 5, 5, 5 + time }, .{});
     if (!(@reduce(.Max, @abs(actual - expected)) < tolerance)) {
         const expect_array: [4]sol.Float = expected;
         const actual_array: [4]sol.Float = actual;

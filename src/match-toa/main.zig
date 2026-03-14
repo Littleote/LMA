@@ -278,8 +278,8 @@ pub fn run(
                 .corr = .{
                     .matrix = corr_matrix,
                     .aux_buffer = &unscaled_correlation_buffer,
-                    .window_size = lma.nano.ratio, // / 5,
-                    .refresh_rate = lma.nano.ratio, // / 10,
+                    .window_size = lma.nano.ratio / 5,
+                    .refresh_rate = lma.nano.ratio / 10,
                 },
                 .time_matrix = time_matrix,
             },
@@ -339,6 +339,7 @@ const Solver = struct {
         len: usize = 0,
         points: [max_stations]sol.Point = undefined,
         times: [max_stations]sol.Float = undefined,
+        data: [max_stations]sol.Vec = undefined,
         err: [max_stations]sol.Float = undefined,
         indexes: [max_stations]u16 = undefined,
         stations: [max_stations]u16 = undefined,
@@ -353,6 +354,7 @@ const Solver = struct {
 
             self.points[key] = obj.point;
             self.times[key] = obj.time;
+            self.data[key] = .{ obj.point.x, obj.point.y, obj.point.z, obj.time };
             self.err[key] = obj.err;
             self.indexes[key] = obj.index;
             self.stations[key] = obj.station;
@@ -387,7 +389,7 @@ const Solver = struct {
             .index = matched[0].index,
         });
 
-        var guess: sol.Guess = blk: {
+        var guess: [4]sol.Float = blk: {
             // Calculate centered coefficients
             var biases: [min_stations - 1]sol.Float = undefined;
             var coefficients: [min_stations - 1]sol.Vec = undefined;
@@ -426,20 +428,17 @@ const Solver = struct {
             var gps = lma.pipeline.transform.xyzToGPS(f32, xyz.add(xyz_center));
             gps.z = @abs(gps.z);
             Solver.local_matches += 1;
-            break :blk .{ .point = lma.pipeline.transform.gpsToXYZ(sol.Float, gps).sub(xyz_center), .time = t };
+            const above_xyz = lma.pipeline.transform.gpsToXYZ(sol.Float, gps).sub(xyz_center);
+            break :blk .{ above_xyz.x, above_xyz.y, above_xyz.z, t };
         };
 
         guess = blk: {
-            const points: []sol.Point = buffers.points[0..buffers.len];
-            const times: []sol.Float = buffers.times[0..buffers.len];
-
             // Solve quadratic optimization with L-M
-            const arr: [4]sol.Float = sol.lm.solve(
-                points,
-                times,
-                guess,
-                .{ .max_iterations = 100, .min_gradient = 10, .min_improvement = 100 },
-            );
+            const arr: [4]sol.Float = sol.lm.solve(buffers.data[0..buffers.len], guess, .{
+                .max_iterations = 100,
+                .min_gradient = 10,
+                .min_improvement = 100,
+            });
             const xyz: sol.Point = .new(arr[0], arr[1], arr[2]);
             const t: sol.Float = arr[3];
             if (xyz.length() > max_distance) return null;
@@ -459,14 +458,14 @@ const Solver = struct {
             // if (chi_sq > 50) return null;
 
             Solver.local_tuned += 1;
-            break :blk .{ .point = xyz, .time = t };
+            break :blk .{ xyz.x, xyz.y, xyz.z, t };
         };
 
         // Extract coefficients
         for (candidates) |signal| {
             const point = self.points[signal.station].sub(xyz_center);
             const time = c * (fromNano(signal.nanosecond) - t_center);
-            const err = @abs(guess.time + point.sub(guess.point).length() - time);
+            const err = @abs(guess[3] + point.sub(.new(guess[0], guess[1], guess[2])).length() - time);
             if (err > 1_000) continue;
             if (buffers.keys[signal.station]) |key| {
                 if (err > buffers.err[key]) continue;
@@ -482,11 +481,9 @@ const Solver = struct {
 
         guess = blk: {
             if (buffers.len < 5) return null;
-            const points: []sol.Point = buffers.points[0..buffers.len];
-            const times: []sol.Float = buffers.times[0..buffers.len];
 
             // Solve quadratic optimization with L-M
-            const arr: [4]sol.Float = sol.lm.solve(points, times, guess, .{ .max_iterations = 100 });
+            const arr: [4]sol.Float = sol.lm.solve(buffers.data[0..buffers.len], guess, .{ .max_iterations = 100 });
             const xyz: sol.Point = .new(arr[0], arr[1], arr[2]);
             const t: sol.Float = arr[3];
             if (xyz.length() > max_distance) return null;
@@ -506,13 +503,13 @@ const Solver = struct {
             //     (xyz_rms * xyz_rms) / lma.cast.to(sol.Float, buffers.len - 4);
             // if (chi_sq > 10) return null;
 
-            break :blk .{ .point = xyz, .time = t };
+            break :blk .{ xyz.x, xyz.y, xyz.z, t };
         };
 
-        const chi_sq = sol.lm.solutionError(buffers.points[0..buffers.len], buffers.times[0..buffers.len], guess) /
+        const chi_sq = sol.lm.solutionError(buffers.data[0..buffers.len], guess) /
             xyz_rms_squared / lma.cast.to(sol.Float, buffers.len - 4);
-        const xyz = guess.point.add(xyz_center);
-        const t = guess.time / c + t_center;
+        const xyz = sol.Point.new(guess[0], guess[1], guess[2]).add(xyz_center);
+        const t = guess[3] / c + t_center;
         if (t <= 0) return null;
         if (chi_sq > 10) return null;
         const gps = lma.pipeline.transform.xyzToGPS(f32, xyz);

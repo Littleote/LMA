@@ -333,6 +333,7 @@ const Solver = struct {
             time: sol.Float,
             err: sol.Float = std.math.inf(Float),
             index: u16,
+            mask: match.Signal.MaskBit,
             station: u16,
         };
 
@@ -342,6 +343,7 @@ const Solver = struct {
         data: [max_stations]sol.Vec = undefined,
         err: [max_stations]sol.Float = undefined,
         indexes: [max_stations]u16 = undefined,
+        masks: [max_stations]match.Signal.MaskBit = undefined,
         stations: [max_stations]u16 = undefined,
         keys: [max_stations]?u16 = @splat(null),
 
@@ -357,6 +359,7 @@ const Solver = struct {
             self.data[key] = .{ obj.point.x, obj.point.y, obj.point.z, obj.time };
             self.err[key] = obj.err;
             self.indexes[key] = obj.index;
+            self.masks[key] = obj.mask;
             self.stations[key] = obj.station;
             self.keys[obj.station] = key;
             return key;
@@ -387,6 +390,7 @@ const Solver = struct {
             .time = 0,
             .station = matched[0].station,
             .index = matched[0].index,
+            .mask = matched[0].mask,
         });
 
         var guess: [4]sol.Float = blk: {
@@ -399,6 +403,7 @@ const Solver = struct {
                     .time = c * (fromNano(signal.nanosecond) - t_center),
                     .index = signal.index,
                     .station = signal.station,
+                    .mask = signal.mask,
                 });
                 const delta = buffers.points[key];
                 const delta_t = buffers.times[key];
@@ -476,6 +481,7 @@ const Solver = struct {
                 .err = err,
                 .index = signal.index,
                 .station = signal.station,
+                .mask = signal.mask,
             });
         }
 
@@ -517,8 +523,8 @@ const Solver = struct {
         var mask: u32 = 0;
         for (0..buffers.len) |key| {
             mask |= @as(u32, 1) << @intCast(buffers.stations[key]);
-            if (buffers.err[key] < 100)
-                skip[buffers.stations[key]] |= @as(u32, 1) << @intCast(buffers.indexes[key]);
+            if (buffers.err[key] < 100 and buffers.masks[key].is_set)
+                skip[buffers.stations[key]] |= @as(match.Signal.Mask, 1) << buffers.masks[key].bit;
         }
         Solver.local_solutions += 1;
 

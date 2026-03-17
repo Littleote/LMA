@@ -89,13 +89,27 @@ pub const Weights = enum {
 
 /// Data used from the signal to match values
 pub const Signal = struct {
+    pub const Mask = u32;
+    pub const MaskBit = packed struct(u8) {
+        is_set: bool,
+        _padding: u2 = 0,
+        bit: u5,
+
+        pub fn set(bit: u5) @This() {
+            return .{ .is_set = true, .bit = bit };
+        }
+        pub const unset: @This() = .{ .is_set = false, .bit = 0 };
+    };
+
     /// Nanoseconds since the start of the second
     /// Value expressed with fixed point 30.2
     nanosecond: u32,
-    /// Index of the station that generate this signal
-    station: u16,
     /// Position in the array for this signal
     index: u16,
+    /// Index of the station that generate this signal
+    station: u8,
+    /// Bit corresponding to this signal in the mask
+    mask: MaskBit,
 };
 
 fn before(time: u32, toa: ToA) bool {
@@ -163,7 +177,7 @@ pub fn quantileScale(unscaled: []const Float, scaled: []Float) void {
 
 /// Computes the lower triangle of the matrix of scaled cross-correlation vectors for the given time span.
 /// If the upper triangle is non-null makes a copy with the reversed cross-correlation vectors
-pub fn newCorrelationMatrix(signals: []const []const ToA, weights: []const []const Float, aux_buffer: []Float, span: SubSlice, step: Step, corr_matrix: []const ?[]Float) void {
+pub fn correlationMatrix(signals: []const []const ToA, weights: []const []const Float, aux_buffer: []Float, span: SubSlice, step: Step, corr_matrix: []const ?[]Float) void {
     const stations: u32 = @intCast(signals.len);
     const shape: lma.pipeline.Grid = .init(stations, stations);
     for (0..stations) |row| {
@@ -247,8 +261,10 @@ pub const Options = struct {
         refresh_rate: u32,
 
         pub fn endpoints(self: Correlation, start: u32) SubSlice {
-            const from = start +| (self.refresh_rate / 2) -| (self.window_size / 2);
-            const to = start +| (self.refresh_rate / 2) +| (self.window_size / 2);
+            const half_range = self.window_size >> 1;
+            const center = @max(half_range, @min(start +| (self.refresh_rate >> 1), std.math.maxInt(u32) - half_range));
+            const from = center - half_range;
+            const to = center + half_range;
             return .initRange(from, to);
         }
     };
@@ -261,14 +277,14 @@ pub const Options = struct {
     time_matrix: []const u32,
 };
 
-inline fn queryCorrelation(
+inline fn getWeights(
     reference: Signal,
     candidates: []const Signal,
-    corr_buffer: []Float,
+    weights: []Float,
     options: *const Options,
-) []Float {
-    for (candidates, corr_buffer[0..candidates.len]) |candidate, *corr_value| {
-        corr_value.* = blk: {
+) void {
+    for (candidates, weights[0..candidates.len]) |candidate, *weight| {
+        weight.* = blk: {
             if (reference.station == candidate.station) break :blk Options.Search.bad_value;
             const idx = options.shape.ravel(reference.station, candidate.station);
             const max_time = options.time_matrix[idx];
@@ -278,47 +294,87 @@ inline fn queryCorrelation(
             break :blk if (corr_true_value < options.search.min_pair_corr) Options.Search.bad_value else @min(options.search.corr_limit, corr_true_value);
         };
     }
-    return corr_buffer[0..candidates.len];
 }
 
-inline fn matchInner(
+pub fn DepthFirstSearch(
     comptime config: Config,
-    comptime depth: usize,
-    candidates: []const Signal,
-    matches: *[config.min_candidates]Signal,
-    weights: []Float,
-    skips: []u32,
-    options: *const Options,
-    context: anytype,
-    solve: fn (@TypeOf(context), []const Signal, []const Signal, []u32) ?Point,
-) ?Point {
-    if (depth == 0) {
-        return solve(context, matches, candidates, skips);
-    } else {
-        var weight_buffer: [config.max_network * config.pairing_window]Float = undefined;
-        for (0..@intFromEnum(options.search.attempts)) |_| {
-            const best = std.sort.argMax(Float, weights, {}, std.sort.asc(Float)) orelse break;
-            if (weights[best] < options.search.min_base_corr) break;
-            matches[config.min_candidates - depth] = candidates[best];
+) type {
+    const max_frame_depth = config.min_candidates - 1;
+    return struct {
+        const Frame = struct {
+            weights: [config.max_network * config.pairing_window]Float = undefined,
+            attempt: u16 = 0,
+            index: u16 = 0,
+        };
 
-            const new_weights = queryCorrelation(candidates[best], candidates, &weight_buffer, options);
-            for (weights, new_weights) |w, *nw| nw.* += w - options.search.min_cum_corr;
+        const State = enum {
+            exit,
+            enter,
+        };
 
-            if (matchInner(
-                config,
-                depth - 1,
-                candidates,
-                matches,
-                new_weights,
-                skips,
-                options,
-                context,
-                solve,
-            )) |point| return point;
-            weights[best] = Options.Search.bad_value;
+        depth: u16,
+        candidates: []const Signal,
+        signals: [config.min_candidates]Signal,
+        frames: [max_frame_depth]Frame,
+        options: *const Options,
+
+        pub fn init(seed: Signal, candidates: []const Signal, options: *const Options) DepthFirstSearch(config) {
+            var self: DepthFirstSearch(config) = .{
+                .depth = 0,
+                .candidates = candidates,
+                .signals = undefined,
+                .frames = undefined,
+                .options = options,
+            };
+
+            self.frames[0] = .{};
+            self.signals[0] = seed;
+            _ = getWeights(seed, candidates, &self.frames[0].weights, options);
+
+            return self;
         }
-        return null;
-    }
+
+        pub fn next(self: *DepthFirstSearch(config)) ?[]const Signal {
+            const initial_state: State = if (self.depth >= max_frame_depth) .exit else .enter;
+            state: switch (initial_state) {
+                .exit => {
+                    // Return when no more matches available
+                    if (self.depth == 0) break :state;
+                    self.depth -= 1;
+
+                    // Update ols frame
+                    const frame: *Frame = &self.frames[self.depth];
+                    frame.weights[frame.index] = Options.Search.bad_value;
+                    continue :state .enter;
+                },
+                .enter => {
+                    // Search for the next match
+                    const frame: *Frame = &self.frames[self.depth];
+                    frame.attempt += 1;
+                    if (frame.attempt > @intFromEnum(self.options.search.attempts)) continue :state .exit;
+                    const index: u16 = @intCast(std.sort.argMax(Float, frame.weights[0..self.candidates.len], {}, std.sort.asc(Float)) orelse unreachable);
+                    if (frame.weights[index] < self.options.search.min_base_corr) continue :state .exit;
+                    frame.index = index;
+
+                    // Advance frame depth and return on full match
+                    self.depth += 1;
+                    self.signals[self.depth] = self.candidates[index];
+                    if (self.depth == max_frame_depth) return &self.signals;
+
+                    // Set up new frame
+                    const new_frame: *Frame = &self.frames[self.depth];
+                    new_frame.* = .{};
+                    _ = getWeights(self.candidates[index], self.candidates, &new_frame.weights, self.options);
+                    for (0..self.candidates.len) |idx| new_frame.weights[idx] = @min(
+                        new_frame.weights[idx] + frame.weights[idx] - self.options.search.min_cum_corr,
+                        self.options.search.corr_limit,
+                    );
+                    continue :state .enter;
+                },
+            }
+            return null;
+        }
+    };
 }
 
 pub fn match(
@@ -337,24 +393,22 @@ pub fn match(
     // Merge
     var index: [config.max_network]u16 = @splat(0);
     var nano_buffer: [config.max_network]u32 = undefined;
-    var skips: [config.max_network]u32 = @splat(0);
+    var masks: [config.max_network]Signal.Mask = @splat(0);
     for (0..signals.len) |idx| nano_buffer[idx] = if (signals[idx].len > 0) signals[idx][0].nanosecond else max_nano;
     const nanos: []u32 = nano_buffer[0..signals.len];
 
     // Correlation
     var last_update: u32 = std.sort.min(u32, nanos, {}, std.sort.asc(u32)) orelse unreachable;
-    newCorrelationMatrix(signals, weights, options.corr.aux_buffer, options.corr.endpoints(last_update), options.step, options.corr.matrix);
+    correlationMatrix(signals, weights, options.corr.aux_buffer, options.corr.endpoints(last_update), options.step, options.corr.matrix);
 
     // Matching
-    var matches: [config.min_candidates]Signal = @splat(.{ .nanosecond = 4_000_000_000, .index = 99, .station = 99 });
     var candidate_buffer: [config.max_network * config.pairing_window]Signal = undefined;
-    var weight_buffer: [config.max_network * config.pairing_window]Float = undefined;
 
     while (true) {
         const idx = std.sort.argMin(u32, nanos, {}, std.sort.asc(u32)) orelse unreachable;
         defer {
             index[idx] += 1;
-            skips[idx] >>= 1;
+            masks[idx] >>= 1;
             nanos[idx] = if (index[idx] >= signals[idx].len) max_nano else signals[idx][index[idx]].nanosecond;
         }
         // End after processing all
@@ -363,7 +417,7 @@ pub fn match(
             break;
         }
         // Skip already matched signals
-        if (skips[idx] & 1 == 1) {
+        if (masks[idx] & 1 == 1) {
             @branchHint(.unlikely);
             continue;
         }
@@ -371,49 +425,42 @@ pub fn match(
         if (nanos[idx] > last_update + options.corr.refresh_rate) {
             @branchHint(.unlikely);
             last_update = nanos[idx];
-            newCorrelationMatrix(signals, weights, options.corr.aux_buffer, options.corr.endpoints(last_update), options.step, options.corr.matrix);
+            correlationMatrix(signals, weights, options.corr.aux_buffer, options.corr.endpoints(last_update), options.step, options.corr.matrix);
         }
 
         // Match buffer
         const initial: Signal = .{
             .nanosecond = nanos[idx],
-            .index = 0,
+            .index = index[idx],
             .station = @intCast(idx),
+            .mask = .set(0),
         };
-        matches[0] = initial;
         var candidates: std.ArrayList(Signal) = .initBuffer(&candidate_buffer);
 
         // Get all possible paired signals
         for (0..signals.len) |station| {
-            const signal = signals[station][index[station]..];
-            for (signal[0..@min(signal.len, config.pairing_window)], 0..) |toa, bit_idx| {
+            const base = index[station];
+            const signal = signals[station][base..];
+            for (signal[0..@min(signal.len, config.pairing_window)], 0..) |toa, offset| {
                 if (nanos[idx] + options.time_matrix[options.shape.ravel(idx, station)] < toa.nanosecond) break;
-                if ((skips[station] >> @intCast(bit_idx)) & 1 == 1) continue;
+                const mask: Signal.MaskBit = if (offset < @typeInfo(Signal.Mask).int.bits) .set(@intCast(offset)) else .unset;
+                if (mask.is_set and (masks[station] >> mask.bit) & 1 == 1) continue;
                 candidates.appendAssumeCapacity(.{
                     .nanosecond = toa.nanosecond,
-                    .index = @intCast(bit_idx),
+                    .index = @intCast(base + offset),
                     .station = @intCast(station),
+                    .mask = mask,
                 });
             }
         }
 
-        // std.debug.print("CANDIDATES:\n", .{});
-        // for (candidates.items) |c| {
-        //     std.debug.print("\t{any}\n", .{c});
-        // }
-
-        if (matchInner(
-            config,
-            config.min_candidates - 1,
-            candidates.items,
-            &matches,
-            queryCorrelation(initial, candidates.items, &weight_buffer, options),
-            skips[0..signals.len],
-            options,
-            context,
-            solve,
-        )) |point|
-            points.appendAssumeCapacity(point);
+        var iter: DepthFirstSearch(config) = .init(initial, candidates.items, options);
+        while (iter.next()) |set| {
+            if (solve(context, set, candidates.items, &masks)) |point| {
+                points.appendAssumeCapacity(point);
+                break;
+            }
+        }
     }
     return points.items;
 }

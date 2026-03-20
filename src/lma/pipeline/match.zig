@@ -384,7 +384,7 @@ pub fn match(
     options: *const Options,
     point_buffer: []Point,
     context: anytype,
-    solve: fn (@TypeOf(context), []const Signal, []const Signal, []u32) ?Point,
+    solve: fn (@TypeOf(context), Signal, []const Signal, []u32, *const Options) ?Point,
 ) []Point {
     std.debug.assert(signals.len <= config.max_network);
     const max_nano: u32 = std.math.maxInt(u32);
@@ -399,6 +399,7 @@ pub fn match(
 
     // Correlation
     var last_update: u32 = std.sort.min(u32, nanos, {}, std.sort.asc(u32)) orelse unreachable;
+    var next_update: u32 = last_update +| options.corr.refresh_rate;
     correlationMatrix(signals, weights, options.corr.aux_buffer, options.corr.endpoints(last_update), options.step, options.corr.matrix);
 
     // Matching
@@ -422,9 +423,10 @@ pub fn match(
             continue;
         }
         // Update outdated correlation matrix
-        if (nanos[idx] > last_update + options.corr.refresh_rate) {
+        if (nanos[idx] > next_update) {
             @branchHint(.unlikely);
             last_update = nanos[idx];
+            next_update = last_update +| options.corr.refresh_rate;
             correlationMatrix(signals, weights, options.corr.aux_buffer, options.corr.endpoints(last_update), options.step, options.corr.matrix);
         }
 
@@ -454,13 +456,7 @@ pub fn match(
             }
         }
 
-        var iter: DepthFirstSearch(config) = .init(initial, candidates.items, options);
-        while (iter.next()) |set| {
-            if (solve(context, set, candidates.items, &masks)) |point| {
-                points.appendAssumeCapacity(point);
-                break;
-            }
-        }
+        if (solve(context, initial, candidates.items, &masks, options)) |point| points.appendAssumeCapacity(point);
     }
     return points.items;
 }

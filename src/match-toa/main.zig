@@ -117,25 +117,23 @@ pub fn main(init: std.process.Init) !void {
 
     // Run program asynchronously divided by minutes
     const minutes = 10;
-    var completed: usize = 0;
-    var futures: [minutes]std.Io.Future(error{ Canceled, OutOfMemory }!lma.data.Points) = undefined;
+    var futures: [minutes]std.Io.Future(RunError!struct { lma.data.Points, Solver.Counts }) = undefined;
     var outputs: [minutes]lma.data.Points = undefined;
+    var counts: Solver.Counts = .{};
     for (0..minutes) |idx| {
         futures[idx] = init.io.async(run, .{ init.io, init.gpa, points, full_signals, weight_mode, .init(@intCast(start_time + idx * 1 * 60), 1 * 60) });
     }
-    defer {
-        for (0..minutes) |idx| {
-            if (idx < completed) {
-                outputs[idx].deinit();
-            } else {
-                outputs[idx] = futures[idx].cancel(init.io) catch continue;
-                outputs[idx].deinit();
-            }
-        }
-    }
+    defer for (&outputs) |*output| output.deinit();
+    var maybe_err: RunError!void = {};
     for (0..minutes) |idx| {
-        completed = idx;
-        outputs[idx] = try futures[idx].await(init.io);
+        const result = if (maybe_err) futures[idx].await(init.io) else |_| futures[idx].cancel(init.io);
+        outputs[idx], const new_counts = result catch |err| default: {
+            maybe_err = err;
+            break :default .{ .init(.failing), Solver.Counts{} };
+        };
+        inline for (comptime std.meta.fieldNames(Solver.Counts)) |field| {
+            @field(counts, field) += @field(new_counts, field);
+        }
     }
     var output: lma.data.Points = try .concatenate(&outputs, init.gpa);
     defer output.deinit();
@@ -144,10 +142,10 @@ pub fn main(init: std.process.Init) !void {
     try output.epochApplyShift({}, shiftBack);
     output.epochApplyShift({}, sortSegment) catch unreachable;
 
-    std.debug.print("Total Queries: {d}\n", .{Solver.queries});
-    std.debug.print("Total Linear Matches: {d}\n", .{Solver.matches});
-    std.debug.print("Total Linear Matches Refined: {d}\n", .{Solver.tuned});
-    std.debug.print("Total L-M Matches: {d}\n", .{Solver.solutions});
+    std.debug.print("Total Queries: {d}\n", .{counts.set_queries});
+    std.debug.print("Total Linear Matches: {d}\n", .{counts._matches});
+    std.debug.print("Total Linear Matches Refined: {d}\n", .{counts._tuned});
+    std.debug.print("Total L-M Matches: {d}\n", .{counts._solutions});
 
     {
         var file_writer = options.output.writer(init.io, &buffer);
@@ -161,6 +159,8 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Total points: {d}\n", .{output.array.items.len});
 }
 
+const RunError = error{ Canceled, OutOfMemory };
+
 pub fn run(
     io: std.Io,
     gpa: std.mem.Allocator,
@@ -168,18 +168,7 @@ pub fn run(
     full_signals: []const lma.data.ToA,
     weight_mode: lma.pipeline.match.Weights,
     span: lma.SubSlice,
-) error{ Canceled, OutOfMemory }!lma.data.Points {
-    Solver.local_queries = 0;
-    Solver.local_matches = 0;
-    Solver.local_tuned = 0;
-    Solver.local_solutions = 0;
-    defer {
-        _ = @atomicRmw(usize, &Solver.queries, .Add, Solver.local_queries, .monotonic);
-        _ = @atomicRmw(usize, &Solver.matches, .Add, Solver.local_matches, .monotonic);
-        _ = @atomicRmw(usize, &Solver.tuned, .Add, Solver.local_tuned, .monotonic);
-        _ = @atomicRmw(usize, &Solver.solutions, .Add, Solver.local_solutions, .monotonic);
-    }
-
+) RunError!struct { lma.data.Points, Solver.Counts } {
     const count: u32 = @intCast(stations.len);
     const shape: lma.pipeline.Grid = .init(count, count);
 
@@ -244,6 +233,7 @@ pub fn run(
     var sources: std.ArrayList(lma.data.types.Point) = .empty;
     defer sources.deinit(gpa);
 
+    var solver: Solver = .{ .points = stations };
     for (span.start..span.end()) |time| {
         try io.checkCancel();
         var size: usize = 0;
@@ -258,7 +248,6 @@ pub fn run(
         sources.clearRetainingCapacity();
         try sources.ensureTotalCapacity(gpa, size);
 
-        const solver: Solver = .{ .points = stations };
         sources.items = match.match(
             .{ .max_network = 32, .min_candidates = min_stations, .pairing_window = max_matches },
             signals,
@@ -266,25 +255,27 @@ pub fn run(
             &.{
                 .step = step,
                 .shape = shape,
-                .search = .exhaustive,
-                // .{
-                //     .min_pair_corr = 0.5,
-                //     .min_base_corr = 1.5,
-                //     .min_cum_corr = 1.5,
-                //     .corr_limit = 3.0,
-                //     .attempts = .count(3),
-                // },
+                .search = //.exhaustive,
+                .{
+                    .min_pair_corr = 0.5,
+                    .min_base_corr = 1.5,
+                    .min_cum_corr = 1.5,
+                    .corr_limit = 3.0,
+                    .attempts = .count(3),
+                },
                 // Config for plane detection
                 .corr = .{
                     .matrix = corr_matrix,
                     .aux_buffer = &unscaled_correlation_buffer,
-                    .window_size = lma.nano.ratio / 5,
-                    .refresh_rate = lma.nano.ratio / 10,
+                    .window_size = std.math.maxInt(u32),
+                    .refresh_rate = std.math.maxInt(u32),
+                    // .window_size = lma.nano.ratio / 5,
+                    // .refresh_rate = lma.nano.ratio / 10,
                 },
                 .time_matrix = time_matrix,
             },
             sources.allocatedSlice(),
-            &solver,
+            @as(*Solver, &solver),
             Solver.solve,
         );
 
@@ -293,7 +284,7 @@ pub fn run(
     }
 
     try io.checkCancel();
-    return output;
+    return .{ output, solver.counts };
 }
 
 fn cutoffTime(time: u32, point: lma.data.types.Point) bool {
@@ -318,55 +309,58 @@ fn shiftBack(_: void, _: u64, slice: []lma.data.types.Point) lma.data.segmented.
 }
 
 const Solver = struct {
-    threadlocal var local_queries: usize = 0;
-    var queries: usize = 0;
-    threadlocal var local_matches: usize = 0;
-    var matches: usize = 0;
-    threadlocal var local_tuned: usize = 0;
-    var tuned: usize = 0;
-    threadlocal var local_solutions: usize = 0;
-    var solutions: usize = 0;
+    pub const Counts = struct {
+        set_queries: usize = 0,
+        _matches: usize = 0,
+        _tuned: usize = 0,
+        _solutions: usize = 0,
+    };
 
     const Buffer = struct {
-        const Object = struct {
+        const Entry = struct {
             point: sol.Point,
             time: sol.Float,
             err: sol.Float = std.math.inf(Float),
             index: u16,
+            station: u8,
             mask: match.Signal.MaskBit,
-            station: u16,
         };
 
-        len: usize = 0,
-        points: [max_stations]sol.Point = undefined,
-        times: [max_stations]sol.Float = undefined,
-        data: [max_stations]sol.Vec = undefined,
-        err: [max_stations]sol.Float = undefined,
-        indexes: [max_stations]u16 = undefined,
-        masks: [max_stations]match.Signal.MaskBit = undefined,
-        stations: [max_stations]u16 = undefined,
-        keys: [max_stations]?u16 = @splat(null),
+        len: u8,
+        keys: [max_stations]?u8,
+        entries: [max_stations]Entry,
+        data: [max_stations]sol.Vec,
 
-        pub inline fn append(self: *Buffer, obj: Object) u16 {
-            const key: u16 = @intCast(if (self.keys[obj.station]) |idx| idx else blk: {
+        ref_point: sol.Point,
+        ref_time: sol.Float,
+
+        pub fn at(ref_point: sol.Point, ref_time: sol.Float) Buffer {
+            return .{
+                .len = 0,
+                .keys = @splat(null),
+                .entries = undefined,
+                .data = undefined,
+                .ref_point = ref_point,
+                .ref_time = ref_time,
+            };
+        }
+
+        pub inline fn append(self: *Buffer, obj: Entry) u8 {
+            const key: u8 = @intCast(if (self.keys[obj.station]) |idx| idx else blk: {
                 const key = self.len;
                 self.len += 1;
                 break :blk key;
             });
 
-            self.points[key] = obj.point;
-            self.times[key] = obj.time;
+            self.entries[key] = obj;
             self.data[key] = .{ obj.point.x, obj.point.y, obj.point.z, obj.time };
-            self.err[key] = obj.err;
-            self.indexes[key] = obj.index;
-            self.masks[key] = obj.mask;
-            self.stations[key] = obj.station;
             self.keys[obj.station] = key;
             return key;
         }
     };
 
     points: []const lma.pipeline.zlm(Precise).Vec3,
+    counts: Counts = .{},
 
     inline fn fromNano(nanosecond: u32) Precise {
         return lma.nano.fromNano(Precise, nanosecond);
@@ -376,37 +370,49 @@ const Solver = struct {
         return value * value;
     }
 
-    pub fn solve(self: *const Solver, matched: []const match.Signal, candidates: []const match.Signal, skip: []u32) ?lma.data.types.Point {
-        Solver.local_queries += 1;
-        var buffers: Buffer = .{};
+    const c = lma.constants.c / lma.constants.refractive_index.airRange(1_000, 8_000);
 
-        const c = lma.constants.c / lma.constants.refractive_index.air_up_to(8_000);
+    pub fn solve(self: *Solver, initial: match.Signal, candidates: []const match.Signal, skip: []u32, options: *const match.Options) ?lma.data.types.Point {
+        var iter: match.DepthFirstSearch(.{
+            .max_network = 32,
+            .min_candidates = min_stations,
+            .pairing_window = max_matches,
+        }) = .init(initial, candidates, options);
+        while (iter.next()) |set| {
+            var buffer: Buffer = .at(self.points[initial.station], c * fromNano(initial.nanosecond));
+            _ = &buffer;
+            if (self.solveSet(set, candidates, skip)) |point| return point;
+        }
+        return null;
+    }
+
+    fn populateBuffer(self: *const Solver, buffer: *Buffer, signals: []const match.Signal) void {
+        for (signals) |signal| {
+            _ = buffer.append(.{
+                .point = self.points[signal.station].sub(buffer.ref_point),
+                .time = c * fromNano(signal.nanosecond) - buffer.ref_time,
+                .index = signal.index,
+                .station = signal.station,
+                .mask = signal.mask,
+            });
+        }
+    }
+
+    pub fn solveSet(self: *Solver, matched: []const match.Signal, candidates: []const match.Signal, skip: []u32) ?lma.data.types.Point {
+        self.counts.set_queries += 1;
+        var buffer: Buffer = .at(self.points[matched[0].station], c * fromNano(matched[0].nanosecond));
+        self.populateBuffer(&buffer, matched);
+
         const xyz_rms = (0.000_000_040 * c);
         const xyz_rms_squared = xyz_rms * xyz_rms;
-        const xyz_center = self.points[matched[0].station];
-        const t_center = fromNano(matched[0].nanosecond);
-        _ = buffers.append(.{
-            .point = .zero,
-            .time = 0,
-            .station = matched[0].station,
-            .index = matched[0].index,
-            .mask = matched[0].mask,
-        });
 
         var guess: [4]sol.Float = blk: {
             // Calculate centered coefficients
             var biases: [min_stations - 1]sol.Float = undefined;
             var coefficients: [min_stations - 1]sol.Vec = undefined;
-            for (matched[1..], 0..) |signal, idx| {
-                const key = buffers.append(.{
-                    .point = self.points[signal.station].sub(xyz_center),
-                    .time = c * (fromNano(signal.nanosecond) - t_center),
-                    .index = signal.index,
-                    .station = signal.station,
-                    .mask = signal.mask,
-                });
-                const delta = buffers.points[key];
-                const delta_t = buffers.times[key];
+            for (buffer.entries[1..buffer.len], 0..) |entry, idx| {
+                const delta = entry.point;
+                const delta_t = entry.time;
                 biases[idx] = delta.length2() - square(delta_t);
                 coefficients[idx] = .{ 2 * delta.x, 2 * delta.y, 2 * delta.z, -2 * delta_t };
             }
@@ -419,27 +425,27 @@ const Solver = struct {
 
             // Assert the solution is reasonable
             var max_error: sol.Float = 0;
-            for (0..buffers.len) |key| {
-                const delta = buffers.points[key].sub(xyz).length();
-                const delta_t = buffers.times[key] - t;
+            for (buffer.entries[0..buffer.len]) |*entry| {
+                const delta = entry.point.sub(xyz).length();
+                const delta_t = entry.time - t;
                 if (delta_t <= 0) return null;
-                buffers.err[key] = @abs(delta - delta_t);
-                max_error = @max(max_error, buffers.err[key]);
+                entry.err = @abs(delta - delta_t);
+                max_error = @max(max_error, entry.err);
             }
 
             if (max_error > 1_000) return null;
 
             // Flip height
-            var gps = lma.pipeline.transform.xyzToGPS(f32, xyz.add(xyz_center));
+            var gps = lma.pipeline.transform.xyzToGPS(f32, xyz.add(buffer.ref_point));
             gps.z = @abs(gps.z);
-            Solver.local_matches += 1;
-            const above_xyz = lma.pipeline.transform.gpsToXYZ(sol.Float, gps).sub(xyz_center);
+            self.counts._matches += 1;
+            const above_xyz = lma.pipeline.transform.gpsToXYZ(sol.Float, gps).sub(buffer.ref_point);
             break :blk .{ above_xyz.x, above_xyz.y, above_xyz.z, t };
         };
 
         guess = blk: {
             // Solve quadratic optimization with L-M
-            const arr: [4]sol.Float = sol.lm.solve(buffers.data[0..buffers.len], guess, .{
+            const arr: [4]sol.Float = sol.lm.solve(buffer.data[0..buffer.len], guess, .{
                 .max_iterations = 100,
                 .min_gradient = 10,
                 .min_improvement = 100,
@@ -450,32 +456,30 @@ const Solver = struct {
 
             // Assert the solution is reasonable
             var max_error: sol.Float = 0;
-            for (0..buffers.len) |key| {
-                const delta = buffers.points[key].sub(xyz).length();
-                const delta_t = buffers.times[key] - t;
+            for (buffer.entries[0..buffer.len]) |*entry| {
+                const delta = entry.point.sub(xyz).length();
+                const delta_t = entry.time - t;
                 if (delta_t <= 0) return null;
-                buffers.err[key] = @abs(delta - delta_t);
-                max_error = @max(buffers.err[key], max_error);
+                entry.err = @abs(delta - delta_t);
+                max_error = @max(entry.err, max_error);
             }
 
             if (max_error > 500) return null;
-            // const chi_sq = sol.lm.solutionError(points, times, guess) / xyz_rms_squared / lma.cast.to(sol.Float, buffers.len - 4);
-            // if (chi_sq > 50) return null;
 
-            Solver.local_tuned += 1;
+            self.counts._tuned += 1;
             break :blk .{ xyz.x, xyz.y, xyz.z, t };
         };
 
         // Extract coefficients
         for (candidates) |signal| {
-            const point = self.points[signal.station].sub(xyz_center);
-            const time = c * (fromNano(signal.nanosecond) - t_center);
+            const point = self.points[signal.station].sub(buffer.ref_point);
+            const time = c * fromNano(signal.nanosecond) - buffer.ref_time;
             const err = @abs(guess[3] + point.sub(.new(guess[0], guess[1], guess[2])).length() - time);
             if (err > 1_000) continue;
-            if (buffers.keys[signal.station]) |key| {
-                if (err > buffers.err[key]) continue;
+            if (buffer.keys[signal.station]) |key| {
+                if (err > buffer.entries[key].err) continue;
             }
-            _ = buffers.append(.{
+            _ = buffer.append(.{
                 .point = point,
                 .time = time,
                 .err = err,
@@ -486,47 +490,43 @@ const Solver = struct {
         }
 
         guess = blk: {
-            if (buffers.len < 5) return null;
+            if (buffer.len < 5) return null;
 
             // Solve quadratic optimization with L-M
-            const arr: [4]sol.Float = sol.lm.solve(buffers.data[0..buffers.len], guess, .{ .max_iterations = 100 });
+            const arr: [4]sol.Float = sol.lm.solve(buffer.data[0..buffer.len], guess, .{ .max_iterations = 100 });
             const xyz: sol.Point = .new(arr[0], arr[1], arr[2]);
             const t: sol.Float = arr[3];
             if (xyz.length() > max_distance) return null;
 
             // Assert the solution is reasonable
             var max_error: sol.Float = 0;
-            for (0..buffers.len) |key| {
-                const delta = buffers.points[key].sub(xyz).length();
-                const delta_t = buffers.times[key] - t;
+            for (buffer.entries[0..buffer.len]) |*entry| {
+                const delta = entry.point.sub(xyz).length();
+                const delta_t = entry.time - t;
                 if (delta_t <= 0) return null;
-                buffers.err[key] = @abs(delta - delta_t);
-                max_error = @max(buffers.err[key], max_error);
+                entry.err = @abs(delta - delta_t);
+                max_error = @max(entry.err, max_error);
             }
-
             if (max_error > 250) return null;
-            // const chi_sq = sol.lm.solutionError(buffers.points[0..buffers.len], buffers.times[0..buffers.len], guess) /
-            //     (xyz_rms * xyz_rms) / lma.cast.to(sol.Float, buffers.len - 4);
-            // if (chi_sq > 10) return null;
 
             break :blk .{ xyz.x, xyz.y, xyz.z, t };
         };
 
-        const chi_sq = sol.lm.solutionError(buffers.data[0..buffers.len], guess) /
-            xyz_rms_squared / lma.cast.to(sol.Float, buffers.len - 4);
-        const xyz = sol.Point.new(guess[0], guess[1], guess[2]).add(xyz_center);
-        const t = guess[3] / c + t_center;
+        const chi_sq = sol.lm.solutionError(buffer.data[0..buffer.len], guess) /
+            xyz_rms_squared / lma.cast.to(sol.Float, buffer.len - 4);
+        const xyz = sol.Point.new(guess[0], guess[1], guess[2]).add(buffer.ref_point);
+        const t = (guess[3] + buffer.ref_time) / c;
         if (t <= 0) return null;
         if (chi_sq > 10) return null;
         const gps = lma.pipeline.transform.xyzToGPS(f32, xyz);
         const nano = lma.nano.toNano(t);
         var mask: u32 = 0;
-        for (0..buffers.len) |key| {
-            mask |= @as(u32, 1) << @intCast(buffers.stations[key]);
-            if (buffers.err[key] < 100 and buffers.masks[key].is_set)
-                skip[buffers.stations[key]] |= @as(match.Signal.Mask, 1) << buffers.masks[key].bit;
+        for (buffer.entries[0..buffer.len]) |entry| {
+            mask |= @as(u32, 1) << @intCast(entry.station);
+            if (entry.err < 100 and entry.mask.is_set)
+                skip[entry.station] |= @as(match.Signal.Mask, 1) << entry.mask.bit;
         }
-        Solver.local_solutions += 1;
+        self.counts._solutions += 1;
 
         return .{
             .nanosecond = nano,

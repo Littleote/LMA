@@ -190,7 +190,7 @@ pub fn writeBMPHeader(
 
 test bytesToBMP {
     const gpa = std.testing.allocator;
-    const file = try std.Io.Dir.cwd().createFile(std.testing.io, "test_image.bmp", .{});
+    const file = try std.Io.Dir.cwd().createFile(std.testing.io, "test/BMP_image.bmp", .{});
     defer file.close(std.testing.io);
 
     var buffer: [1024]u8 = undefined;

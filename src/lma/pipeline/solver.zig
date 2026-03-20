@@ -5,42 +5,57 @@ const lma = @import("../lma.zig");
 pub fn solver(T: type) type {
     return struct {
         pub const Float = T;
+        pub const Arr = [4]Float;
         pub const Vec = @Vector(4, Float);
 
-        inline fn swizzle(vec: Vec, comptime mask: @Vector(4, i32)) Vec {
-            return @shuffle(Float, vec, undefined, mask);
-        }
-
-        inline fn mat_x_mat(a: Vec, b: Vec) Vec {
-            // zig fmt: off
-            return (
-                (a * swizzle(b, .{ 0, 3, 0, 3 })) +
-                (swizzle(a, .{ 1, 0, 3, 2 }) * swizzle(b, .{ 2, 1, 2, 1 }))
-            );
-            // zig fmt: on
-        }
-
-        inline fn adj_x_mat(a: Vec, b: Vec) Vec {
-            // zig fmt: off
-            return (
-                (swizzle(a, .{ 3, 3, 0, 0 }) * b) -
-                (swizzle(a, .{ 1, 1, 2, 2 }) * swizzle(b, .{ 2, 3, 0, 1 }))
-            );
-            // zig fmt: on
-        }
-
-        inline fn mat_x_adj(a: Vec, b: Vec) Vec {
-            // zig fmt: off
-            return (
-                (a * swizzle(b, .{ 3, 0, 3, 0 })) -
-                (swizzle(a, .{ 1, 0, 3, 2 }) * swizzle(b, .{ 2, 1, 2, 1 }))
-            );
-            // zig fmt: on
-        }
-
         pub const linear = struct {
-            /// Vectorization for efficiently solving 4x4 linear system
-            pub inline fn solveInner(mat: [4]Vec, bias: Vec) Vec {
+            inline fn swizzle(vec: Vec, comptime mask: @Vector(4, i32)) Vec {
+                return @shuffle(Float, vec, undefined, mask);
+            }
+
+            inline fn mat_x_mat(a: Vec, b: Vec) Vec {
+                // zig fmt: off
+                return (
+                    (a * swizzle(b, .{ 0, 3, 0, 3 })) +
+                    (swizzle(a, .{ 1, 0, 3, 2 }) * swizzle(b, .{ 2, 1, 2, 1 }))
+                );
+                // zig fmt: on
+            }
+
+            inline fn adj_x_mat(a: Vec, b: Vec) Vec {
+                // zig fmt: off
+                return (
+                    (swizzle(a, .{ 3, 3, 0, 0 }) * b) -
+                    (swizzle(a, .{ 1, 1, 2, 2 }) * swizzle(b, .{ 2, 3, 0, 1 }))
+                );
+                // zig fmt: on
+            }
+
+            inline fn mat_x_adj(a: Vec, b: Vec) Vec {
+                // zig fmt: off
+                return (
+                    (a * swizzle(b, .{ 3, 0, 3, 0 })) -
+                    (swizzle(a, .{ 1, 0, 3, 2 }) * swizzle(b, .{ 2, 1, 2, 1 }))
+                );
+                // zig fmt: on
+            }
+
+            pub inline fn cholesky(mat: [4]Arr) [4]Arr {
+                var lower: [4]Arr = @splat(@splat(0));
+                for (0..4) |r| {
+                    var sq: Float = 0;
+                    for (0..r) |c| {
+                        var dot: Float = 0;
+                        for (0..c) |idx| dot += lower[r][idx] * lower[c][idx];
+                        lower[r][c] = (mat[r][c] - dot) / lower[c][c];
+                        sq += lower[r][c] * lower[r][c];
+                    }
+                    lower[r][r] = @sqrt(mat[r][r] - sq);
+                }
+                return lower;
+            }
+
+            pub inline fn blockInverse(mat: [4]Vec) [4]Vec {
                 @setRuntimeSafety(false);
 
                 // Divide the matrix into 4 blocks
@@ -83,18 +98,51 @@ pub fn solver(T: type) type {
                 const z = inv_det_m * ((det_c * b) - mat_x_adj(a, @"d_adj x c"));
                 const w = inv_det_m * ((det_a * d) - mat_x_mat(c, @"a_adj x b"));
 
-                const inv_m: [4]Vec = .{
+                return .{
                     @shuffle(Float, x, y, [_]i32{ 3, 1, ~@as(i32, 3), ~@as(i32, 1) }),
                     @shuffle(Float, x, y, [_]i32{ 2, 0, ~@as(i32, 2), ~@as(i32, 0) }),
                     @shuffle(Float, z, w, [_]i32{ 3, 1, ~@as(i32, 3), ~@as(i32, 1) }),
                     @shuffle(Float, z, w, [_]i32{ 2, 0, ~@as(i32, 2), ~@as(i32, 0) }),
                 };
+            }
+
+            /// Vectorization for efficiently solving 4x4 linear system at the cost of some precision
+            pub inline fn solveCholesky(mat: [4]Vec, bias: Vec) Vec {
+                const arr_mat: [4]Arr = .{ mat[0], mat[1], mat[2], mat[3] };
+                const arr_bias: Arr = bias;
+                const lower = cholesky(arr_mat);
+
+                var y: Arr = undefined;
+                for (0..4) |r| {
+                    var y_r = arr_bias[r];
+                    for (0..r) |c| {
+                        y_r -= lower[r][c] * y[c];
+                    }
+                    y[r] = y_r / lower[r][r];
+                }
+
+                var x: Arr = undefined;
+                for (0..4) |i| {
+                    const r = 3 - i;
+                    var x_r = y[r];
+                    for (r + 1..4) |c| {
+                        x_r -= lower[c][r] * x[c];
+                    }
+                    x[r] = x_r / lower[r][r];
+                }
+
+                return x;
+            }
+
+            /// Vectorization for efficiently solving 4x4 linear system at the cost of some precision
+            pub inline fn solveBlocks(mat: [4]Vec, bias: Vec) Vec {
+                const inv_mat = blockInverse(mat);
 
                 return .{
-                    @reduce(.Add, inv_m[0] * bias),
-                    @reduce(.Add, inv_m[1] * bias),
-                    @reduce(.Add, inv_m[2] * bias),
-                    @reduce(.Add, inv_m[3] * bias),
+                    @reduce(.Add, inv_mat[0] * bias),
+                    @reduce(.Add, inv_mat[1] * bias),
+                    @reduce(.Add, inv_mat[2] * bias),
+                    @reduce(.Add, inv_mat[3] * bias),
                 };
             }
 
@@ -102,7 +150,7 @@ pub fn solver(T: type) type {
             /// Uses a fixed number of equations given at comptime to skip multiplying by the transpose if not necessary
             pub fn solveFixed(comptime size: usize, mat: [size]Vec, bias: [size]Float) Vec {
                 if (size < 4) @compileError("Matrix has no unique solution");
-                if (size == 4) return solveInner(mat, bias);
+                if (size == 4) return solveBlocks(mat, bias);
                 return solve(&mat, &bias);
             }
 
@@ -115,7 +163,7 @@ pub fn solver(T: type) type {
                     for (col, 0..) |elem, r| mat_inner[r] += row * @as(Vec, @splat(elem));
                     bias_inner += row * @as(Vec, @splat(b));
                 }
-                return solveInner(mat_inner, bias_inner);
+                return solveBlocks(mat_inner, bias_inner);
             }
         };
 
@@ -167,7 +215,7 @@ pub fn solver(T: type) type {
                 var damp_mat: [4]Vec = undefined;
                 const damping: Vec = .{ 1 + lambda, 1, 1, 1 };
                 inline for (0..4) |r| damp_mat[r] = mat[r] * std.simd.rotateElementsRight(damping, r);
-                return linear.solveInner(damp_mat, bias);
+                return linear.solveBlocks(damp_mat, bias);
             }
 
             pub const LMOptions = struct {
@@ -181,7 +229,7 @@ pub fn solver(T: type) type {
             /// NOTE: Expects time to be transformed into spatial distance (multiplied by the speed of light constant)
             pub fn solve(data: []const Vec, initial_guess: Vec, options: LMOptions) Vec {
                 var lambda: Float = 1e-4;
-                const nu: Float = 2;
+                const nu: Float = 1.5;
                 var source: Vec = initial_guess;
                 var best_err = lm.solutionError(data, initial_guess) - options.min_improvement;
                 for (0..options.max_iterations) |_| {
@@ -215,7 +263,7 @@ pub fn solver(T: type) type {
                     if (best_err <= err) break;
                     source += grad;
                     best_err = err - options.min_improvement;
-                    if (@reduce(.Add, grad * grad) <= options.min_gradient * options.min_gradient) break;
+                    if (@reduce(.Add, grad * grad) <= options.min_gradient) break;
                 }
                 return source;
             }
@@ -228,7 +276,7 @@ pub fn solver(T: type) type {
                 var best_err = lm.solutionError(data, initial_guess) - options.min_improvement;
                 for (0..options.max_iterations) |_| {
                     const mat: [4]Vec, const bias: Vec = gradientSystem(data, source);
-                    const grad: Vec = linear.solveInner(mat, bias);
+                    const grad: Vec = linear.solveBlocks(mat, bias);
                     const err = solutionError(data, source + grad);
 
                     if (best_err <= err) break;
@@ -287,16 +335,15 @@ test "linear.solveFixed" {
 
     {
         // Test on a real matrix
-        const expected: solver(f64).Vec = .{ 0.1396871, -0.77788905, 0.60134769, -0.54553796 };
-        const tolerance: solver(f64).Vec = @splat(1e-6);
+        const expected: solver(f64).Vec = .{ 0.139687103197207, -0.777889045742257, 0.601347689515521, -0.545537962605801 };
+        const tolerance: f64 = 1e-15;
         const actual = solver(f64).linear.solveFixed(4, .{
             .{ -2.05782, -0.56853, -6.83522, 3.12176 },
             .{ -3.79283, 6.48790, 3.26692, 7.57333 },
             .{ 8.92533, -5.75444, -8.67197, 4.48165 },
             .{ 2.79342, -8.87533, -3.61153, 0.15979 },
         }, .{ -5.65858, -7.74366, -1.93671, 5.03527 });
-        const pred = @abs(actual - expected) <= @max(@abs(actual), @abs(expected)) * tolerance;
-        if (!@reduce(.And, pred)) {
+        if (!(@reduce(.Max, @abs(actual - expected)) < tolerance)) {
             const expect_array: [4]f64 = expected;
             const actual_array: [4]f64 = actual;
             try std.testing.expectEqualSlices(f64, &expect_array, &actual_array);
@@ -351,14 +398,17 @@ test "lm.solve with noise" {
         break :blk buf;
     };
 
-    const expected: sol.Vec = .{ source.x, source.y, source.z, time };
-    const tolerance: sol.Float = 0.5;
-    const actual = sol.lm.solve(&data, .{ 5, 5, 5, 5 + time }, .{});
+    const expected: sol.Vec = .{ 3.074051238391461, 6.753612729722382, 0.181343617094229, 3.217381399104787 };
+    const tolerance: sol.Float = 1e-7;
+    const actual = sol.lm.solve(&data, .{ 5, 5, 5, 5 + time }, .{ .max_iterations = 50, .min_gradient = 0, .min_improvement = 0 });
     if (!(@reduce(.Max, @abs(actual - expected)) < tolerance)) {
         const expect_array: [4]sol.Float = expected;
         const actual_array: [4]sol.Float = actual;
         try std.testing.expectEqualSlices(sol.Float, &expect_array, &actual_array);
     }
 
-    return error.SkipZigTest;
+    const expected_err = sol.lm.solutionError(&data, expected);
+    const tolerance_err: sol.Float = 1e-12;
+    const actual_err = sol.lm.solutionError(&data, actual);
+    try std.testing.expectApproxEqAbs(expected_err, actual_err, tolerance_err);
 }

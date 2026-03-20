@@ -93,7 +93,7 @@ test parseEpoch {
 
 pub const toa = struct {
     /// Load a Time of Arrival '.dat' file from a seeking file reader
-    pub fn fromFile(file_reader: *std.Io.File.Reader, gpa: Allocator) !data.ToA {
+    pub fn fromFile(file_reader: *std.Io.File.Reader, gpa: Allocator) error{ ReadFailed, OutOfMemory, UnsupportedVersion }!data.ToA {
         const parser: Parser = try .init(&file_reader.interface);
 
         file_reader.seekTo(0) catch unreachable;
@@ -105,16 +105,19 @@ pub const toa = struct {
     }
 
     /// Load a Time of Arrival '.dat' file from a reader
-    pub fn fromReader(r: *Reader, gpa: Allocator) !data.ToA {
+    pub fn fromReader(r: *Reader, gpa: Allocator) error{ ReadFailed, OutOfMemory, UnsupportedVersion }!data.ToA {
         var writer: std.Io.Writer.Allocating = .init(gpa);
         defer writer.deinit();
-        _ = try r.streamRemaining(&writer.writer);
+        _ = r.streamRemaining(&writer.writer) catch |err| switch (err) {
+            error.ReadFailed => return error.ReadFailed,
+            error.WriteFailed => return error.OutOfMemory,
+        };
 
         return fromBuffer(writer.written(), gpa);
     }
 
     /// Load a Time of Arrival '.dat' file from a buffer
-    pub fn fromBuffer(buffer: []const u8, gpa: Allocator) !data.ToA {
+    pub fn fromBuffer(buffer: []const u8, gpa: Allocator) error{ ReadFailed, OutOfMemory, UnsupportedVersion }!data.ToA {
         var reader: Reader = .fixed(buffer);
         const parser: Parser = try .init(&reader);
 
@@ -135,51 +138,60 @@ pub const toa = struct {
 
     pub const Parser = struct {
         pub const latest_version = 13;
-        const tested_versions = [_]usize{12};
+        const supported_versions = [_]u16{12};
 
-        version: usize,
+        version: u16,
         pattern: u16,
 
         /// Initialize the parser constants for the given file
-        pub fn init(r: *Reader) error{ ReadFailed, EndOfStream }!Parser {
+        pub fn init(r: *Reader) error{ ReadFailed, UnsupportedVersion }!Parser {
             var lookahead: []u8 = undefined;
             const packet_start: u16 = while (true) {
-                lookahead = try r.peek(4);
+                lookahead = r.peek(4) catch return error.ReadFailed;
                 if (lookahead[1] >> 7 == 1 and lookahead[3] >> 7 == 1) {
                     break toNative(lookahead, 0);
                 }
                 r.toss(2);
             };
 
+            const version: u16 = (packet_start >> 7) & 0x001F;
+            const is_supported = std.mem.containsAtLeastScalar2(u16, &supported_versions, version, 1);
+            if (!is_supported) {
+                std.log.err("Version {d} is not supported.\n", .{version});
+                return error.UnsupportedVersion;
+            }
+
             return .{
-                .version = (packet_start >> 7) & 0x001F,
+                .version = version,
                 .pattern = packet_start & masks.pattern,
             };
         }
 
         /// Advance the reader until the header of the next packet found
-        pub fn nextPacketHeader(self: Parser, r: *Reader, skip: usize) error{
-            UnsupportedVersion,
-            ReadFailed,
-            EndOfStream,
-        }!usize {
+        pub fn nextPacketHeader(self: Parser, r: *Reader, skip: usize) error{ReadFailed}!?usize {
             return switch (self.version) {
                 10...13 => blk: {
                     const lookbehind: Offset = comptime .init(9);
                     const lookahead: Offset = comptime .init(8);
                     const preserved: Offset = comptime .init(lookbehind.count + lookahead.count);
-                    std.debug.assert(lookbehind.count == (try Offset.preserve(self)).count);
+                    std.debug.assert(lookbehind.count == (Offset.preserve(self)).count);
 
                     const even = ~@as(usize, 1);
                     const start = @max(lookahead.bytes, skip);
 
-                    _ = try peekPreserve(r, preserved.bytes, start, false);
+                    _ = peekPreserve(r, preserved.bytes, start, false) catch |err| switch (err) {
+                        error.ReadFailed => return error.ReadFailed,
+                        error.EndOfStream => return null,
+                    };
                     var consumed: usize = start;
                     r.toss(start);
 
                     loop: while (true) {
                         while (true) {
-                            const buffer = try peekPreserve(r, preserved.bytes, 2, true);
+                            const buffer = peekPreserve(r, preserved.bytes, 2, true) catch |err| switch (err) {
+                                error.ReadFailed => return error.ReadFailed,
+                                error.EndOfStream => return null,
+                            };
                             const maybe_idx = std.mem.indexOf(
                                 u8,
                                 buffer,
@@ -210,13 +222,13 @@ pub const toa = struct {
                             r.seek = frozen_seek + 2;
                             consumed += 2;
                         };
-                        std.debug.assert(r.seek >= lookahead.bytes);
+
                         r.seek -= lookahead.bytes;
                         found = true;
                         if (r.seek < lookbehind.bytes) break :loop;
                         var packet_header: [lookbehind.count]u16 = undefined;
                         r.seek -= lookbehind.bytes;
-                        try r.readSliceEndian(u16, &packet_header, .little);
+                        r.readSliceEndian(u16, &packet_header, .little) catch unreachable;
                         const pattern = packet_header[lookbehind.count - 9] & masks.pattern;
                         const alternate_pattern = packet_header[lookbehind.count - 1] & masks.alternate;
                         if (alternate_pattern == 0 or pattern == self.pattern) break :loop;
@@ -225,39 +237,21 @@ pub const toa = struct {
                     }
                     break :blk consumed - lookahead.bytes;
                 },
-                else => error.UnsupportedVersion,
+                else => unreachable,
             };
         }
 
-        /// Process an entire file saving the header metadata into the data struct
-        pub fn parseAllHeaders(
-            self: Parser,
-            r: *Reader,
-            gpa: Allocator,
-        ) error{
-            UnsupportedVersion,
-            ReadFailed,
-            OutOfMemory,
-        }!std.ArrayList(Header) {
+        /// Process an entire file saving the header metadata into an array list
+        pub fn parseAllHeaders(self: Parser, r: *Reader, gpa: Allocator) error{ ReadFailed, OutOfMemory }!std.ArrayList(Header) {
             var headers: std.ArrayList(Header) = .empty;
             errdefer headers.deinit(gpa);
 
-            _ = self.nextPacketHeader(r, 0) catch |err| {
-                switch (err) {
-                    error.EndOfStream => return headers,
-                    else => |new_err| return new_err,
-                }
-            };
+            if (try self.nextPacketHeader(r, 0) == null) return headers;
 
             var start: u32 = 0;
-            while (self.parseHeader(r, start)) |header| {
+            while (try self.parseHeader(r, start)) |header| {
                 start += header.size;
                 try headers.append(gpa, header);
-            } else |err| {
-                switch (err) {
-                    error.EndOfStream => {},
-                    else => |new_err| return new_err,
-                }
             }
 
             return headers;
@@ -273,22 +267,15 @@ pub const toa = struct {
         ) error{
             ReadFailed,
             OutOfMemory,
-            UnsupportedVersion,
         }!data.ToA {
             var parsed: data.ToA = .init(gpa);
             errdefer parsed.deinit();
             if (headers.len == 0) return parsed;
-            _ = self.nextPacketHeader(r, 0) catch |err| {
-                switch (err) {
-                    error.ReadFailed => |new_error| return new_error,
-                    error.UnsupportedVersion, error.EndOfStream => unreachable,
-                }
-            };
+            _ = try self.nextPacketHeader(r, 0) orelse unreachable;
 
-            // Reading headers already needs these values to exist
-            const start = (Offset.start(self) catch unreachable).bytes;
-            const offset = start + (Offset.end(self) catch unreachable).bytes;
-            const body = (Offset.body(self) catch unreachable).bytes;
+            const start = Offset.start(self).bytes;
+            const offset = start + Offset.end(self).bytes;
+            const body = Offset.body(self).bytes;
             r.discardAll(start) catch |err| {
                 switch (err) {
                     error.ReadFailed => |new_error| return new_error,
@@ -304,7 +291,7 @@ pub const toa = struct {
             for (headers) |header| {
                 if (epoch > header.epoch) {
                     @branchHint(.cold);
-                    std.debug.print("Warning: Header {d} followed by header {d}. Truncating to latest appreance of the header.\n", .{ epoch - 1, header.epoch });
+                    std.log.warn("Header {d} followed by header {d}. Truncating to latest appreance of the header.\n", .{ epoch - 1, header.epoch });
                     parsed.headers.items.len = header.epoch - parsed.start_epoch;
                 } else {
                     parsed.headers.appendNTimesAssumeCapacity(.{
@@ -325,7 +312,7 @@ pub const toa = struct {
                             error.EndOfStream => unreachable,
                         }
                     };
-                    parsed.array.appendAssumeCapacity(try self.parsePacket(bytes, header));
+                    parsed.array.appendAssumeCapacity(self.parsePacket(bytes, header));
                 }
                 r.discardAll(offset) catch |err| {
                     switch (err) {
@@ -339,20 +326,25 @@ pub const toa = struct {
 
         /// Computes the size of the block and parses the dat file header
         /// Leaves the reader position on the next header
-        pub fn parseHeader(self: Parser, r: *Reader, start: u32) !Header {
-            const start_offset = (try Offset.start(self)).bytes;
-            const preserve_size = (try Offset.preserve(self)).bytes;
+        pub fn parseHeader(self: Parser, r: *Reader, start: u32) error{ReadFailed}!?Header {
+            const start_offset = Offset.start(self).bytes;
+            const preserve_size = Offset.preserve(self).bytes;
 
-            const size = try self.nextPacketHeader(r, start_offset);
-            const header = try peekPreserve(r, preserve_size, start_offset, false);
+            const size = try self.nextPacketHeader(r, start_offset) orelse return null;
+            const header = peekPreserve(r, preserve_size, start_offset, false) catch |err| {
+                switch (err) {
+                    error.ReadFailed => |new_error| return new_error,
+                    error.EndOfStream => return null,
+                }
+            };
 
             return parseHeaderInner(self, header, start, size);
         }
 
-        pub fn parseHeaderInner(self: Parser, header: []const u8, start: u32, size: usize) !Header {
-            const start_offset = (try Offset.start(self)).bytes;
-            const end_offset = (try Offset.end(self)).bytes;
-            const body_size = (try Offset.body(self)).bytes;
+        pub fn parseHeaderInner(self: Parser, header: []const u8, start: u32, size: usize) Header {
+            const start_offset = Offset.start(self).bytes;
+            const end_offset = Offset.end(self).bytes;
+            const body_size = Offset.body(self).bytes;
 
             var header_reader: Reader = .fixed(header);
             // xxxxxxxx_xxxxxxxx
@@ -378,7 +370,7 @@ pub const toa = struct {
                     const sign: i16 = if ((toNative(header, 1) & 0x4000) == 0) -1 else 1;
                     break :blk sign * absolute_value;
                 },
-                else => return error.UnsupportedVersion,
+                else => unreachable,
             };
 
             return .{
@@ -389,7 +381,7 @@ pub const toa = struct {
             };
         }
 
-        pub fn parsePacket(self: Parser, bytes: []const u8, header: Header) Unsupported!data.types.ToA {
+        pub fn parsePacket(self: Parser, bytes: []const u8, header: Header) data.types.ToA {
             return switch (self.version) {
                 10, 12 => blk: {
                     // nnnnnnnn_0aaaannn
@@ -411,7 +403,7 @@ pub const toa = struct {
                         .padding = packet.above,
                     };
                 },
-                else => error.UnsupportedVersion,
+                else => unreachable,
             };
         }
 
@@ -424,14 +416,14 @@ pub const toa = struct {
                 "0-\xFF\xBF\x64\xA4\x71\x2B4-5-\x39\x307-8-9-",
             };
             header[12] = &.{
-                .{ .count_correction = 12345, .start = 123, .size = (2520 - 24) / 6, .epoch = 12345 },
-                .{ .count_correction = -12345, .start = 123, .size = (2520 - 24) / 6, .epoch = 77777 },
+                .{ .count_correction = 12345, .start = 123, .size = (2520 - 18) / 6, .epoch = 12345 },
+                .{ .count_correction = -12345, .start = 123, .size = (2520 - 18) / 6, .epoch = 77777 },
             };
 
-            for (tested_versions) |version| {
+            for (supported_versions) |version| {
                 parser.version = version;
                 for (bytes[version].?, header[version].?, 1..) |in, out, idx| {
-                    const parsed = parser.parseHeaderInner(in, 123, 2520) catch unreachable;
+                    const parsed = parser.parseHeaderInner(in, 123, 2520);
                     std.testing.expectEqual(
                         out,
                         parsed,
@@ -458,10 +450,10 @@ pub const toa = struct {
                 .padding = 1234,
             }};
 
-            for (tested_versions) |version| {
+            for (supported_versions) |version| {
                 parser.version = version;
                 for (bytes[version].?, header[version].?, signal[version].?, 1..) |in, extra, out, idx| {
-                    const parsed = parser.parsePacket(in, extra) catch unreachable;
+                    const parsed = parser.parsePacket(in, extra);
                     std.testing.expectEqual(
                         out,
                         parsed,
@@ -470,6 +462,21 @@ pub const toa = struct {
                         std.log.err("Expected {any} but found {any}.\n", .{ out, parsed });
                         return err;
                     };
+                }
+            }
+        }
+
+        test "supported_versions" {
+            comptime {
+                var parser: Parser = .{ .pattern = 0, .version = undefined };
+                for (supported_versions) |version| {
+                    parser.version = version;
+                    var r: Reader = .fixed(&.{});
+                    _ = parser.nextPacketHeader(&r, 0) catch unreachable;
+                    const header_buffer: [Offset.start(parser).bytes]u8 = @splat(0xAA);
+                    const header = parser.parseHeaderInner(&header_buffer, 0, Offset.end(parser).bytes + Offset.start(parser).bytes);
+                    const packet_buffer: [Offset.body(parser).bytes]u8 = @splat(0xAA);
+                    _ = parser.parsePacket(&packet_buffer, header);
                 }
             }
         }
@@ -485,56 +492,46 @@ pub const toa = struct {
                 };
             }
 
-            pub fn start(self: Parser) Unsupported!Offset {
+            pub fn start(self: Parser) Offset {
                 return .init(switch (self.version) {
                     6...7 => 4,
                     8...9 => 6,
                     10...13 => 9,
-                    else => return error.UnsupportedVersion,
+                    else => unreachable,
                 });
             }
 
-            pub fn end(self: Parser) Unsupported!Offset {
+            pub fn end(self: Parser) Offset {
+                return .init(switch (self.version) {
+                    6...13 => 0,
+                    else => unreachable,
+                });
+            }
+
+            pub fn body(self: Parser) Offset {
                 return .init(switch (self.version) {
                     6...13 => 3,
-                    else => return error.UnsupportedVersion,
+                    else => unreachable,
                 });
             }
 
-            pub fn body(self: Parser) Unsupported!Offset {
-                return .init(switch (self.version) {
-                    6...13 => 3,
-                    else => return error.UnsupportedVersion,
-                });
-            }
-
-            pub fn preserve(self: Parser) Unsupported!Offset {
+            pub fn preserve(self: Parser) Offset {
                 return .init(switch (self.version) {
                     6...13 => 9,
-                    else => return error.UnsupportedVersion,
+                    else => unreachable,
                 });
             }
 
-            test "version_constants" {
-                var parser: Parser = undefined;
-                for (tested_versions) |version| {
-                    parser.version = version;
-                    _ = Offset.start(parser) catch {
-                        std.log.err("Failed to find 'start' constant in version {d}.\n", .{version});
-                        return error.TestFailed;
-                    };
-                    _ = Offset.end(parser) catch {
-                        std.log.err("Failed to find 'end' constant in version {d}.\n", .{version});
-                        return error.TestFailed;
-                    };
-                    _ = Offset.body(parser) catch {
-                        std.log.err("Failed to find 'body' constant in version {d}.\n", .{version});
-                        return error.TestFailed;
-                    };
-                    _ = Offset.preserve(parser) catch {
-                        std.log.err("Failed to find 'preserve' constant in version {d}.\n", .{version});
-                        return error.TestFailed;
-                    };
+            test "supported_versions" {
+                comptime {
+                    var parser: Parser = undefined;
+                    for (supported_versions) |version| {
+                        parser.version = version;
+                        _ = Offset.start(parser);
+                        _ = Offset.end(parser);
+                        _ = Offset.body(parser);
+                        _ = Offset.preserve(parser);
+                    }
                 }
             }
         };

@@ -2,7 +2,7 @@
     .name = .lma,
     .version = "0.0.0",
     .fingerprint = 0x546aaf72f19c0241,
-    .minimum_zig_version = "0.16.0-dev.2471+e9eadee00",
+    .minimum_zig_version = "0.16.0-dev.2915+065c6e794",
     .dependencies = .{
         .zlm = .{
             .url = "git+https://github.com/ziglibs/zlm.git?ref=master#35ab7df57cfb5392a11486f6e4b03a82f849a118",

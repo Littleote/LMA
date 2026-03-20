@@ -158,26 +158,41 @@ pub const constants = struct {
 
     /// Refractive index of radio and VHF through different medium
     pub const refractive_index = struct {
+        const epsilon: comptime_float = std.math.floatEps(f128);
+
         pub const vacuum = 1;
 
-        pub inline fn air_at(height: comptime_float) comptime_float {
+        pub fn airAt(height: comptime_float) comptime_float {
             const refractivity_0 = 315.0;
             const height_0 = 7_350.0;
             const refractivity = refractivity_0 * @exp(-height / height_0);
             return 1.0 + 0.000_001 * refractivity;
         }
 
-        pub inline fn air_up_to(height: comptime_float) comptime_float {
-            if (@abs(height) < 1.0) return air_at(height);
+        fn timeAirUpTo(height: comptime_float) comptime_float {
+            if (@abs(height) < epsilon) return airAt(height);
             const refractivity_0 = 315.0;
             const height_0 = 7_350.0;
-            const time = height_0 * @log(air_at(height) / (1.0 + 0.000_001 * refractivity_0)) + height;
+            return height_0 * @log(airAt(height) / (1.0 + 0.000_001 * refractivity_0)) + height;
+        }
+
+        pub fn airUpTo(height: comptime_float) comptime_float {
+            if (@abs(height) < epsilon) return airAt(height);
+            const time = timeAirUpTo(height);
             return height / time;
         }
 
+        pub fn airRange(from: comptime_float, to: comptime_float) comptime_float {
+            std.debug.assert(from <= to);
+            if (@abs(to - from) < epsilon) return airAt(from);
+            const time = timeAirUpTo(to) - timeAirUpTo(from);
+            return (to - from) / time;
+        }
+
         test "Air at surface" {
-            try std.testing.expectEqual(air_at(0.0), 1.000_315);
-            try std.testing.expectEqual(air_up_to(0.0), 1.000_315);
+            try std.testing.expectEqual(airAt(0.0), 1.000_315);
+            try std.testing.expectEqual(airUpTo(0.0), 1.000_315);
+            try std.testing.expectEqual(airRange(0.0, 0.0), 1.000_315);
         }
     };
 

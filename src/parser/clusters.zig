@@ -120,7 +120,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
             .longitude = try std.fmt.parseFloat(f32, iterator.next().?),
             .latitude = try std.fmt.parseFloat(f32, iterator.next().?),
             .altitude = try std.fmt.parseFloat(f32, iterator.next().?),
-            .dBm = try std.fmt.parseFloat(f16, iterator.next().?),
+            .dBW = try std.fmt.parseFloat(f16, iterator.next().?),
             // Both 0 and -1 Indicate a noise value
             .cluster = @enumFromInt(lma.cast.as(u32, @max(0, try std.fmt.parseInt(isize, iterator.next().?, 10)))),
         });

@@ -89,8 +89,8 @@ pub fn findSeeds(gpa: Allocator, shape: Grid, values: []const Float, seeds: *std
         const idx = shape.ravel(1, 1);
         const value = values[idx];
         var is_min = true;
-        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2]) catch unreachable];
-        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3]) catch unreachable];
+        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2])];
+        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3])];
         if (is_min) {
             try seeds.append(gpa, idx);
         }
@@ -99,9 +99,9 @@ pub fn findSeeds(gpa: Allocator, shape: Grid, values: []const Float, seeds: *std
         const idx = shape.ravel(row, 1);
         const value = values[idx];
         var is_min = true;
-        is_min = is_min and value < values[indexing.offset(usize, idx, offsets[1]) catch unreachable];
-        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2]) catch unreachable];
-        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3]) catch unreachable];
+        is_min = is_min and value < values[indexing.offset(usize, idx, offsets[1])];
+        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2])];
+        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3])];
         if (is_min) {
             try seeds.append(gpa, idx);
         }
@@ -110,9 +110,9 @@ pub fn findSeeds(gpa: Allocator, shape: Grid, values: []const Float, seeds: *std
         const idx = shape.ravel(1, col);
         const value = values[idx];
         var is_min = true;
-        is_min = is_min and value < values[indexing.offset(usize, idx, offsets[0]) catch unreachable];
-        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2]) catch unreachable];
-        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3]) catch unreachable];
+        is_min = is_min and value < values[indexing.offset(usize, idx, offsets[0])];
+        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2])];
+        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3])];
         if (is_min) {
             try seeds.append(gpa, idx);
         }
@@ -122,10 +122,10 @@ pub fn findSeeds(gpa: Allocator, shape: Grid, values: []const Float, seeds: *std
             const idx = shape.ravel(row, col);
             const value = values[idx];
             var is_min = true;
-            is_min = is_min and value < values[indexing.offset(usize, idx, offsets[0]) catch unreachable];
-            is_min = is_min and value < values[indexing.offset(usize, idx, offsets[1]) catch unreachable];
-            is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2]) catch unreachable];
-            is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3]) catch unreachable];
+            is_min = is_min and value < values[indexing.offset(usize, idx, offsets[0])];
+            is_min = is_min and value < values[indexing.offset(usize, idx, offsets[1])];
+            is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2])];
+            is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3])];
             if (is_min) {
                 try seeds.append(gpa, idx);
             }
@@ -251,7 +251,7 @@ pub const Spill = struct {
         for (order) |idx| {
             defer options.items.len = 0;
             for (offsets) |offset|
-                self.mapping[map[indexing.offset(usize, idx, offset) catch unreachable].int()].addToSet(&options);
+                self.mapping[map[indexing.offset(usize, idx, offset)].int()].addToSet(&options);
             if (options.items.len == 1) {
                 @branchHint(.likely);
                 map[idx] = options.items[0];
@@ -345,7 +345,7 @@ pub const Info = struct {
                 if (map[idx] == .none) {
                     @branchHint(.unpredictable);
                     for (offsets) |offset| {
-                        const cluster = &info[map[indexing.offset(usize, idx, offset) catch unreachable].int()];
+                        const cluster = &info[map[indexing.offset(usize, idx, offset)].int()];
                         if (cluster.cluster == .none) continue;
                         cluster.contour += 1;
                         if (values[idx] >= cluster.range_end) continue;

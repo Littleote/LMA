@@ -58,7 +58,7 @@ pub const ToA = extern struct {
     }
 
     pub const csv = struct {
-        pub const columns: []const []const u8 = &.{ "Time", "Decibels-miliwatt" };
+        pub const columns: []const []const u8 = &.{ "Time", "Decibel-miliwatt" };
     };
 
     pub fn eql(first: ToA, second: ToA) bool {
@@ -103,7 +103,7 @@ pub const Point = extern struct {
     measure_error: f16,
 
     /// Decibels detected with base of 1mW
-    dBm: f16,
+    dBW: f16,
 
     /// Number of stations that participated into locating the point
     pub fn station_count(self: *const Point) u8 {
@@ -118,7 +118,7 @@ pub const Point = extern struct {
             self.latitude,
             self.longitude,
             self.altitude,
-            self.dBm,
+            self.dBW,
             self.station_mask,
             self.measure_error,
         });
@@ -140,7 +140,7 @@ pub const Point = extern struct {
             .latitude = lat,
             .longitude = lon,
             .altitude = alt,
-            .dBm = decibels,
+            .dBW = decibels,
             .station_mask = mask,
             .measure_error = fit,
         };
@@ -148,7 +148,7 @@ pub const Point = extern struct {
     }
 
     pub const csv = struct {
-        pub const columns: []const []const u8 = &.{ "Time", "Latitude", "Longitude", "Altitude", "Decibels-miliwatt", "Station mask", "Fitness" };
+        pub const columns: []const []const u8 = &.{ "Time", "Latitude", "Longitude", "Altitude", "Decibel-watt", "Station mask", "Fitness" };
     };
 
     pub fn eql(first: Point, second: Point) bool {
@@ -171,7 +171,7 @@ pub const Point = extern struct {
             // fitness
             std.math.approxEqAbs(f16, first.measure_error, second.measure_error, 1e-2) and
             // decibels
-            std.math.approxEqAbs(f16, first.dBm, second.dBm, 1e-2);
+            std.math.approxEqAbs(f16, first.dBW, second.dBW, 1e-2);
         // zig fmt: on
     }
 
@@ -187,7 +187,7 @@ pub const Point = extern struct {
             .altitude = rand.float(f32) * 20_000 - 1_000,
             .station_mask = rand.int(u32),
             .measure_error = @floatCast(rand.floatExp(f32)),
-            .dBm = @floatCast(200 * rand.float(f32) - 110),
+            .dBW = @floatCast(200 * rand.float(f32) - 110),
         };
     }
 
@@ -234,7 +234,7 @@ pub const Clustered = extern struct {
     cluster: Cluster,
 
     /// Decibels detected with base of 1mW
-    dBm: f16,
+    dBW: f16,
 
     // CSV elements
     pub inline fn toCsv(self: Clustered, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
@@ -245,7 +245,7 @@ pub const Clustered = extern struct {
             self.longitude,
             self.altitude,
             @intFromEnum(self.cluster),
-            self.dBm,
+            self.dBW,
         });
     }
 
@@ -265,13 +265,13 @@ pub const Clustered = extern struct {
             .longitude = lon,
             .altitude = alt,
             .cluster = .noise,
-            .dBm = decibels,
+            .dBW = decibels,
         };
         return epoch;
     }
 
     pub const csv = struct {
-        pub const columns: []const []const u8 = &.{ "Time", "Latitude", "Longitude", "Altitude", "Cluster", "Decibels-miliwatt" };
+        pub const columns: []const []const u8 = &.{ "Time", "Latitude", "Longitude", "Altitude", "Cluster", "Decibel-watt" };
     };
 
     pub fn eql(first: Clustered, second: Clustered) bool {
@@ -295,7 +295,7 @@ pub const Clustered = extern struct {
             // cluster
             (first.cluster == second.cluster) and
             // decibels
-            std.math.approxEqAbs(f16, first.dBm, second.dBm, 1e-2);
+            std.math.approxEqAbs(f16, first.dBW, second.dBW, 1e-2);
         // zig fmt: on
     }
 
@@ -306,7 +306,7 @@ pub const Clustered = extern struct {
             .longitude = rand.float(f32) * 360 - 180,
             .altitude = rand.float(f32) * 20_000 - 1_000,
             .cluster = .noise,
-            .dBm = @floatCast(200 * rand.float(f32) - 110),
+            .dBW = @floatCast(200 * rand.float(f32) - 110),
         };
     }
 

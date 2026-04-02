@@ -5,7 +5,7 @@ pub const Grid = @import("pipeline/Grid.zig");
 pub const holes = @import("pipeline/holes.zig");
 pub const image = @import("pipeline/image.zig");
 pub const match = @import("pipeline/match.zig");
-pub const solver = @import("pipeline/solver.zig").solver;
+pub const solver = @import("pipeline/solver.zig");
 /// Transform between coordinate systems
 ///
 /// `surface` i.e. geodetic polar coordinates without height:

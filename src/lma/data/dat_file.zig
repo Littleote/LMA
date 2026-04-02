@@ -676,7 +676,7 @@ pub const output = struct {
             token = it.next() orelse break;
             current_value.measure_error = try std.fmt.parseFloat(f16, token);
             token = it.next() orelse break;
-            current_value.dBm = try std.fmt.parseFloat(f16, token);
+            current_value.dBW = try std.fmt.parseFloat(f16, token);
             token = it.next() orelse break;
             current_value.station_mask = try std.fmt.parseInt(u32, token[2..], 16);
         } else return;
@@ -706,7 +706,7 @@ pub const output = struct {
                     entry.longitude,
                     entry.altitude,
                     entry.measure_error,
-                    entry.dBm,
+                    entry.dBW,
                     entry.station_mask,
                 });
             }

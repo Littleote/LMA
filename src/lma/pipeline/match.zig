@@ -203,10 +203,9 @@ pub fn correlationMatrix(signals: []const []const ToA, weights: []const []const 
     }
 }
 
-pub const Config = struct {
-    max_network: u16,
-    min_candidates: u16,
+pub const Network = struct {
     pairing_window: u16,
+    max_network: u8,
 };
 
 pub const Options = struct {
@@ -297,12 +296,13 @@ inline fn getWeights(
 }
 
 pub fn DepthFirstSearch(
-    comptime config: Config,
+    comptime network: Network,
+    comptime max_depth: u8,
 ) type {
-    const max_frame_depth = config.min_candidates - 1;
+    const max_frame_depth = max_depth - 1;
     return struct {
         const Frame = struct {
-            weights: [config.max_network * config.pairing_window]Float = undefined,
+            weights: [network.max_network * network.pairing_window]Float = undefined,
             attempt: u16 = 0,
             index: u16 = 0,
         };
@@ -314,12 +314,12 @@ pub fn DepthFirstSearch(
 
         depth: u16,
         candidates: []const Signal,
-        signals: [config.min_candidates]Signal,
+        signals: [max_depth]Signal,
         frames: [max_frame_depth]Frame,
         options: *const Options,
 
-        pub fn init(seed: Signal, candidates: []const Signal, options: *const Options) DepthFirstSearch(config) {
-            var self: DepthFirstSearch(config) = .{
+        pub fn init(seed: Signal, candidates: []const Signal, options: *const Options) DepthFirstSearch(network, max_depth) {
+            var self: DepthFirstSearch(network, max_depth) = .{
                 .depth = 0,
                 .candidates = candidates,
                 .signals = undefined,
@@ -334,7 +334,7 @@ pub fn DepthFirstSearch(
             return self;
         }
 
-        pub fn next(self: *DepthFirstSearch(config)) ?[]const Signal {
+        pub fn next(self: *DepthFirstSearch(network, max_depth)) ?[]const Signal {
             const initial_state: State = if (self.depth >= max_frame_depth) .exit else .enter;
             state: switch (initial_state) {
                 .exit => {
@@ -378,7 +378,7 @@ pub fn DepthFirstSearch(
 }
 
 pub fn match(
-    comptime config: Config,
+    comptime network: Network,
     signals: []const []const ToA,
     weights: []const []const Float,
     options: *const Options,
@@ -386,14 +386,14 @@ pub fn match(
     context: anytype,
     solve: fn (@TypeOf(context), Signal, []const Signal, []u32, *const Options) ?Point,
 ) []Point {
-    std.debug.assert(signals.len <= config.max_network);
+    std.debug.assert(signals.len <= network.max_network);
     const max_nano: u32 = std.math.maxInt(u32);
     var points: std.ArrayList(Point) = .initBuffer(point_buffer);
 
     // Merge
-    var index: [config.max_network]u16 = @splat(0);
-    var nano_buffer: [config.max_network]u32 = undefined;
-    var masks: [config.max_network]Signal.Mask = @splat(0);
+    var index: [network.max_network]u16 = @splat(0);
+    var nano_buffer: [network.max_network]u32 = undefined;
+    var masks: [network.max_network]Signal.Mask = @splat(0);
     for (0..signals.len) |idx| nano_buffer[idx] = if (signals[idx].len > 0) signals[idx][0].nanosecond else max_nano;
     const nanos: []u32 = nano_buffer[0..signals.len];
 
@@ -403,7 +403,7 @@ pub fn match(
     correlationMatrix(signals, weights, options.corr.aux_buffer, options.corr.endpoints(last_update), options.step, options.corr.matrix);
 
     // Matching
-    var candidate_buffer: [config.max_network * config.pairing_window]Signal = undefined;
+    var candidate_buffer: [network.max_network * network.pairing_window]Signal = undefined;
 
     while (true) {
         const idx = std.sort.argMin(u32, nanos, {}, std.sort.asc(u32)) orelse unreachable;
@@ -443,7 +443,7 @@ pub fn match(
         for (0..signals.len) |station| {
             const base = index[station];
             const signal = signals[station][base..];
-            for (signal[0..@min(signal.len, config.pairing_window)], 0..) |toa, offset| {
+            for (signal[0..@min(signal.len, network.pairing_window)], 0..) |toa, offset| {
                 if (nanos[idx] + options.time_matrix[options.shape.ravel(idx, station)] < toa.nanosecond) break;
                 const mask: Signal.MaskBit = if (offset < @typeInfo(Signal.Mask).int.bits) .set(@intCast(offset)) else .unset;
                 if (mask.is_set and (masks[station] >> mask.bit) & 1 == 1) continue;

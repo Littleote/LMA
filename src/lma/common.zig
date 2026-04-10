@@ -247,6 +247,17 @@ pub const constants = struct {
     }
 };
 
+pub const partialSort = struct {
+    const quantile = @import("common/quantile.zig");
+
+    pub const pdq = quantile.quantile;
+    pub const pdqContext = quantile.quantileContext;
+
+    comptime {
+        _ = quantile;
+    }
+};
+
 comptime {
     std.testing.refAllDecls(@This());
 }

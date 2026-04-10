@@ -9,8 +9,8 @@ const max_stations = 32;
 const root = nargs.groups.any("match", .{
     .weight_mode = nargs.params.param("weights", nargs.types.options(lma.pipeline.match.Weights), .single, .{ .short = .auto, .default = .decibels }),
     .station = nargs.params.param("station", nargs.types.io.File.initDefaults(.open_file), .single, .{ .short = .auto }),
-    .input = nargs.params.param("ipnut", nargs.types.io.Glob.init, .single, .{ .short = .auto }),
-    .output = nargs.params.param("output", nargs.types.io.File.initDefaults(.create_file), .single, .{ .short = .auto }),
+    .input = nargs.params.param("input", nargs.types.io.Glob.init, .single, .{ .short = .auto }),
+    .output = nargs.params.param("output", nargs.types.unset(nargs.types.io.File.initDefaults(.create_file)), .single, .{ .short = .auto, .default = @as(?[]u8, null) }),
     .dat_output = nargs.params.param("dat-output", nargs.types.unset(nargs.types.io.File.initDefaults(.create_file)), .single, .{ .short = .auto, .default = @as(?[]u8, null) }),
 });
 
@@ -108,6 +108,8 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    if (date == null or time == null) @panic("No toa signal loaded");
+
     const start_time = blk: {
         const hour = try std.fmt.parseInt(u32, time.?[0..2], 10);
         const minute = try std.fmt.parseInt(u32, time.?[2..4], 10);
@@ -146,8 +148,8 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Var {s}: {d}\n", .{ field, @field(counts, field) });
     }
 
-    {
-        var file_writer = options.output.writer(init.io, &buffer);
+    if (options.output) |csv_file| {
+        var file_writer = csv_file.writer(init.io, &buffer);
         try output.toCsv(&file_writer.interface, null);
     }
     if (options.dat_output) |dat_file| {
@@ -293,7 +295,9 @@ fn cutoffTime(time: u32, point: lma.data.types.Point) bool {
 }
 
 fn sortSegment(_: void, _: u64, slice: []lma.data.types.Point) lma.data.segmented.Shift {
-    std.sort.block(lma.data.types.Point, slice, {}, lma.data.types.Point.earlier);
+    // Both seem to show roughly the same performance
+    // std.sort.block(lma.data.types.Point, slice, {}, lma.data.types.Point.earlier);
+    std.sort.insertion(lma.data.types.Point, slice, {}, lma.data.types.Point.earlier);
     return .{};
 }
 
@@ -346,7 +350,7 @@ const Solver = struct {
         }
 
         pub fn toPoint(self: *const Source, solver: *const Solver, buffer: *const Buffer) lma.data.types.Point {
-            const chi_sq = sol.lm.solutionError(buffer.data[0..buffer.len], self.toVec()) / xyz_rms_squared / lma.cast.to(sol.Float, buffer.len - 4);
+            const chi_sq = sol.ls.toaError(buffer.data[0..buffer.len], self.toVec()) / xyz_rms_squared / lma.cast.to(sol.Float, buffer.len - 4);
             const xyz = self.point.add(buffer.ref_point);
             const t = (self.time + buffer.ref_time) / c;
             const gps = lma.pipeline.transform.xyzToGPS(f32, xyz);
@@ -448,38 +452,15 @@ const Solver = struct {
     const xyz_rms_squared = xyz_rms * xyz_rms;
 
     pub fn solve(self: *Solver, initial: match.Signal, candidates: []const match.Signal, skip: []u32, options: *const match.Options) ?lma.data.types.Point {
-        var buffer: Buffer = .at(self.stations[initial.station], c * fromNano(initial.nanosecond));
         for (self.memory) |prev_source| {
-            const poi = prev_source.point;
-            buffer.clear();
-            _ = buffer.append(&.{
-                .point = .zero,
-                .time = 0,
-                .index = initial.index,
-                .station = initial.station,
-                .mask = initial.mask,
-            });
-            const xyz = poi.sub(buffer.ref_point);
-            self.counts.buffer_source += 1;
-            self.bufferFromSource(&buffer, &.{ .point = xyz, .time = -xyz.length() }, candidates, 1_000);
-            const s0 = self.initialSolution(&buffer) orelse continue;
-            const s1 = self.refinedSolution(&buffer, &s0) orelse continue;
-            if (!self.validateSolution(&buffer, &s1)) continue;
-
-            for (buffer.entries[0..buffer.len]) |entry| {
-                if (entry.err < 100 and entry.mask.is_set)
-                    skip[entry.station] |= @as(match.Signal.Mask, 1) << entry.mask.bit;
-            }
-
-            self.counts.out_solutions += 1;
-            self.addSource(&.{ .point = s1.point.add(buffer.ref_point), .time = s1.time + buffer.ref_time });
-            return s1.toPoint(self, &buffer);
+            if (self.solveFromPoint(initial, &prev_source, candidates, skip)) |point| return point;
         }
 
         var iter: match.DepthFirstSearch(
             .{ .max_network = 32, .pairing_window = max_matches },
             min_stations,
         ) = .init(initial, candidates, options);
+
         while (iter.next()) |set| {
             if (self.solveSet(set, candidates, skip)) |point| return point;
         }
@@ -510,7 +491,7 @@ const Solver = struct {
 
         // Clean solution
         self.counts.solve_lm += 1;
-        source = solveLM(buffer, &source, .{ .max_iterations = 5 }) catch return null;
+        source = solveGN(buffer, &source, .{ .common = .{ .max_iterations = 5 } }) catch return null;
         // Assert the solution is reasonable
         {
             if (source.point.length() > max_distance) return null;
@@ -528,7 +509,7 @@ const Solver = struct {
 
         // Solve quadratic optimization with L-M
         self.counts.solve_lm += 1;
-        const source = solveLM(buffer, input, .{ .max_iterations = 100 }) catch return null;
+        const source = solveGN(buffer, input, .{ .common = .{ .max_iterations = 100 } }) catch return null;
 
         // Assert the solution is reasonable
         {
@@ -543,11 +524,11 @@ const Solver = struct {
     }
 
     fn validateSolution(self: *Solver, buffer: *Buffer, source: *const Source) bool {
-        const chi_sq = sol.lm.solutionError(buffer.data[0..buffer.len], source.toVec()) / xyz_rms_squared / lma.cast.to(sol.Float, buffer.len - 4);
+        const chi_sq = sol.ls.toaError(buffer.data[0..buffer.len], source.toVec()) / xyz_rms_squared / lma.cast.to(sol.Float, buffer.len - 4);
         const t = (source.time + buffer.ref_time) / c;
 
         if (t <= 0) return false;
-        if (chi_sq > 10) return false;
+        if (chi_sq > 5) return false;
 
         _ = self;
         return true;
@@ -660,11 +641,11 @@ const Solver = struct {
         };
     }
 
-    pub fn solveLM(buffer: *Buffer, input: *const Source, options: sol.lm.LMOptions) error{NonFinite}!Source {
+    pub fn solveLM(buffer: *Buffer, input: *const Source, options: sol.ls.lm.LMOptions) error{NonFinite}!Source {
         const input_vec: sol.Vec = .{ input.point.x, input.point.y, input.point.z, input.time };
 
         // Solve quadratic optimization with L-M
-        const arr: [4]sol.Float = sol.lm.solve(buffer.data[0..buffer.len], input_vec, options);
+        const arr: [4]sol.Float = sol.ls.lm.solve(buffer.data[0..buffer.len], input_vec, options);
         // std.debug.assert(std.math.isFinite(arr[3]));
 
         const out: Source = .{
@@ -672,6 +653,49 @@ const Solver = struct {
             .time = arr[3],
         };
         return if (out.isFinite()) out else error.NonFinite;
+    }
+
+    pub fn solveGN(buffer: *Buffer, input: *const Source, options: sol.ls.gn.GNOptions) error{NonFinite}!Source {
+        const input_vec: sol.Vec = .{ input.point.x, input.point.y, input.point.z, input.time };
+
+        // Solve quadratic optimization with L-M
+        const arr: [4]sol.Float = sol.ls.gn.solve(buffer.data[0..buffer.len], input_vec, options);
+        // std.debug.assert(std.math.isFinite(arr[3]));
+
+        const out: Source = .{
+            .point = .new(arr[0], arr[1], arr[2]),
+            .time = arr[3],
+        };
+        return if (out.isFinite()) out else error.NonFinite;
+    }
+
+    pub fn solveFromPoint(self: *Solver, reference: match.Signal, base_source: *const Source, candidates: []const match.Signal, skip: []u32) ?lma.data.types.Point {
+        var buffer: Buffer = .at(self.stations[reference.station], c * fromNano(reference.nanosecond));
+        const base_point = base_source.point;
+        buffer.clear();
+        _ = buffer.append(&.{
+            .point = .zero,
+            .time = 0,
+            .index = reference.index,
+            .station = reference.station,
+            .mask = reference.mask,
+        });
+
+        const xyz = base_point.sub(buffer.ref_point);
+        self.counts.buffer_source += 1;
+        self.bufferFromSource(&buffer, &.{ .point = xyz, .time = -xyz.length() }, candidates, 1_000);
+        const initial = self.initialSolution(&buffer) orelse return null;
+        const source = self.refinedSolution(&buffer, &initial) orelse return null;
+        if (!self.validateSolution(&buffer, &source)) return null;
+
+        for (buffer.entries[0..buffer.len]) |entry| {
+            if (entry.err < 100 and entry.mask.is_set)
+                skip[entry.station] |= @as(match.Signal.Mask, 1) << entry.mask.bit;
+        }
+
+        self.counts.out_solutions += 1;
+        self.addSource(&.{ .point = source.point.add(buffer.ref_point), .time = source.time + buffer.ref_time });
+        return source.toPoint(self, &buffer);
     }
 
     pub fn solveSet(self: *Solver, matched: []const match.Signal, candidates: []const match.Signal, skip: []u32) ?lma.data.types.Point {

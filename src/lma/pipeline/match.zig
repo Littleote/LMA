@@ -162,17 +162,22 @@ pub fn correlation(signal_x: []const ToA, weights_x: []const Float, signal_y: []
 
 /// Translates and reescales the correlation to map the first and third quantile
 /// to approximately -0.5 and 0.5 respectively.
-pub fn quantileScale(unscaled: []const Float, scaled: []Float) void {
-    @memcpy(scaled, unscaled);
-    std.sort.block(Float, scaled, {}, std.sort.asc(Float));
-    const ceil: usize = if ((scaled.len - 1) % 4 != 0) 1 else 0;
-    const q1_idx: usize = @divFloor(scaled.len - 1, 4);
-    const q3_idx: usize = @divFloor(3 * (scaled.len - 1), 4);
-    const q1 = (scaled[q1_idx] + scaled[q1_idx + ceil]) / 2;
-    const q3 = (scaled[q3_idx] + scaled[q3_idx + ceil]) / 2;
+pub fn quantileScale(corr: []Float, aux: []Float) void {
+    const ceil: usize = if ((aux.len - 1) % 4 != 0) 1 else 0;
+    const q1_idx: usize = @divFloor(aux.len - 1, 4);
+    const q3_idx: usize = @divFloor(3 * (aux.len - 1), 4);
+
+    // Only partially sort the list at the first and third quantile to speed computation
+    @memcpy(aux, corr);
+    lma.partialSort.pdq(Float, aux, &.{ q1_idx, q1_idx + ceil, q3_idx, q3_idx + ceil }, {}, std.sort.asc(Float));
+    // std.sort.block(Float, scaled, {}, std.sort.asc(Float));
+
+    const q1 = (aux[q1_idx] + aux[q1_idx + ceil]) / 2;
+    const q3 = (aux[q3_idx] + aux[q3_idx + ceil]) / 2;
     const iqr = q3 - q1;
     const center = (q1 + q3) / 2;
-    for (unscaled, scaled) |c, *s| s.* = (c - center) / iqr;
+    lma.pipeline.Grid.apply(Float).standardise(corr, center, iqr);
+    // for (corr) |*c| c.* = (c.* - center) / iqr;
 }
 
 /// Computes the lower triangle of the matrix of scaled cross-correlation vectors for the given time span.
@@ -185,16 +190,15 @@ pub fn correlationMatrix(signals: []const []const ToA, weights: []const []const 
         for (0..row) |col| {
             const col_split = getSpan(signals[col], span);
             const corr = corr_matrix[shape.ravel(row, col)] orelse continue;
-            const unscaled = aux_buffer[0..corr.len];
             correlation(
                 row_split.getConst(ToA, signals[row]),
                 row_split.getConst(Float, weights[row]),
                 col_split.getConst(ToA, signals[col]),
                 col_split.getConst(Float, weights[col]),
-                unscaled,
+                corr,
                 step,
             );
-            quantileScale(unscaled, corr);
+            quantileScale(corr, aux_buffer[0..corr.len]);
 
             const rev_corr = corr_matrix[shape.ravel(col, row)] orelse continue;
             @memcpy(rev_corr, corr);
@@ -507,7 +511,7 @@ test correlation {
     const weights_x: [length]Float = .{ 10, 10, 1, 5, 8, 4, 3, 8, 3, 1, 1, 5, 6, 6, 7, 9, 5, 2, 5, 10 };
     const signal_y: [length]ToA = getToA(4, &.{ 6, 16, 25, 35, 40, 44, 45, 49, 55, 56, 59, 63, 72, 74, 78, 82, 86, 94, 95, 97 });
     const weights_y: [length]Float = .{ 9, 2, 2, 8, 10, 10, 4, 7, 8, 3, 1, 4, 6, 10, 5, 5, 7, 5, 5, 4 };
-    var corr: [21]Float = undefined;
+    var corr: [21]Float = @splat(std.math.nan(Float));
     const expected: [21]Float = .{ 69, 79, 98, 100, 86, 5, 48, 81, 167, 135, 140, 162, 91, 139, 63, 9, 89, 119, 107, 45, 82 };
 
     correlation(&signal_x, &weights_x, &signal_y, &weights_y, &corr, .fromPower(0));
@@ -516,13 +520,13 @@ test correlation {
 }
 
 test quantileScale {
-    const unscaled: [11]Float = .{ 12, 15, 0, 3, 3, 7, 9, 19, 18, 4, 6 };
-    var scaled: [11]Float = undefined;
+    var corr: [11]Float = .{ 12, 15, 0, 3, 3, 7, 9, 19, 18, 4, 6 };
+    var aux: [11]Float = @splat(std.math.nan(Float));
     const expected: [11]Float = .{ 0.35, 0.65, -0.85, -0.55, -0.55, -0.15, 0.05, 1.05, 0.95, -0.45, -0.25 };
 
-    quantileScale(&unscaled, &scaled);
+    quantileScale(&corr, &aux);
 
-    try std.testing.expectEqualSlices(Float, &expected, &scaled);
+    try std.testing.expectEqualSlices(Float, &expected, &corr);
 }
 
 // test mergeSignals {

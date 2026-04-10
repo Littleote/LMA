@@ -218,7 +218,6 @@ pub fn makeImages(
             // Define lightning holes and their contour
             @memcpy(scoring_threshold, scoring);
             lma.pipeline.Grid.apply(Float).threshold(
-                grid,
                 scoring_threshold,
                 threshold,
                 .{ .above = .{ .fixed = 255.0 } },
@@ -260,7 +259,7 @@ pub fn makeImages(
                 image,
                 &lma.pipeline.image.palettes.marked_viridis,
             );
-            lma.pipeline.Grid.apply(Float).scalarOp(grid, sources, .mul, config.decay);
+            lma.pipeline.Grid.apply(Float).scalarOp(sources, .mul, config.decay);
         }
     }
 }

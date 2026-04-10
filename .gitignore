@@ -1,3 +1,4 @@
+.*/
 .zig-cache/
 zig-out/
 zig-pkg/
@@ -5,4 +6,4 @@ data/*
 !data/map/
 img/
 test/
-.*/
+perf.data*

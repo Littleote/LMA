@@ -209,6 +209,26 @@ pub const Operator = enum { add, sub, mul, div, max, min };
 
 pub fn apply(Type: type) type {
     return struct {
+        const builtin = @import("builtin");
+
+        const use_vectors = switch (builtin.zig_backend) {
+            // These backends don't support vectors yet.
+            .stage2_aarch64,
+            .stage2_powerpc,
+            .stage2_riscv64,
+            => false,
+            // The SPIR-V backend does not support the optimized path yet.
+            .stage2_spirv => false,
+            else => true,
+        };
+
+        // The naive memory comparison implementation is more useful for fuzzers to find interesting inputs.
+        const vectorize = // Requirements for vectorization
+            use_vectors and
+            !builtin.fuzz and
+            (@typeInfo(Type) == .int or @typeInfo(Type) == .float) and
+            std.math.isPowerOfTwo(@bitSizeOf(Type));
+
         pub fn convolution(grid: Grid, values: []Type, aux: []Type, horizontal: []const Type, vertical: []const Type) void {
             axisConvolution(.columns, grid, values, aux, vertical);
             axisConvolution(.rows, grid, aux, values, horizontal);
@@ -317,7 +337,7 @@ pub fn apply(Type: type) type {
 
             pub fn apply(self: *Window, values: []Type) void {
                 const current = self.get();
-                elementWiseOp(self.grid, values, .add, current);
+                elementWiseOp(values, .add, current);
             }
 
             pub fn setupNext(self: *Window, values: []Type) void {
@@ -355,30 +375,73 @@ pub fn apply(Type: type) type {
             }
         };
 
-        pub fn elementWiseOp(grid: Grid, lhs: []Type, comptime operation: Operator, rhs: []Type) void {
-            _ = grid;
-            for (lhs, rhs) |*l, r| {
-                l.* = switch (operation) {
-                    .add => l.* + r,
-                    .sub => l.* - r,
-                    .mul => l.* * r,
-                    .div => l.* / r,
-                    .max => @max(l.*, r),
-                    .min => @min(l.*, r),
+        pub fn elementWiseOp(lhs: []Type, comptime operation: Operator, rhs: []Type) void {
+            const n = lhs.len;
+            std.debug.assert(lhs.len == rhs.len);
+            var i: usize = 0;
+
+            if (vectorize) {
+                if (std.simd.suggestVectorLength(Type)) |block_size| {
+                    const Block = @Vector(block_size, Type);
+
+                    while (n - i >= block_size) : (i += block_size) {
+                        const block_lhs: Block = lhs[i..][0..block_size].*;
+                        const block_rhs: Block = rhs[i..][0..block_size].*;
+                        lhs[i..][0..block_size].* = switch (operation) {
+                            .add => block_lhs + block_rhs,
+                            .sub => block_lhs - block_rhs,
+                            .mul => block_lhs * block_rhs,
+                            .div => block_lhs / block_rhs,
+                            .max => @max(block_lhs, block_rhs),
+                            .min => @min(block_lhs, block_rhs),
+                        };
+                    }
+                }
+            }
+
+            for (lhs[i..n], rhs[i..n]) |*iterm_lhs, item_rhs| {
+                iterm_lhs.* = switch (operation) {
+                    .add => iterm_lhs.* + item_rhs,
+                    .sub => iterm_lhs.* - item_rhs,
+                    .mul => iterm_lhs.* * item_rhs,
+                    .div => iterm_lhs.* / item_rhs,
+                    .max => @max(iterm_lhs.*, item_rhs),
+                    .min => @min(iterm_lhs.*, item_rhs),
                 };
             }
         }
 
-        pub fn scalarOp(grid: Grid, values: []Type, comptime operation: Operator, scalar: Type) void {
-            _ = grid;
-            for (values) |*v| {
-                v.* = switch (operation) {
-                    .add => v.* + scalar,
-                    .sub => v.* - scalar,
-                    .mul => v.* * scalar,
-                    .div => v.* / scalar,
-                    .max => @max(v.*, scalar),
-                    .min => @min(v.*, scalar),
+        pub fn scalarOp(values: []Type, comptime operation: Operator, scalar: Type) void {
+            const n = values.len;
+            var i: usize = 0;
+
+            if (vectorize) {
+                if (std.simd.suggestVectorLength(Type)) |block_size| {
+                    const Block = @Vector(block_size, Type);
+
+                    const scalar_vec: Block = @splat(scalar);
+                    while (n - i >= block_size) : (i += block_size) {
+                        const block: Block = values[i..][0..block_size].*;
+                        values[i..][0..block_size].* = switch (operation) {
+                            .add => block + scalar_vec,
+                            .sub => block - scalar_vec,
+                            .mul => block * scalar_vec,
+                            .div => block / scalar_vec,
+                            .max => @max(block, scalar_vec),
+                            .min => @min(block, scalar_vec),
+                        };
+                    }
+                }
+            }
+
+            for (values[i..n]) |*item| {
+                item.* = switch (operation) {
+                    .add => item.* + scalar,
+                    .sub => item.* - scalar,
+                    .mul => item.* * scalar,
+                    .div => item.* / scalar,
+                    .max => @max(item.*, scalar),
+                    .min => @min(item.*, scalar),
                 };
             }
         }
@@ -392,12 +455,10 @@ pub fn apply(Type: type) type {
         };
 
         pub fn threshold(
-            grid: Grid,
             values: []Type,
             min: Type,
             comptime limits: struct { below: SetValue = .zero, above: SetValue = .current },
         ) void {
-            _ = grid;
             for (values) |*cell| {
                 if (cell.* < min) {
                     switch (limits.below) {
@@ -412,6 +473,29 @@ pub fn apply(Type: type) type {
                         .fixed => |val| cell.* = val,
                     }
                 }
+            }
+        }
+
+        /// Remove the mean and standard deviation from the given slice
+        pub fn standardise(values: []Type, mean: Type, sd: Type) void {
+            const n = values.len;
+            var i: usize = 0;
+
+            if (vectorize) {
+                if (std.simd.suggestVectorLength(Type)) |block_size| {
+                    const Block = @Vector(block_size, Type);
+
+                    const mean_vec: Block = @splat(mean);
+                    const sd_vec: Block = @splat(sd);
+                    while (n - i >= block_size) : (i += block_size) {
+                        const block: Block = values[i..][0..block_size].*;
+                        values[i..][0..block_size].* = (block - mean_vec) / sd_vec;
+                    }
+                }
+            }
+
+            for (values[i..n]) |*item| {
+                item.* = (item.* - mean) / sd;
             }
         }
     };

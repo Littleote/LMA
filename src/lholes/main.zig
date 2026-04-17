@@ -10,7 +10,7 @@ const Args = @import("Args.zig");
 const mapping = @import("map.zig");
 const utils = @import("utils.zig");
 
-const zlm = lma.pipeline.zlm(Float);
+const math = lma.pipeline.math(Float);
 
 pub fn main(init: std.process.Init) !void {
     const parsed: Args = try .parseNargs(init.gpa, init.io, init.minimal.args);
@@ -29,21 +29,24 @@ export fn callHoles(parsed: Args.ExternArgs) callconv(.c) ?[*:0]const u8 {
 }
 
 pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
-    const rotation: zlm.Mat3 = blk: {
-        var front: zlm.Vec3 = parsed.region.lookAt();
-        var side: zlm.Vec3 = .cross(.unitZ, front);
-        var up: zlm.Vec3 = .cross(front, side);
+    const rotation: math.Mat = blk: {
+        const v = math.vector;
+        var front = parsed.region.lookAt();
+        var side: math.Vec = v.cross2(v.unit(.z), front);
+        var up: math.Vec = v.cross2(front, side);
 
-        up = up.scale(1 / up.length());
-        side = side.scale(1 / side.length());
-        front = front.scale(1 / front.length());
+        up /= v.splat(v.norm2(up));
+        side /= v.splat(v.norm2(side));
+        front /= v.splat(v.norm2(front));
 
-        // NOTE: zlm only has v * M not M * v so we write the transpose
-        break :blk .{ .fields = .{
-            .{ front.x, front.y, front.z },
-            .{ side.x, side.y, side.z },
-            .{ up.x, up.y, up.z },
-        } };
+        break :blk .{ front, side, up, v.zero };
+
+        // // NOTE: zlm only has v * M not M * v so we write the transpose
+        // break :blk .{ .fields = .{
+        //     .{ front.x, front.y, front.z },
+        //     .{ side.x, side.y, side.z },
+        //     .{ up.x, up.y, up.z },
+        // } };
     };
 
     const bounds = parsed.region.generateBounds(parsed.detail, &rotation);
@@ -51,7 +54,7 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
     const snap = 60 * 1 * 1;
     const decay: f32 = @floatCast(std.math.pow(f64, 0.5, @as(f64, @floatFromInt(snap)) / (60.0 * parsed.half_life)));
     const freq = 40.0 / (1 - decay) / parsed.luminosity;
-    const area_km = bounds.step.x * bounds.step.y / 1_000_000;
+    const area_km = math.vector.prodN(bounds.step, 2) / 1_000_000;
     const scale = 1 / (freq * area_km);
 
     // Input directory
@@ -108,7 +111,7 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
 }
 
 pub const Params = struct {
-    rotation: *const zlm.Mat3,
+    rotation: *const math.Mat,
     bounds: *const lma.pipeline.Grid.Bounds(Float),
     generator: *Args.Generator,
     overlay: []u8,
@@ -134,9 +137,9 @@ pub fn makeImages(
     const sources = try arena.alloc(Float, grid.size);
     const density = try arena.alloc(Float, grid.size);
     // Gaussian arrays to smooth data
-    const step_km_inverse = zlm.vec2(1_000, 1_000).div(config.bounds.step);
-    const conv_h = try arena.alloc(Float, @intFromFloat(1 + 2 * @round(step_km_inverse.x)));
-    const conv_v = try arena.alloc(Float, @intFromFloat(1 + 2 * @round(step_km_inverse.x)));
+    const step_km_inverse: math.ElemVec = .init(math.vector.vec2(1_000, 1_000) / config.bounds.step);
+    const conv_h = try arena.alloc(Float, @intFromFloat(1 + 2 * @round(step_km_inverse.x())));
+    const conv_v = try arena.alloc(Float, @intFromFloat(1 + 2 * @round(step_km_inverse.y())));
     // Scores running mean buffer and total
     var scores: lma.pipeline.Grid.apply(Float).Window = try .init(arena, grid, 5);
     const scoring = try arena.alloc(Float, grid.size);
@@ -157,8 +160,8 @@ pub fn makeImages(
     @memset(scoring, 0);
 
     // Calculate the gaussian blur
-    lma.pipeline.Grid.apply(Float).kernel.gaussian(conv_h, step_km_inverse.x);
-    lma.pipeline.Grid.apply(Float).kernel.gaussian(conv_v, step_km_inverse.y);
+    lma.pipeline.Grid.apply(Float).kernel.gaussian(conv_h, step_km_inverse.x());
+    lma.pipeline.Grid.apply(Float).kernel.gaussian(conv_v, step_km_inverse.y());
 
     // File name buffer
     var name_buffer: [32]u8 = undefined;

@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const lma = @import("../lma.zig");
-const zlm = lma.pipeline.zlm;
+const math = lma.pipeline.math(Float);
 const Grid = lma.pipeline.Grid;
 const cast = lma.cast;
 const indexing = lma.indexing;

@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const lma = @import("../lma.zig");
-const zlm = lma.pipeline.zlm;
+const math = lma.pipeline.math;
 const cast = lma.cast;
 
 const Grid = @This();
@@ -77,66 +77,42 @@ const Neighbour = packed struct(u4) {
 pub fn Bounds(Float: type) type {
     assert(@typeInfo(Float) == .float);
     return struct {
-        pub const Vec2 = zlm(Float).Vec2;
+        const vector = math(Float).vector;
+        pub const Vec = math(Float).Vec;
 
         pub const Detail = union(enum) {
             grid: Grid,
-            step: Vec2,
+            step: Vec,
 
             pub fn fromGrid(grid: Grid) Detail {
                 return .{ .grid = grid };
             }
 
-            pub fn fromStep(step: Vec2) Detail {
+            pub fn fromStep(step: Vec) Detail {
                 return .{ .step = step };
             }
 
-            pub fn getBounds(self: Detail, size: Vec2) struct { Grid, Vec2 } {
+            pub fn getBounds(self: Detail, size: Vec) struct { Grid, Vec } {
                 const grid: Grid = switch (self) {
                     .grid => |grid| grid,
                     .step => |step| blk: {
-                        const grid = size.div(step).add(.new(1, 1));
-                        break :blk .init(@intFromFloat(@round(grid.y)), @intFromFloat(@round(grid.x)));
+                        const grid: math(Float).ElemVec = .init(size / step + vector.splat(1));
+                        break :blk .init(@intFromFloat(@round(grid.at(.y))), @intFromFloat(@round(grid.at(.x))));
                     },
                 };
-                const count: Vec2 = .new(@floatFromInt(grid.columns - 1), @floatFromInt(grid.rows - 1));
-                return .{ grid, size.div(count) };
-            }
-        };
-
-        const kde_method = struct {
-            pub const options = struct {
-                pub const Triangular = struct {
-                    scaling: Float = 1.0,
-                };
-            };
-
-            pub fn triangular(bounds: *const Bounds(Float), values: []Float, points: []const Vec2, config: options.Triangular) void {
-                const grid = bounds.grid;
-                for (points) |x| {
-                    const frac = x.sub(bounds.origin).div(bounds.step);
-                    if (frac.x < 0 or frac.y < 0) continue;
-                    const row: usize = @intFromFloat(@round(frac.y));
-                    const col: usize = @intFromFloat(@round(frac.x));
-                    if (grid.rows <= row + 1 or grid.columns <= col + 1) continue;
-                    const weight: Vec2 = .new(@mod(frac.x, 1), @mod(frac.y, 1));
-                    const idx = grid.ravel(row, col);
-                    values[idx] += config.scaling * weight.x * weight.y;
-                    values[idx + grid.columns] += config.scaling * weight.x * (1 - weight.y);
-                    values[idx + 1 + grid.columns] += config.scaling * (1 - weight.x) * (1 - weight.y);
-                    values[idx + 1] += config.scaling * (1 - weight.x) * weight.y;
-                }
+                const count: Vec = vector.vec2(@floatFromInt(grid.columns - 1), @floatFromInt(grid.rows - 1));
+                return .{ grid, size / count };
             }
         };
 
         grid: Grid,
-        size: Vec2,
-        origin: Vec2,
-        end: Vec2,
-        step: Vec2,
+        size: Vec,
+        origin: Vec,
+        end: Vec,
+        step: Vec,
 
-        pub fn limits(detail: Detail, origin: Vec2, end: Vec2) Bounds(Float) {
-            const size = end.sub(origin);
+        pub fn limits(detail: Detail, origin: Vec, end: Vec) Bounds(Float) {
+            const size = end - origin;
             const grid, const step = detail.getBounds(size);
             return .{
                 .grid = grid,
@@ -147,23 +123,23 @@ pub fn Bounds(Float: type) type {
             };
         }
 
-        pub fn scale(detail: Detail, size: Vec2) Bounds(Float) {
-            return .scaleTranslate(detail, .zero, size);
+        pub fn scale(detail: Detail, size: Vec) Bounds(Float) {
+            return .scaleTranslate(detail, vector.zero, size);
         }
 
-        pub fn scaleTranslate(detail: Detail, center: Vec2, size: Vec2) Bounds(Float) {
-            const half_size = size.scale(0.5);
+        pub fn scaleTranslate(detail: Detail, center: Vec, size: Vec) Bounds(Float) {
+            const half_size = size * vector.splat(0.5);
             const grid, const step = detail.getBounds(size);
             return .{
                 .grid = grid,
                 .size = size,
-                .origin = center.add(half_size.neg()),
-                .end = center.add(half_size),
+                .origin = center - half_size,
+                .end = center + half_size,
                 .step = step,
             };
         }
 
-        pub fn contains(self: *const Bounds, point: Vec2) bool {
+        pub fn contains(self: *const Bounds, point: Vec) bool {
             // zig fmt: off
             return (
                 self.origin.x < point.x and point.x < self.end.x and
@@ -176,15 +152,15 @@ pub fn Bounds(Float: type) type {
             triangular: struct {
                 scaling: Float = 1.0,
 
-                pub fn run(options: @This(), bounds: *const Bounds(Float), values: []Float, points: []const Vec2) void {
+                pub fn run(options: @This(), bounds: *const Bounds(Float), values: []Float, points: []const Vec) void {
                     const grid = bounds.grid;
                     for (points) |x| {
-                        const frac = x.sub(bounds.origin).div(bounds.step);
-                        if (frac.x < 0 or frac.y < 0) continue;
-                        const row: usize = @intFromFloat(@round(frac.y));
-                        const col: usize = @intFromFloat(@round(frac.x));
+                        const frac: math(Float).ElemVec = .init((x - bounds.origin) / bounds.step);
+                        if (frac.x() < 0 or frac.y() < 0) continue;
+                        const row: usize = @intFromFloat(@round(frac.y()));
+                        const col: usize = @intFromFloat(@round(frac.x()));
                         if (grid.rows <= row + 1 or grid.columns <= col + 1) continue;
-                        const weight: Vec2 = .new(@mod(frac.x, 1), @mod(frac.y, 1));
+                        const weight: struct { x: Float, y: Float } = .{ .x = @mod(frac.x(), 1), .y = @mod(frac.y(), 1) };
                         const idx = grid.ravel(row, col);
                         values[idx] += options.scaling * weight.x * weight.y;
                         values[idx + grid.columns] += options.scaling * weight.x * (1 - weight.y);
@@ -195,7 +171,7 @@ pub fn Bounds(Float: type) type {
             },
         };
 
-        pub fn kde(bounds: *const Bounds(Float), values: []Float, points: []const Vec2, method: Kde) void {
+        pub fn kde(bounds: *const Bounds(Float), values: []Float, points: []const Vec, method: Kde) void {
             switch (method) {
                 inline else => |options| options.run(bounds, values, points),
             }

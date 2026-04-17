@@ -15,18 +15,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("nice_args");
 
-    const zlm = b.dependency("zlm", .{
-        .target = target,
-        .optimize = optimize,
-    }).module("zlm");
-
     const lma = b.createModule(.{
         .root_source_file = b.path("src/lma/lma.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .module = zlm, .name = "zlm" },
-        },
         .single_threaded = single_threaded,
     });
 
@@ -77,7 +69,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .module = lma, .name = "lma" },
-                .{ .module = zlm, .name = "zlm" },
                 .{ .module = nargs, .name = "nargs" },
             },
         }),

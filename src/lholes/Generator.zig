@@ -9,7 +9,7 @@ const Float = @import("main.zig").Float;
 
 const Generator = @This();
 
-const zlm = lma.pipeline.zlm(Float);
+const math = lma.pipeline.math(Float);
 
 fn DataInstance(T: type) type {
     return struct {
@@ -22,7 +22,7 @@ const Data = union(Args.Stage) {
     clusters: DataInstance(lma.data.Clusters),
     points: DataInstance(lma.data.Points),
 
-    pub fn next(self: *Data, rotation: *const zlm.Mat3) !?[]zlm.Vec2 {
+    pub fn next(self: *Data, rotation: *const math.Mat) !?[]math.Vec {
         const generator: *Generator = @fieldParentPtr("data", self);
         switch (self.*) {
             inline else => |*data, tag| {
@@ -31,7 +31,9 @@ const Data = union(Args.Stage) {
                 try generator.array.ensureTotalCapacity(generator.gpa, items.len);
                 for (items) |item| {
                     if (tag != .clusters or !item.cluster.isNoise()) {
-                        generator.array.appendAssumeCapacity(lma.pipeline.transform.surfaceToPlane(Float, item, rotation));
+                        generator.array.appendAssumeCapacity(
+                            lma.pipeline.transform.surfaceToPlane(Float, item.point(), rotation),
+                        );
                     }
                 }
                 generator.epoch = data.iterator.epoch;
@@ -102,7 +104,7 @@ file_buffer: []u8,
 
 gpa: Allocator,
 io: std.Io,
-array: std.ArrayList(zlm.Vec2),
+array: std.ArrayList(math.Vec),
 
 pub fn init(gpa: Allocator, io: std.Io, input: []const u8, format: Args.Format) !*Generator {
     var path: []const u8 = undefined;
@@ -178,8 +180,8 @@ fn load(self: *Generator) !void {
     try self.data.load(&file_reader.interface);
 }
 
-pub fn next(self: *Generator, rotation: *const zlm.Mat3) !?[]zlm.Vec2 {
-    var out: ?[]zlm.Vec2 = try self.data.next(rotation);
+pub fn next(self: *Generator, rotation: *const math.Mat) !?[]math.Vec {
+    var out: ?[]math.Vec = try self.data.next(rotation);
     while (out == null) {
         if (self.current_file >= self.files.items.len) return null;
         self.data.unload();

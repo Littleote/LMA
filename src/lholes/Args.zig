@@ -14,7 +14,7 @@ pub const Generator = @import("Generator.zig");
 
 const Args = @This();
 
-const zlm = lma.pipeline.zlm(Float);
+const math = lma.pipeline.math(Float);
 
 /// Input file format for the lightning hole detection application
 pub const FileFormat = enum(u8) {
@@ -48,53 +48,55 @@ pub const RegionType = enum(u8) {
 
 pub const Region = union(RegionType) {
     center_size: struct {
-        center: zlm.Vec2,
-        size: zlm.Vec2,
+        center: math.Vec,
+        size: math.Vec,
     },
     end_points: struct {
-        origin: zlm.Vec2,
-        end: zlm.Vec2,
+        origin: math.Vec,
+        end: math.Vec,
     },
 
     pub fn lookAt(
         self: Region,
-    ) zlm.Vec3 {
+    ) math.Vec {
         return switch (self) {
-            .center_size => |center_size| transform.surfaceToXYZ(Float, center_size.center),
+            .center_size => |center_size| transform.surfaceToXYZ(Float, .init(center_size.center)).build(),
             .end_points => |end_points| blk: {
-                const origin = transform.surfaceToXYZ(Float, end_points.origin);
-                const end = transform.surfaceToXYZ(Float, end_points.end);
-                break :blk origin.add(end);
+                const origin = transform.surfaceToXYZ(Float, .init(end_points.origin)).build();
+                const end = transform.surfaceToXYZ(Float, .init(end_points.end)).build();
+                break :blk origin + end;
             },
         };
     }
 
-    pub fn generateBounds(self: Region, detail: Detail, rotation: *const zlm.Mat3) lma.pipeline.Grid.Bounds(Float) {
+    pub fn generateBounds(self: Region, detail: Detail, rotation: *const math.Mat) lma.pipeline.Grid.Bounds(Float) {
         return switch (self) {
             .center_size => |center_size| .scale(detail, center_size.size),
             .end_points => |end_points| .limits(
                 detail,
-                transform.surfaceToPlane(Float, end_points.origin, rotation),
-                transform.surfaceToPlane(Float, end_points.end, rotation),
+                transform.surfaceToPlane(Float, .init(end_points.origin), rotation),
+                transform.surfaceToPlane(Float, .init(end_points.end), rotation),
             ),
         };
     }
 };
 
 const Resolution = enum(u8) {
+    const vec2 = math.vector.vec2;
+
     micro,
     low,
     medium,
     high,
     extra,
 
-    pub fn step(res: Resolution) zlm.Vec2 {
+    pub fn step(res: Resolution) math.Vec {
         return switch (res) {
-            .micro => .new(7_071.0, 7_071.0),
-            .low => .new(2_236.0, 2_236.0),
-            .medium => .new(1_000.0, 1_000.0),
-            .high => .new(500.0, 500.0),
-            .extra => .new(100.0, 100.0),
+            .micro => vec2(7_071.0, 7_071.0),
+            .low => vec2(2_236.0, 2_236.0),
+            .medium => vec2(1_000.0, 1_000.0),
+            .high => vec2(500.0, 500.0),
+            .extra => vec2(100.0, 100.0),
         };
     }
 };
@@ -194,16 +196,16 @@ pub fn parseNargs(gpa: Allocator, io: std.Io, cli: std.process.Args) !Args {
 
         .region = switch (command.region) {
             .center_scale => |center_scale| .{ .center_size = .{
-                .center = .new(center_scale.center.latitude, center_scale.center.longitude),
-                .size = .new(1_000 * center_scale.scale[0], 1_000 * center_scale.scale[1]),
+                .center = math.vector.vec2(center_scale.center.latitude, center_scale.center.longitude),
+                .size = math.vector.vec2(1_000 * center_scale.scale[0], 1_000 * center_scale.scale[1]),
             } },
             .end_points => |end_points| .{ .end_points = .{
-                .origin = .new(end_points.from.latitude, end_points.from.longitude),
-                .end = .new(end_points.to.latitude, end_points.to.longitude),
+                .origin = math.vector.vec2(end_points.from.latitude, end_points.from.longitude),
+                .end = math.vector.vec2(end_points.to.latitude, end_points.to.longitude),
             } },
             .preset => |location| switch (location) {
-                .catalunya => .{ .center_size = .{ .center = .new(41.70, 1.75), .size = .new(300_000, 300_000) } },
-                .valencia => unreachable,
+                .catalunya => .{ .center_size = .{ .center = math.vector.vec2(41.70, 1.75), .size = math.vector.vec2(300_000, 300_000) } },
+                .valencia => @panic("Not implemented"),
             },
         },
         .detail = switch (command.detail) {
@@ -252,12 +254,12 @@ pub const ExternArgs = extern struct {
             .ffmpeg = self.ffmpeg,
             .region = switch (self.region_type) {
                 .center_size => .{ .center_size = .{
-                    .center = .new(self.region_first.first, self.region_first.second),
-                    .size = .new(self.region_second.first, self.region_second.second),
+                    .center = math.vector.vec2(self.region_first.first, self.region_first.second),
+                    .size = math.vector.vec2(self.region_second.first, self.region_second.second),
                 } },
                 .end_points => .{ .end_points = .{
-                    .origin = .new(self.region_first.first, self.region_first.second),
-                    .end = .new(self.region_second.first, self.region_second.second),
+                    .origin = math.vector.vec2(self.region_first.first, self.region_first.second),
+                    .end = math.vector.vec2(self.region_second.first, self.region_second.second),
                 } },
             },
             .detail = .fromStep(self.resolution.step()),

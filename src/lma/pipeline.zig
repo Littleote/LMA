@@ -26,7 +26,7 @@ pub const solver = @import("pipeline/solver.zig");
 /// Z represents (90ºN, 00ºE)
 pub const transform = @import("pipeline/transform.zig");
 
-pub const zlm = @import("zlm").as;
+pub const math = @import("pipeline/math.zig").math;
 
 comptime {
     std.testing.refAllDecls(@This());

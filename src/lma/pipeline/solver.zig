@@ -3,28 +3,28 @@ const std = @import("std");
 const lma = @import("../lma.zig");
 
 pub const Float = f64;
-pub const Point = lma.pipeline.zlm(Float).Vec3;
-pub const Vec = @Vector(4, Float);
-const Arr = [4]Float;
+pub const math = lma.pipeline.math(Float);
+pub const Vec = math.Vec;
+const Arr = math.ElemVec;
+pub const Mat = math.Mat;
+const ElemMat = math.ElemMat;
 
 pub const linear = struct {
-    inline fn swizzle(vec: Vec, comptime mask: @Vector(4, i32)) Vec {
-        return @shuffle(Float, vec, undefined, mask);
-    }
+    const swizzle = math.vector.swizzle;
 
     inline fn mat_x_mat(a: Vec, b: Vec) Vec {
-        return ((a * swizzle(b, .{ 0, 3, 0, 3 })) +
-            (swizzle(a, .{ 1, 0, 3, 2 }) * swizzle(b, .{ 2, 1, 2, 1 })));
+        return ((a * swizzle(b, .xwxw)) +
+            (swizzle(a, .yxwz) * swizzle(b, .zyzy)));
     }
 
     inline fn adj_x_mat(a: Vec, b: Vec) Vec {
-        return ((swizzle(a, .{ 3, 3, 0, 0 }) * b) -
-            (swizzle(a, .{ 1, 1, 2, 2 }) * swizzle(b, .{ 2, 3, 0, 1 })));
+        return ((swizzle(a, .wwxx) * b) -
+            (swizzle(a, .yyzz) * swizzle(b, .zwxy)));
     }
 
     inline fn mat_x_adj(a: Vec, b: Vec) Vec {
-        return ((a * swizzle(b, .{ 3, 0, 3, 0 })) -
-            (swizzle(a, .{ 1, 0, 3, 2 }) * swizzle(b, .{ 2, 1, 2, 1 })));
+        return ((a * swizzle(b, .wxwx)) -
+            (swizzle(a, .yxwz) * swizzle(b, .zyzy)));
     }
 
     pub fn blockInverse(mat: *const [4]Vec, inv_mat: *[4]Vec) void {
@@ -49,17 +49,17 @@ pub const linear = struct {
 
         // std.debug.print("BLOCK DET: {any}\n", .{determinants});
 
-        const det_a = swizzle(determinants, @splat(0));
-        const det_b = swizzle(determinants, @splat(1));
-        const det_c = swizzle(determinants, @splat(2));
-        const det_d = swizzle(determinants, @splat(3));
+        const det_a = swizzle(determinants, .xxxx);
+        const det_b = swizzle(determinants, .yyyy);
+        const det_c = swizzle(determinants, .zzzz);
+        const det_d = swizzle(determinants, .wwww);
 
         // Store common intermediate results
         const @"a_adj x b" = adj_x_mat(a, b);
         const @"d_adj x c" = adj_x_mat(d, c);
 
         // Determinant of the full matrix
-        const trace: Vec = @splat(@reduce(.Add, @"a_adj x b" * swizzle(@"d_adj x c", .{ 0, 2, 1, 3 })));
+        const trace: Vec = @splat(@reduce(.Add, @"a_adj x b" * swizzle(@"d_adj x c", .xzyw)));
         const det_m = det_a * det_d + det_b * det_c - trace;
         const sign: Vec = .{ 1, -1, -1, 1 };
         const inv_det_m = sign / det_m;
@@ -81,22 +81,22 @@ pub const linear = struct {
     /// Solving 4x4 linear system using gaussian elimination
     pub fn solveGaussian(mat: *const [4]Vec, bias: Vec) Vec {
         var gauss_mat: [4]Vec = mat.*;
-        var x: Arr = bias;
+        var x: Arr = .init(bias);
 
         for (0..4) |r| {
-            const scale = @as(Arr, gauss_mat[r])[r];
-            gauss_mat[r] /= @as(Vec, @splat(scale));
-            x[r] /= scale;
+            const scale = @as(Arr, .init(gauss_mat[r])).elems[r];
+            gauss_mat[r] /= math.vector.splat(scale);
+            x.elems[r] /= scale;
 
             for (0..4) |c| {
                 if (r == c) continue;
-                const coef = @as(Arr, gauss_mat[c])[r];
-                gauss_mat[c] -= gauss_mat[r] * @as(Vec, @splat(coef));
-                x[c] -= x[r] * coef;
+                const coef = @as(Arr, .init(gauss_mat[c])).elems[r];
+                gauss_mat[c] -= gauss_mat[r] * math.vector.splat(coef);
+                x.elems[c] -= x.elems[r] * coef;
             }
         }
 
-        return x;
+        return x.build();
     }
 
     /// Vectorization for efficiently solving 4x4 linear system at the cost of some precision
@@ -344,10 +344,10 @@ pub const least_squares = struct {
         fn diagonal(mat: *const [4]Vec) Vec {
             var diag: Arr = undefined;
             for (0..4) |r| {
-                const row: Arr = mat[r];
-                diag[r] = std.math.clamp(row[r], 1e-8, 1e8);
+                const row: Arr = .init(mat[r]);
+                diag.elems[r] = std.math.clamp(row.elems[r], 1e-8, 1e8);
             }
-            return diag;
+            return diag.build();
         }
 
         /// Give an approximate solution to the ToA problem by solving the argument minimization problem
@@ -502,31 +502,33 @@ pub const least_squares = struct {
                     .{ .common = .{ .max_iterations = 10, .min_gradient = 1e-15, .min_improvement = 1e-15 } },
                 );
                 if (!(@reduce(.Max, @abs(actual - expected)) < tolerance)) {
-                    const expect_array: Arr = expected;
-                    const actual_array: Arr = actual;
-                    try std.testing.expectEqualSlices(Float, &expect_array, &actual_array);
+                    const expect_array: Arr = .init(expected);
+                    const actual_array: Arr = .init(actual);
+                    try std.testing.expectEqualSlices(Float, &expect_array.elems, &actual_array.elems);
                 }
             }
 
             test "solve with noise" {
-                const source: Point = .new(3, 7, 0);
+                const vec3 = math.vector.vec3;
+
+                const source: Vec = vec3(3, 7, 0);
                 const time: Float = 3;
 
-                const stations: [8]Point = .{
-                    .new(0, 0, 0),
-                    .new(8, 0, 0),
-                    .new(0, 4, 0),
-                    .new(0, 0, 3),
-                    .new(0, 1, 1),
-                    .new(1, 0, 9),
-                    .new(5, 6, 0),
-                    .new(6, 3, 4),
+                const stations: [8]Vec = .{
+                    vec3(0, 0, 0),
+                    vec3(8, 0, 0),
+                    vec3(0, 4, 0),
+                    vec3(0, 0, 3),
+                    vec3(0, 1, 1),
+                    vec3(1, 0, 9),
+                    vec3(5, 6, 0),
+                    vec3(6, 3, 4),
                 };
                 const noise: [8]Float = .{ 0.1, -0.1, 0.0, -0.2, 0.2, 0.0, 0.1, -0.1 };
                 const data: [8]Vec = blk: {
                     var buf: [8]Vec = undefined;
                     for (stations, noise, &buf) |station, offset, *signal_i| {
-                        signal_i.* = .{ station.x, station.y, station.z, time + station.distance(source) + offset };
+                        signal_i.* = math.vector.extend(3, station, 1, .{time + math.vector.norm2(station - source) + offset});
                     }
                     break :blk buf;
                 };
@@ -546,10 +548,10 @@ pub const least_squares = struct {
 
                 const tolerance: Float = 1e-8;
                 if (!(@reduce(.Max, @abs(actual - expected) / expected) < tolerance)) {
-                    const expect_arr: Arr = expected;
-                    const actual_arr: Arr = actual;
+                    const expect_arr: Arr = .init(expected);
+                    const actual_arr: Arr = .init(actual);
                     std.debug.print("Error of {e} above tolerance {e}\n", .{ @reduce(.Max, @abs(actual - expected)), tolerance });
-                    try std.testing.expectEqualSlices(Float, &expect_arr, &actual_arr);
+                    try std.testing.expectEqualSlices(Float, &expect_arr.elems, &actual_arr.elems);
                 }
             }
         };

@@ -170,6 +170,10 @@ pub const Info = struct {
         }
     }
 
+    pub fn point(self: *const Info) lma.pipeline.math(f64).ElemVec {
+        return .{ .elems = .{ self.latitude, self.longitude, self.altitude, 0 } };
+    }
+
     pub fn eql(first: Info, second: Info) bool {
         if (first.name) |first_name| {
             if (second.name) |second_name| {

@@ -110,6 +110,10 @@ pub const Point = extern struct {
         return @intCast(@popCount(self.station_mask));
     }
 
+    pub fn point(self: *const Point) lma.pipeline.math(f32).ElemVec {
+        return .{ .elems = .{ self.latitude, self.longitude, self.altitude, 0 } };
+    }
+
     // CSV elements
     pub inline fn toCsv(self: Point, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.8}{0c}{3d:.8}{0c}{4d:.3}{0c}{5d:.3}{0c}0x{6x:0>8}{0c}{7d:.2}\n", .{
@@ -235,6 +239,10 @@ pub const Clustered = extern struct {
 
     /// Decibels detected with base of 1mW
     dBW: f16,
+
+    pub fn point(self: *const Clustered) lma.pipeline.math(f32).ElemVec {
+        return .{ .elems = .{ self.latitude, self.longitude, self.altitude, 0 } };
+    }
 
     // CSV elements
     pub inline fn toCsv(self: Clustered, w: *Writer, epoch: u64, del: u8) Writer.Error!void {

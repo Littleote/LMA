@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lma = @import("../lma.zig");
 const earth = lma.constants.earth;
-const zlm = lma.pipeline.zlm;
+const math = lma.pipeline.math;
 const data = lma.data;
 
 pub const Coordinates = enum {
@@ -15,84 +15,66 @@ inline fn square(value: anytype) @TypeOf(value) {
     return value * value;
 }
 
-inline fn hasFields(comptime fields: []const []const u8, comptime names: []const []const u8) bool {
-    comptime {
-        for (names) |name| {
-            for (fields) |field| {
-                if (std.mem.eql(u8, field, name)) break;
-            } else return false;
-        }
-        return true;
-    }
-}
-
-inline fn isVec(comptime coord: Coordinates, Value: type) bool {
-    const fields = comptime std.meta.fieldNames(Value);
-    return switch (coord) {
-        .surface => !hasFields(fields, &.{ "latitude", "longitude" }),
-        .gps => !hasFields(fields, &.{ "latitude", "longitude", "altitude" }),
-        .xyz => true,
-    };
-}
-
 /// Transform a set of surface coordinates into a plane of XYZ space.
 /// After transforming into XYZ, rotate space and return the YZ plane
-pub fn surfaceToPlane(float: type, item: anytype, rotation: *const zlm(float).Mat3) zlm(float).Vec2 {
-    const point = surfaceToXYZ(float, item);
-    const proj = point.transform(rotation.*);
-    return .new(proj.y, proj.z);
+pub fn surfaceToPlane(Float: type, point: math(Float).ElemVec, rotation: *const math(Float).Mat) math(Float).Vec {
+    const xyz = surfaceToXYZ(Float, point).build();
+    const rot = math(Float).matrix.right(rotation, xyz);
+    return rot * math(Float).Axis.maskUntil(.dim(2));
 }
 
 /// Transform a set of surface coordinates into XYZ space
-pub fn surfaceToXYZ(Float: type, item: anytype) zlm(Float).Vec3 {
-    const is_vec2 = isVec(.surface, @TypeOf(item));
-    const lat = std.math.degreesToRadians(if (is_vec2) item.x else item.latitude);
-    const lon = std.math.degreesToRadians(if (is_vec2) item.y else item.longitude);
+pub fn surfaceToXYZ(Float: type, point: math(Float).ElemVec) math(Float).ElemVec {
+    const lat = std.math.degreesToRadians(point.x());
+    const lon = std.math.degreesToRadians(point.y());
     const n = square(earth.semimajor) / @sqrt(square(earth.semimajor * @cos(lat)) + square(earth.semiminor * @sin(lat)));
     const n_prime = square(earth.semiminor) / square(earth.semimajor) * n;
-    return .new(
-        @floatCast(n * @cos(lat) * @cos(lon)),
-        @floatCast(n * @cos(lat) * @sin(lon)),
-        @floatCast(n_prime * @sin(lat)),
-    );
+    return .{ .elems = .{
+        n * @cos(lat) * @cos(lon),
+        n * @cos(lat) * @sin(lon),
+        n_prime * @sin(lat),
+        0,
+    } };
 }
 
 /// Transform a set of gps coordinates into XYZ space
-pub fn gpsToXYZ(Float: type, item: anytype) zlm(Float).Vec3 {
-    const is_vec3 = isVec(.gps, @TypeOf(item));
-    const lat: Float = @floatCast(std.math.degreesToRadians(if (is_vec3) item.x else item.latitude));
-    const lon: Float = @floatCast(std.math.degreesToRadians(if (is_vec3) item.y else item.longitude));
-    const alt: Float = @floatCast(if (is_vec3) item.z else item.altitude);
+pub fn gpsToXYZ(Float: type, point: math(Float).ElemVec) math(Float).ElemVec {
+    const lat = std.math.degreesToRadians(point.x());
+    const lon = std.math.degreesToRadians(point.y());
+    const alt = point.z();
     const n = square(earth.semimajor) / @sqrt(square(earth.semimajor * @cos(lat)) + square(earth.semiminor * @sin(lat)));
     const n_prime = square(earth.semiminor) / square(earth.semimajor) * n;
-    return .new(
+    return .{ .elems = .{
         (n + alt) * @cos(lat) * @cos(lon),
         (n + alt) * @cos(lat) * @sin(lon),
         (n_prime + alt) * @sin(lat),
-    );
+        0,
+    } };
 }
 
 /// Transform a set of XYZ coordinates into surface coordinates
 /// Assumes the height in the surface result to be exactly 0
-pub fn xyzToSurface(Float: type, item: anytype) zlm(Float).Vec2 {
-    const x: Float = @floatCast(item.x);
-    const y: Float = @floatCast(item.y);
-    const z: Float = @floatCast(item.z);
+pub fn xyzToSurface(Float: type, point: math(Float).ElemVec) math(Float).ElemVec {
+    const x = point.x();
+    const y = point.y();
+    const z = point.z();
 
     const p = @sqrt(square(x) + square(y));
     const e2 = comptime 1 - square(earth.semiminor / earth.semimajor);
 
-    return .new(
+    return .{ .elems = .{
         std.math.radiansToDegrees(std.math.atan(z / p / (1 - e2))),
         std.math.radiansToDegrees(std.math.atan2(y, x)),
-    );
+        0,
+        0,
+    } };
 }
 
 /// Transform a set of XYZ coordinates into surface coordinates
-pub fn xyzToGPS(Float: type, item: anytype) zlm(Float).Vec3 {
-    const x: Float = @floatCast(item.x);
-    const y: Float = @floatCast(item.y);
-    const z: Float = @floatCast(item.z);
+pub fn xyzToGPS(Float: type, point: math(Float).ElemVec) math(Float).ElemVec {
+    const x = point.x();
+    const y = point.y();
+    const z = point.z();
 
     const p = @sqrt(square(x) + square(y));
     var r_curvature: Float = undefined;
@@ -108,81 +90,36 @@ pub fn xyzToGPS(Float: type, item: anytype) zlm(Float).Vec3 {
         lat = std.math.atan(z / p / (1 - e2 * (r_curvature / (r_curvature + alt))));
     }
 
-    return .new(
+    return .{ .elems = .{
         std.math.radiansToDegrees(lat),
         std.math.radiansToDegrees(lon),
         alt,
-    );
+        0,
+    } };
 }
 
 test surfaceToXYZ {
-    try std.testing.expect(zlm(f32).Vec3.approxEqAbs(
-        surfaceToXYZ(f32, zlm(f32).vec2(0.0, 0.0)),
-        .new(earth.semimajor, 0.0, 0.0),
-        1,
-    ));
-    try std.testing.expect(zlm(f32).Vec3.approxEqAbs(
-        surfaceToXYZ(f32, zlm(f32).vec2(0.0, 90.0)),
-        .new(0.0, earth.semimajor, 0.0),
-        1,
-    ));
-    try std.testing.expect(zlm(f32).Vec3.approxEqAbs(
-        surfaceToXYZ(f32, zlm(f32).vec2(90.0, 0.0)),
-        .new(0.0, 0.0, earth.semiminor),
-        1,
-    ));
-    try std.testing.expect(zlm(f64).Vec3.approxEqAbs(
-        surfaceToXYZ(f64, zlm(f64).vec2(41.3825000, 2.1769444)),
-        .new(4_789_156.212, 182_050.875, 4_194_389.648),
-        0.010,
-    ));
+    try surfaceToXYZ(f32, .{ .elems = .{ 0.0, 0.0, 0, 0 } }).isApproxEqAbs(.init(.{ earth.semimajor, 0.0, 0.0, 0 }), 1);
+    try surfaceToXYZ(f32, .{ .elems = .{ 0.0, 90.0, 0, 0 } }).isApproxEqAbs(.init(.{ 0.0, earth.semimajor, 0.0, 0 }), 1);
+    try surfaceToXYZ(f64, .{ .elems = .{ 90.0, 0.0, 0, 0 } }).isApproxEqAbs(.init(.{ 0.0, 0.0, earth.semiminor, 0 }), 1);
+
+    try surfaceToXYZ(f64, .{ .elems = .{ 41.3825000, 2.1769444, 0, 0 } }).isApproxEqAbs(.init(.{ 4_789_156.212, 182_050.875, 4_194_389.648, 0 }), 0.010);
 }
 
 test gpsToXYZ {
-    try std.testing.expect(zlm(f64).Vec3.approxEqAbs(
-        gpsToXYZ(f64, zlm(f64).vec3(41.3825000, 2.1769444, 0)),
-        .new(4_789_156.212, 182_050.875, 4_194_389.648),
-        0.010,
-    ));
-    try std.testing.expect(zlm(f64).Vec3.approxEqAbs(
-        gpsToXYZ(f64, zlm(f64).vec3(48.856667, 2.352222, 10_000)),
-        .new(4_207_483.029, 172_831.196, 4_787_616.904),
-        0.010,
-    ));
+    try gpsToXYZ(f64, .{ .elems = .{ 41.3825000, 2.1769444, 0.0, 0 } }).isApproxEqAbs(.init(.{ 4_789_156.212, 182_050.875, 4_194_389.648, 0 }), 0.010);
+    try gpsToXYZ(f64, .{ .elems = .{ 48.856667, 2.352222, 10_000.0, 0 } }).isApproxEqAbs(.init(.{ 4_207_483.029, 172_831.196, 4_787_616.904, 0 }), 0.010);
 }
 
 test xyzToSurface {
-    try std.testing.expect(zlm(f32).Vec2.approxEqAbs(
-        xyzToSurface(f32, zlm(f32).vec3(earth.semimajor, 0.0, 0.0)),
-        .new(0.0, 0.0),
-        1,
-    ));
-    try std.testing.expect(zlm(f32).Vec2.approxEqAbs(
-        xyzToSurface(f32, zlm(f32).vec3(0.0, earth.semimajor, 0.0)),
-        .new(0.0, 90.0),
-        1,
-    ));
-    try std.testing.expect(zlm(f32).Vec2.approxEqAbs(
-        xyzToSurface(f32, zlm(f32).vec3(0.0, 0.0, earth.semiminor)),
-        .new(90.0, 0.0),
-        1,
-    ));
-    try std.testing.expect(zlm(f64).Vec2.approxEqAbs(
-        xyzToSurface(f64, zlm(f64).vec3(4_789_156.212, 182_050.875, 4_194_389.648)),
-        .new(41.3825000, 2.1769444),
-        0.010,
-    ));
+    try xyzToSurface(f32, .{ .elems = .{ earth.semimajor, 0.0, 0.0, 0 } }).isApproxEqAbs(.init(.{ 0.0, 0.0, 0, 0 }), 1);
+    try xyzToSurface(f32, .{ .elems = .{ 0.0, earth.semimajor, 0.0, 0 } }).isApproxEqAbs(.init(.{ 0.0, 90.0, 0, 0 }), 1);
+    try xyzToSurface(f32, .{ .elems = .{ 0.0, 0.0, earth.semiminor, 0 } }).isApproxEqAbs(.init(.{ 90.0, 0.0, 0, 0 }), 1);
+
+    try xyzToSurface(f64, .{ .elems = .{ 4_789_156.212, 182_050.875, 4_194_389.648, 0 } }).isApproxEqAbs(.init(.{ 41.3825000, 2.1769444, 0, 0 }), 0.010);
 }
 
 test xyzToGPS {
-    try std.testing.expect(zlm(f64).Vec3.approxEqAbs(
-        xyzToGPS(f64, zlm(f64).vec3(4_789_156.212, 182_050.875, 4_194_389.648)),
-        .new(41.3825000, 2.1769444, 0),
-        0.010,
-    ));
-    try std.testing.expect(zlm(f64).Vec3.approxEqAbs(
-        xyzToGPS(f64, zlm(f64).vec3(4_207_483.029, 172_831.196, 4_787_616.904)),
-        .new(48.856667, 2.352222, 10_000),
-        0.010,
-    ));
+    try xyzToGPS(f64, .{ .elems = .{ 4_789_156.212, 182_050.875, 4_194_389.648, 0 } }).isApproxEqAbs(.init(.{ 41.3825000, 2.1769444, 0.0, 0 }), 0.010);
+    try xyzToGPS(f64, .{ .elems = .{ 4_207_483.029, 172_831.196, 4_787_616.904, 0 } }).isApproxEqAbs(.init(.{ 48.856667, 2.352222, 10_000.0, 0 }), 0.010);
 }

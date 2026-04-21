@@ -2,7 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lma = @import("../lma.zig");
 const earth = lma.constants.earth;
-const math = lma.pipeline.math;
+const math = lma.math;
 const data = lma.data;
 
 pub const Coordinates = enum {
@@ -19,8 +19,8 @@ inline fn square(value: anytype) @TypeOf(value) {
 /// After transforming into XYZ, rotate space and return the YZ plane
 pub fn surfaceToPlane(Float: type, point: math(Float).ElemVec, rotation: *const math(Float).Mat) math(Float).Vec {
     const xyz = surfaceToXYZ(Float, point).build();
-    const rot = math(Float).matrix.right(rotation, xyz);
-    return rot * math(Float).Axis.maskUntil(.dim(2));
+    const rot = math(Float).matrix.applyRight(rotation, xyz);
+    return math(Float).mask.apply(math(Float).mask.until(2), rot, math(Float).vector.zero);
 }
 
 /// Transform a set of surface coordinates into XYZ space

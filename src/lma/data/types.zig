@@ -26,7 +26,7 @@ inline fn parse(T: type, s: ?[]const u8, comptime config: ParseConfig) ParseErro
 }
 
 /// Time of arrival data from the LMA stations
-pub const ToA = extern struct {
+pub const Toa = extern struct {
     /// Nanoseconds since the start of the second
     /// Value expressed with fixed point 30.2
     nanosecond: u32,
@@ -36,7 +36,7 @@ pub const ToA = extern struct {
     padding: u16 = 0,
 
     // CSV elements
-    pub inline fn toCsv(self: ToA, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
+    pub inline fn toCsv(self: Toa, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.3}\n", .{
             del,
             cast.to(f64, epoch) + lma.nano.fromNano(f64, self.nanosecond),
@@ -44,7 +44,7 @@ pub const ToA = extern struct {
         });
     }
 
-    pub inline fn fromCsv(self: *ToA, line: []u8, del: u8) ParseError!usize {
+    pub inline fn fromCsv(self: *Toa, line: []u8, del: u8) ParseError!usize {
         var iterator = std.mem.tokenizeScalar(u8, line, del);
         const time = std.math.modf(try parse(f64, iterator.next(), .float));
         const epoch: usize = @intFromFloat(time.ipart);
@@ -61,15 +61,15 @@ pub const ToA = extern struct {
         pub const columns: []const []const u8 = &.{ "Time", "Decibel-miliwatt" };
     };
 
-    pub fn eql(first: ToA, second: ToA) bool {
+    pub fn eql(first: Toa, second: Toa) bool {
         return first.nanosecond == second.nanosecond and first.dBm == second.dBm;
     }
 
-    pub fn approxEql(first: ToA, second: ToA) bool {
+    pub fn approxEql(first: Toa, second: Toa) bool {
         return first.nanosecond == second.nanosecond and std.math.approxEqAbs(f16, first.dBm, second.dBm, 1e-1);
     }
 
-    pub fn dummyValue(rand: std.Random) ToA {
+    pub fn dummyValue(rand: std.Random) Toa {
         return .{
             .nanosecond = rand.uintLessThan(u32, lma.nano.ratio),
             .dBm = @floatCast(200 * rand.float(f32) - 110),
@@ -110,7 +110,7 @@ pub const Point = extern struct {
         return @intCast(@popCount(self.station_mask));
     }
 
-    pub fn point(self: *const Point) lma.pipeline.math(f32).ElemVec {
+    pub fn point(self: *const Point) lma.math(f32).ElemVec {
         return .{ .elems = .{ self.latitude, self.longitude, self.altitude, 0 } };
     }
 
@@ -240,7 +240,7 @@ pub const Clustered = extern struct {
     /// Decibels detected with base of 1mW
     dBW: f16,
 
-    pub fn point(self: *const Clustered) lma.pipeline.math(f32).ElemVec {
+    pub fn point(self: *const Clustered) lma.math(f32).ElemVec {
         return .{ .elems = .{ self.latitude, self.longitude, self.altitude, 0 } };
     }
 

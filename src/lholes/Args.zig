@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 
 const lma = @import("lma");
 const transform = lma.pipeline.transform;
-const Detail = lma.pipeline.Grid.Bounds(Float).Detail;
+const Detail = lma.grid.Bounds.Detail;
 const nargs = @import("nargs");
 const groups = nargs.groups;
 const params = nargs.params;
@@ -14,7 +14,7 @@ pub const Generator = @import("Generator.zig");
 
 const Args = @This();
 
-const math = lma.pipeline.math(Float);
+const math = lma.math(Float);
 
 /// Input file format for the lightning hole detection application
 pub const FileFormat = enum(u8) {
@@ -69,7 +69,7 @@ pub const Region = union(RegionType) {
         };
     }
 
-    pub fn generateBounds(self: Region, detail: Detail, rotation: *const math.Mat) lma.pipeline.Grid.Bounds(Float) {
+    pub fn generateBounds(self: Region, detail: Detail, rotation: *const math.Mat) lma.grid.Bounds {
         return switch (self) {
             .center_size => |center_size| .scale(detail, center_size.size),
             .end_points => |end_points| .limits(

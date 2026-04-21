@@ -1,41 +1,13 @@
 const std = @import("std");
 
-/// Index and size for a subset of a slice
-pub const SubSlice = extern struct {
-    start: u32,
-    size: u32,
-
-    pub fn end(self: SubSlice) u32 {
-        return self.start + self.size;
-    }
-
-    pub fn init(start: u32, size: u32) SubSlice {
-        return .{ .start = start, .size = size };
-    }
-
-    pub fn initRange(from: u32, to: u32) SubSlice {
-        return .{ .start = from, .size = to - from };
-    }
-
-    pub fn get(self: SubSlice, slice: anytype) @TypeOf(slice) {
-        return slice[self.start..][0..self.size];
-    }
-
-    pub fn getReference(self: SubSlice, T: type, slice: []T) []T {
-        return slice[self.start..][0..self.size];
-    }
-
-    pub fn getConst(self: SubSlice, T: type, slice: []const T) []const T {
-        return slice[self.start..][0..self.size];
-    }
-};
-
 /// Nanoseconds fraction (modulus 1 second) is compressed with fixed point 30.2
 pub const nano = struct {
+    pub const Nano = u32;
+
     /// Ratio between a fixed point 30.2ns value and a floating point 1s value
     pub const ratio = 4 * 1_000_000_000;
 
-    pub inline fn toNano(second: anytype) u32 {
+    pub inline fn toNano(second: anytype) Nano {
         std.debug.assert(std.math.isFinite(second));
         return @intFromFloat(@round(second * ratio));
     }
@@ -91,7 +63,37 @@ pub const cast = struct {
     }
 };
 
-pub const indexing = struct {
+pub const index = struct {
+    /// Index and size for a subset of a slice
+    pub const SubSlice = extern struct {
+        start: u32,
+        size: u32,
+
+        pub fn end(self: SubSlice) u32 {
+            return self.start + self.size;
+        }
+
+        pub fn init(start: u32, size: u32) SubSlice {
+            return .{ .start = start, .size = size };
+        }
+
+        pub fn initRange(from: u32, to: u32) SubSlice {
+            return .{ .start = from, .size = to - from };
+        }
+
+        pub fn get(self: SubSlice, slice: anytype) @TypeOf(slice) {
+            return slice[self.start..][0..self.size];
+        }
+
+        pub fn getReference(self: SubSlice, T: type, slice: []T) []T {
+            return slice[self.start..][0..self.size];
+        }
+
+        pub fn getConst(self: SubSlice, T: type, slice: []const T) []const T {
+            return slice[self.start..][0..self.size];
+        }
+    };
+
     fn Signed(T: type) type {
         if (T == usize) return isize;
         return @Int(
@@ -196,7 +198,7 @@ pub const constants = struct {
     /// Speed of light in a vacuum.
     pub const c = 299_792_458.0;
 
-    /// Refractive index of radio and VHF through different medium
+    /// Refractive index of radio and VHF through different mediums
     pub const refractive_index = struct {
         const epsilon: comptime_float = std.math.floatEps(f128);
 
@@ -242,19 +244,37 @@ pub const constants = struct {
         pub const semiminor = 6_356_752.314_245;
     };
 
+    /// LMA network
+    pub const network = struct {
+        const root = @import("root");
+
+        fn getConstant(comptime Type: type, comptime constant: @EnumLiteral()) ?Type {
+            return if (@hasDecl(root, "network") and @hasDecl(root.network, @tagName(constant)))
+                @field(root.network, @tagName(constant))
+            else
+                null;
+        }
+
+        /// Upper bound on the number of stations in the LMA network
+        pub const max_network = getConstant(comptime_int, .max_network) orelse 32;
+
+        /// Upper bound on the number of stations required to accept a solution
+        pub const consensus = getConstant(comptime_int, .consensus) orelse 6;
+    };
+
     comptime {
         std.testing.refAllDecls(@This());
     }
 };
 
-pub const partialSort = struct {
-    const quantile = @import("common/quantile.zig");
+pub const sort = struct {
+    const partial_pdq = @import("common/partialPdq.zig");
 
-    pub const pdq = quantile.quantile;
-    pub const pdqContext = quantile.quantileContext;
+    pub const partialPdq = partial_pdq.partialPdq;
+    pub const partialPdqContext = partial_pdq.partialPdqContext;
 
     comptime {
-        _ = quantile;
+        _ = partial_pdq;
     }
 };
 

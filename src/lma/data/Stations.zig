@@ -170,7 +170,7 @@ pub const Info = struct {
         }
     }
 
-    pub fn point(self: *const Info) lma.pipeline.math(f64).ElemVec {
+    pub fn point(self: *const Info) lma.math(f64).ElemVec {
         return .{ .elems = .{ self.latitude, self.longitude, self.altitude, 0 } };
     }
 

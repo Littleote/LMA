@@ -7,10 +7,9 @@ const lma = @import("lma");
 pub const Float = lma.pipeline.holes.Float;
 
 const Args = @import("Args.zig");
-const mapping = @import("map.zig");
 const utils = @import("utils.zig");
 
-const math = lma.pipeline.math(Float);
+const math = lma.math(Float);
 
 pub fn main(init: std.process.Init) !void {
     const parsed: Args = try .parseNargs(init.gpa, init.io, init.minimal.args);
@@ -39,17 +38,11 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
         side /= v.splat(v.norm2(side));
         front /= v.splat(v.norm2(front));
 
-        break :blk .{ front, side, up, v.zero };
-
-        // // NOTE: zlm only has v * M not M * v so we write the transpose
-        // break :blk .{ .fields = .{
-        //     .{ front.x, front.y, front.z },
-        //     .{ side.x, side.y, side.z },
-        //     .{ up.x, up.y, up.z },
-        // } };
+        break :blk .{ side, up, front, v.zero };
     };
 
     const bounds = parsed.region.generateBounds(parsed.detail, &rotation);
+    // const bounds = parsed.region.generateBounds(.fromGrid(.init(4, 4)), &rotation);
 
     const snap = 60 * 1 * 1;
     const decay: f32 = @floatCast(std.math.pow(f64, 0.5, @as(f64, @floatFromInt(snap)) / (60.0 * parsed.half_life)));
@@ -76,14 +69,14 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
     }
 
     // Load fixed map
-    const canvas = try gpa.alloc(u8, bounds.grid.size);
+    const canvas = try gpa.alloc(u8, bounds.shape.size);
     defer gpa.free(canvas);
     @memset(canvas, 0);
     if (parsed.map) |map| {
         const in_file = try std.Io.Dir.cwd().openFile(io, map, .{ .mode = .read_only });
         defer in_file.close(io);
         var file_reader = in_file.reader(io, &.{});
-        try mapping.load(gpa, &.{ .rotation = rotation, .bounds = bounds, .color = 255 }, canvas, &file_reader.interface);
+        try lma.graphics.draw.map.loadAndDraw(gpa, &bounds, 244, canvas, &rotation, &file_reader.interface);
     }
 
     try makeImages(
@@ -112,7 +105,7 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
 
 pub const Params = struct {
     rotation: *const math.Mat,
-    bounds: *const lma.pipeline.Grid.Bounds(Float),
+    bounds: *const lma.grid.Bounds,
     generator: *Args.Generator,
     overlay: []u8,
     scaling: Float,
@@ -131,28 +124,28 @@ pub fn makeImages(
     const arena = arena_alloc.allocator();
     defer arena_alloc.deinit();
 
-    const grid = config.bounds.grid;
+    const shape = config.bounds.shape;
 
     // Map
-    const sources = try arena.alloc(Float, grid.size);
-    const density = try arena.alloc(Float, grid.size);
+    const sources = try arena.alloc(Float, shape.size);
+    const density = try arena.alloc(Float, shape.size);
     // Gaussian arrays to smooth data
     const step_km_inverse: math.ElemVec = .init(math.vector.vec2(1_000, 1_000) / config.bounds.step);
     const conv_h = try arena.alloc(Float, @intFromFloat(1 + 2 * @round(step_km_inverse.x())));
     const conv_v = try arena.alloc(Float, @intFromFloat(1 + 2 * @round(step_km_inverse.y())));
     // Scores running mean buffer and total
-    var scores: lma.pipeline.Grid.apply(Float).Window = try .init(arena, grid, 5);
-    const scoring = try arena.alloc(Float, grid.size);
+    var scores: lma.grid.apply(Float).Window = try .init(arena, shape, 5);
+    const scoring = try arena.alloc(Float, shape.size);
     // Scores output contour and generated image
     const threshold = 0.9;
-    const scoring_threshold = try arena.alloc(Float, grid.size);
-    const contour = try arena.alloc(Float, grid.size);
-    const image = try arena.alloc(u8, grid.size);
+    const scoring_threshold = try arena.alloc(Float, shape.size);
+    const contour = try arena.alloc(Float, shape.size);
+    const image = try arena.alloc(u8, shape.size);
     // Hole candidates processing order and results
-    const order = try lma.pipeline.holes.makeOrderBuffer(arena, grid);
-    const map = try arena.alloc(lma.pipeline.holes.Cluster, grid.size);
+    const order = try lma.pipeline.holes.makeOrderBuffer(arena, shape);
+    const map = try arena.alloc(lma.pipeline.holes.Cluster, shape.size);
     // Auxiliary buffers
-    const aux = try arena.alloc(Float, grid.size);
+    const aux = try arena.alloc(Float, shape.size);
 
     // Zero out top-down Map and total scores
     @memset(sources, 0);
@@ -160,8 +153,8 @@ pub fn makeImages(
     @memset(scoring, 0);
 
     // Calculate the gaussian blur
-    lma.pipeline.Grid.apply(Float).kernel.gaussian(conv_h, step_km_inverse.x());
-    lma.pipeline.Grid.apply(Float).kernel.gaussian(conv_v, step_km_inverse.y());
+    lma.grid.apply(Float).kernel.gaussian(conv_h, step_km_inverse.x());
+    lma.grid.apply(Float).kernel.gaussian(conv_v, step_km_inverse.y());
 
     // File name buffer
     var name_buffer: [32]u8 = undefined;
@@ -173,23 +166,23 @@ pub fn makeImages(
     defer seed_index.deinit(gpa);
 
     while (try config.generator.next(config.rotation)) |points| {
-        lma.pipeline.Grid.Bounds(Float).kde(config.bounds, sources, points, .{ .triangular = .{ .scaling = config.scaling } });
+        config.bounds.kde(sources, points, .{ .triangular = .{ .scaling = config.scaling } });
         if (@mod(config.generator.epoch, config.snap) == 0) {
             @memcpy(density, sources);
-            lma.pipeline.Grid.apply(Float).convolution(grid, density, aux, conv_h, conv_v);
+            lma.grid.apply(Float).convolution(shape, density, aux, conv_h, conv_v);
 
             // Generate all hole candidates
             lma.pipeline.holes.sort(density, order);
-            try lma.pipeline.holes.findSeeds(gpa, grid, density, &seed_index);
+            try lma.pipeline.holes.findSeeds(gpa, shape, density, &seed_index);
             const seed: lma.pipeline.holes.Seed = .init(seed_index.items, null);
-            var spill: lma.pipeline.holes.Spill = .init(gpa, grid, .{
+            var spill: lma.pipeline.holes.Spill = .init(gpa, shape, .{
                 .relative = 1.2,
                 .absolute = 0.05,
             });
             const size = try spill.assign(&seed, order, density, map);
             const info = try gpa.alloc(lma.pipeline.holes.Info, size);
             const range: lma.pipeline.holes.Info.ranges.Scaled = .{ .min = 0.1, .low = 2, .high = 4 };
-            lma.pipeline.holes.Info.generateInfo(grid, range, seed_index.items, info, density, map);
+            lma.pipeline.holes.Info.generateInfo(shape, range, seed_index.items, info, density, map);
             defer gpa.free(info);
 
             // Calculate the scores of all clusters
@@ -215,20 +208,20 @@ pub fn makeImages(
             for (scores.get(), map) |*in, update| {
                 in.* += info[update.int()].score / lma.cast.to(Float, scores.size);
             }
-            lma.pipeline.Grid.apply(Float).morph(grid, scores.get(), aux, .init(3, 3), .dilate);
+            lma.grid.apply(Float).morph(shape, scores.get(), aux, .init(3, 3), .dilate);
             scores.apply(scoring);
 
             // Define lightning holes and their contour
             @memcpy(scoring_threshold, scoring);
-            lma.pipeline.Grid.apply(Float).threshold(
+            lma.grid.apply(Float).threshold(
                 scoring_threshold,
                 threshold,
                 .{ .above = .{ .fixed = 255.0 } },
             );
             @memcpy(contour, scoring_threshold);
-            lma.pipeline.Grid.apply(Float).morph(grid, contour, aux, .init(3, 3), .dilate);
+            lma.grid.apply(Float).morph(shape, contour, aux, .init(3, 3), .dilate);
             for (density, image, config.overlay, contour, scoring_threshold) |in, *out, over, c, b| {
-                out.* = if (c > b) 252 else if (over != 0) over else @intFromFloat(@min(@round(251.0 * in), 251.0));
+                out.* = if (c > b) 249 else if (over != 0) over else @intFromFloat(@min(@round(239.0 * in), 239.0));
             }
 
             const time = @divFloor(config.generator.epoch, config.snap);
@@ -237,43 +230,43 @@ pub fn makeImages(
                 output,
                 std.fmt.bufPrint(&name_buffer, "{d}.bmp", .{time}) catch unreachable,
                 &buffer,
-                grid,
+                shape,
                 Float,
                 density,
-                &lma.pipeline.image.palettes.viridis,
+                &lma.graphics.palettes.viridis,
             );
             try save(
                 io,
                 output,
                 std.fmt.bufPrint(&name_buffer, "c_{d}.bmp", .{time}) catch unreachable,
                 &buffer,
-                grid,
+                shape,
                 u16,
                 @ptrCast(map),
-                &lma.pipeline.image.palettes.viridis,
+                &lma.graphics.palettes.viridis,
             );
             try save(
                 io,
                 output,
                 std.fmt.bufPrint(&name_buffer, "s_{d}.bmp", .{time}) catch unreachable,
                 &buffer,
-                grid,
+                shape,
                 u8,
                 image,
-                &lma.pipeline.image.palettes.marked_viridis,
+                &lma.graphics.palettes.marked_viridis,
             );
-            lma.pipeline.Grid.apply(Float).scalarOp(sources, .mul, config.decay);
+            lma.grid.apply(Float).scalarOp(sources, .mul, config.decay);
         }
     }
 }
 
-fn save(io: std.Io, dir: std.Io.Dir, name: []const u8, buffer: []u8, shape: lma.pipeline.Grid, T: type, values: []const T, palette: *const [256]lma.pipeline.image.Color) !void {
+fn save(io: std.Io, dir: std.Io.Dir, name: []const u8, buffer: []u8, shape: lma.grid.Shape, T: type, values: []const T, palette: *const [256]lma.graphics.Color) !void {
     const file = try dir.createFile(io, name, .{});
     defer file.close(io);
     var file_writer = file.writer(io, buffer);
     try switch (@typeInfo(T)) {
-        .float => if (T == Float) lma.pipeline.image.floatToBMP(Float, shape, values, palette, &file_writer.interface) else @compileError("Invalid type"),
-        .int => if (T == u8) lma.pipeline.image.bytesToBMP(shape, values, palette, &file_writer.interface) else lma.pipeline.image.intToBMP(T, shape, values, palette, &file_writer.interface),
+        .float => if (T == Float) lma.graphics.bitmap.floatToBMP(Float, shape, values, palette, &file_writer.interface) else @compileError("Invalid type"),
+        .int => if (T == u8) lma.graphics.bitmap.fromBytes(shape, values, palette, &file_writer.interface) else lma.graphics.bitmap.intToBMP(T, shape, values, palette, &file_writer.interface),
         else => @compileError("Invalid type"),
     };
 }

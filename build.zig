@@ -22,6 +22,8 @@ pub fn build(b: *std.Build) void {
         .single_threaded = single_threaded,
     });
 
+    docs(b, lma);
+
     const filter_option = b.option([]const u8, "test-filter", "Select a subset of tests to run");
     const lma_tests = b.addTest(.{
         .root_module = lma,
@@ -120,6 +122,17 @@ const ParseStage = packed struct(u3) {
     clusters: bool = false,
 };
 
+fn docs(b: *std.Build, module: *std.Build.Module) void {
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = b.addLibrary(.{ .name = "lma", .root_module = module }).getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+
+    const docs_step = b.step("docs", "Install docs into zig-out/docs");
+    docs_step.dependOn(&install_docs.step);
+}
+
 fn parserExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
     const step = b.step(
         "parser",
@@ -183,7 +196,7 @@ fn matchExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
     if (maybe_date_time) |date_time| {
         const run_match = b.addRunArtifact(exe);
         run_match.addArgs(&.{
-            "-w=constant",
+            "-w=const+decibels",
             "-s=data/ToA/stations/stations.bin",
             "-i=data/ToA/" ++ date_time.date ++ "/bin/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".bin",
             "-o=data/points/" ++ date_time.date ++ "/csv/corr-" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.csv",

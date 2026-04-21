@@ -2,10 +2,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const lma = @import("../lma.zig");
-const math = lma.pipeline.math(Float);
-const Grid = lma.pipeline.Grid;
+const math = lma.math(Float);
+const Grid = lma.grid.Shape;
 const cast = lma.cast;
-const indexing = lma.indexing;
 
 pub const Float = f32;
 
@@ -54,13 +53,13 @@ pub const Cluster = enum(u16) {
 };
 
 pub const Seed = struct {
-    index: []const usize,
+    indices: []const usize,
     clusters: ?[]const Cluster,
     size: u16,
 
-    pub fn init(index: []const usize, maybe_clusters: ?[]const Cluster) Seed {
+    pub fn init(indices: []const usize, maybe_clusters: ?[]const Cluster) Seed {
         return .{
-            .index = index,
+            .indices = indices,
             .clusters = maybe_clusters,
             .size = if (maybe_clusters) |clusters| blk: {
                 var max: u16 = 0;
@@ -68,7 +67,7 @@ pub const Seed = struct {
                     max = @max(max, c.int());
                 }
                 break :blk max;
-            } else @intCast(index.len + 1),
+            } else @intCast(indices.len + 1),
         };
     }
 
@@ -78,6 +77,8 @@ pub const Seed = struct {
 };
 
 pub fn findSeeds(gpa: Allocator, shape: Grid, values: []const Float, seeds: *std.ArrayList(usize)) error{OutOfMemory}!void {
+    const offset = lma.index.offset;
+
     seeds.items.len = 0;
     const offsets: [4]isize = .{
         shape.offset(.left),
@@ -89,8 +90,8 @@ pub fn findSeeds(gpa: Allocator, shape: Grid, values: []const Float, seeds: *std
         const idx = shape.ravel(1, 1);
         const value = values[idx];
         var is_min = true;
-        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2])];
-        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3])];
+        is_min = is_min and value <= values[offset(usize, idx, offsets[2])];
+        is_min = is_min and value <= values[offset(usize, idx, offsets[3])];
         if (is_min) {
             try seeds.append(gpa, idx);
         }
@@ -99,9 +100,9 @@ pub fn findSeeds(gpa: Allocator, shape: Grid, values: []const Float, seeds: *std
         const idx = shape.ravel(row, 1);
         const value = values[idx];
         var is_min = true;
-        is_min = is_min and value < values[indexing.offset(usize, idx, offsets[1])];
-        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2])];
-        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3])];
+        is_min = is_min and value < values[offset(usize, idx, offsets[1])];
+        is_min = is_min and value <= values[offset(usize, idx, offsets[2])];
+        is_min = is_min and value <= values[offset(usize, idx, offsets[3])];
         if (is_min) {
             try seeds.append(gpa, idx);
         }
@@ -110,9 +111,9 @@ pub fn findSeeds(gpa: Allocator, shape: Grid, values: []const Float, seeds: *std
         const idx = shape.ravel(1, col);
         const value = values[idx];
         var is_min = true;
-        is_min = is_min and value < values[indexing.offset(usize, idx, offsets[0])];
-        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2])];
-        is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3])];
+        is_min = is_min and value < values[offset(usize, idx, offsets[0])];
+        is_min = is_min and value <= values[offset(usize, idx, offsets[2])];
+        is_min = is_min and value <= values[offset(usize, idx, offsets[3])];
         if (is_min) {
             try seeds.append(gpa, idx);
         }
@@ -122,10 +123,10 @@ pub fn findSeeds(gpa: Allocator, shape: Grid, values: []const Float, seeds: *std
             const idx = shape.ravel(row, col);
             const value = values[idx];
             var is_min = true;
-            is_min = is_min and value < values[indexing.offset(usize, idx, offsets[0])];
-            is_min = is_min and value < values[indexing.offset(usize, idx, offsets[1])];
-            is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[2])];
-            is_min = is_min and value <= values[indexing.offset(usize, idx, offsets[3])];
+            is_min = is_min and value < values[offset(usize, idx, offsets[0])];
+            is_min = is_min and value < values[offset(usize, idx, offsets[1])];
+            is_min = is_min and value <= values[offset(usize, idx, offsets[2])];
+            is_min = is_min and value <= values[offset(usize, idx, offsets[3])];
             if (is_min) {
                 try seeds.append(gpa, idx);
             }
@@ -200,11 +201,11 @@ pub const Spill = struct {
         }
         self.floors = try self.gpa.alloc(Float, seeds.size);
         errdefer self.gpa.free(self.floors);
-        var idx = seeds.index.len;
+        var idx = seeds.indices.len;
         while (idx > 0) {
             idx -= 1;
-            map[seeds.index[idx]] = seeds.cluster(idx);
-            self.floors[idx] = values[seeds.index[idx]];
+            map[seeds.indices[idx]] = seeds.cluster(idx);
+            self.floors[idx] = values[seeds.indices[idx]];
         }
     }
 
@@ -251,7 +252,7 @@ pub const Spill = struct {
         for (order) |idx| {
             defer options.items.len = 0;
             for (offsets) |offset|
-                self.mapping[map[indexing.offset(usize, idx, offset)].int()].addToSet(&options);
+                self.mapping[map[lma.index.offset(usize, idx, offset)].int()].addToSet(&options);
             if (options.items.len == 1) {
                 @branchHint(.likely);
                 map[idx] = options.items[0];
@@ -345,7 +346,7 @@ pub const Info = struct {
                 if (map[idx] == .none) {
                     @branchHint(.unpredictable);
                     for (offsets) |offset| {
-                        const cluster = &info[map[indexing.offset(usize, idx, offset)].int()];
+                        const cluster = &info[map[lma.index.offset(usize, idx, offset)].int()];
                         if (cluster.cluster == .none) continue;
                         cluster.contour += 1;
                         if (values[idx] >= cluster.range_end) continue;
@@ -353,7 +354,7 @@ pub const Info = struct {
                         const jdx = cast.to(usize, std.math.clamp(
                             @floor((values[idx] - base) * scale),
                             0.0,
-                            16.0,
+                            15.0,
                         ));
                         cluster.definition[jdx] += 1;
                     }

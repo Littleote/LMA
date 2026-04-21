@@ -7,7 +7,7 @@ const builtin = @import("builtin");
 
 const lma = @import("../lma.zig");
 const cast = lma.cast;
-pub const Header = lma.SubSlice;
+pub const Header = lma.index.SubSlice;
 
 pub const Config = struct {
     version: usize,
@@ -249,7 +249,7 @@ pub fn Segmented(Elem: type) type {
                 return err;
             };
 
-            try std.testing.expect(std.mem.eql(Header, data.headers.items, read_data.headers.items));
+            try std.testing.expectEqualSlices(Header, data.headers.items, read_data.headers.items);
             for (data.array.items, read_data.array.items) |original, read| {
                 std.testing.expect(Elem.approxEql(original, read)) catch |err| {
                     std.log.err("Entry\n{any}\nBecame\n{any}.\n", .{ original, read });

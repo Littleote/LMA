@@ -9,7 +9,7 @@ const Float = @import("main.zig").Float;
 
 const Generator = @This();
 
-const math = lma.pipeline.math(Float);
+const math = lma.math(Float);
 
 fn DataInstance(T: type) type {
     return struct {

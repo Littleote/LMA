@@ -4,12 +4,12 @@ const mem = std.mem;
 const math = std.math;
 const testing = std.testing;
 
-/// Quantile algorithm for unordered data with partial unstable in-place sort.
+/// PDQ algorithm for partially sorting data with partial unstable in-place sort.
 /// ? best case, ? worst case and ? average case.
 /// log(n) memory (no allocator required).
 ///
 /// Sorts in ascending order with respect to the given `lessThan` function the requested indexes.
-pub fn quantile(
+pub fn partialPdq(
     comptime T: type,
     items: []T,
     indexes: []const usize,
@@ -44,7 +44,7 @@ const Hint = enum {
     unknown,
 };
 
-/// Quantile algorithm for unordered data with partial unstable in-place sort.
+/// PDQ algorithm for partially sorting data with partial unstable in-place sort.
 /// O(?) best case, O(?) worst case and O(?) average case.
 /// O(log(n)) memory (no allocator required).
 /// `context` must have methods `swap`, 'shouldSort' and `lessThan`,
@@ -339,7 +339,7 @@ fn reverseRange(a: usize, b: usize, context: anytype) void {
     }
 }
 
-test "quantile result is equivalent to sorted index" {
+test "partialPdq result is equivalent to sorted index" {
     var data: [2000]i32 = @splat(0);
 
     // Fill with arbitrary data
@@ -351,7 +351,7 @@ test "quantile result is equivalent to sorted index" {
     const quartiles: [3]usize = .{ 500, 1000, 1500 };
 
     // Test quantile sorts the desired indexes
-    quantile(i32, &data, &quartiles, {}, std.sort.asc(i32));
+    partialPdq(i32, &data, &quartiles, {}, std.sort.asc(i32));
     std.sort.pdq(i32, &sorted_data, {}, std.sort.asc(i32));
 
     // Verify the quartiles are sorted

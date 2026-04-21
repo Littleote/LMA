@@ -1,11 +1,9 @@
 const std = @import("std");
 
-const lma = @import("lma.zig");
-pub const Grid = @import("pipeline/Grid.zig");
 pub const holes = @import("pipeline/holes.zig");
-pub const image = @import("pipeline/image.zig");
 pub const match = @import("pipeline/match.zig");
-pub const solver = @import("pipeline/solver.zig");
+pub const ToaSolver = @import("pipeline/ToaSolver.zig");
+
 /// Transform between coordinate systems
 ///
 /// `surface` i.e. geodetic polar coordinates without height:
@@ -25,8 +23,6 @@ pub const solver = @import("pipeline/solver.zig");
 /// Y represents (00ºN, 90ºE)
 /// Z represents (90ºN, 00ºE)
 pub const transform = @import("pipeline/transform.zig");
-
-pub const math = @import("pipeline/math.zig").math;
 
 comptime {
     std.testing.refAllDecls(@This());

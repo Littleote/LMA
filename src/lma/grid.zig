@@ -1,183 +1,184 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
-const lma = @import("../lma.zig");
-const math = lma.pipeline.math;
+const lma = @import("lma.zig");
+const math = lma.math;
 const cast = lma.cast;
 
-const Grid = @This();
+pub const Shape = struct {
+    rows: u32,
+    columns: u32,
+    size: usize,
 
-rows: u32,
-columns: u32,
-size: u32,
-
-pub fn init(rows: u32, columns: u32) Grid {
-    return .{ .rows = rows, .columns = columns, .size = rows * columns };
-}
-
-pub fn ComptimeGrid(comptime self: Grid, T: type) type {
-    return [self.rows][self.columns]T;
-}
-
-pub fn offset(self: Grid, neighbour: Neighbour) isize {
-    return neighbour.h + neighbour.v * cast.as(isize, self.columns);
-}
-
-pub fn unravel(self: Grid, index: usize) struct { usize, usize } {
-    return .{ index / self.columns, index % self.columns };
-}
-
-pub fn ravel(self: Grid, row: usize, column: usize) usize {
-    return row * self.columns + column;
-}
-
-const Neighbour = packed struct(u4) {
-    h: i2,
-    v: i2,
-
-    pub fn init(h: i2, v: i2) Neighbour {
-        return .{ .h = h, .v = v };
+    pub fn init(rows: u32, columns: u32) Shape {
+        return .{ .rows = rows, .columns = columns, .size = rows * columns };
     }
 
-    pub fn fromInt(int: u4) Neighbour {
-        return @bitCast(int);
+    pub fn ComptimeGrid(comptime self: Shape, T: type) type {
+        return [self.rows][self.columns]T;
     }
 
-    pub fn toInt(self: Neighbour) u4 {
-        return @bitCast(self);
+    pub fn offset(self: Shape, neighbour: Neighbour) isize {
+        return neighbour.h + neighbour.v * cast.as(isize, self.columns);
     }
 
-    pub const left: Neighbour = .init(-1, 0);
-    pub const top_left: Neighbour = .init(-1, -1);
-    pub const top: Neighbour = .init(0, -1);
-    pub const top_right: Neighbour = .init(1, -1);
-    pub const right: Neighbour = .init(1, 0);
-    pub const bottom_right: Neighbour = .init(1, 1);
-    pub const bottom: Neighbour = .init(0, 1);
-    pub const bottom_left: Neighbour = .init(-1, 1);
+    pub fn unravel(self: Shape, index: usize) struct { usize, usize } {
+        return .{ index / self.columns, index % self.columns };
+    }
 
-    pub const four_neighbours: [4]Neighbour = .{
-        .left,
-        .top,
-        .right,
-        .bottom,
-    };
-    pub const eight_neighbours: [8]Neighbour = .{
-        .left,
-        .top_left,
-        .top,
-        .top_right,
-        .right,
-        .bottom_right,
-        .bottom,
-        .bottom_left,
+    pub fn ravel(self: Shape, row: usize, column: usize) usize {
+        return row * self.columns + column;
+    }
+
+    const Neighbour = packed struct(u4) {
+        h: i2,
+        v: i2,
+
+        pub fn init(h: i2, v: i2) Neighbour {
+            return .{ .h = h, .v = v };
+        }
+
+        pub fn fromInt(int: u4) Neighbour {
+            return @bitCast(int);
+        }
+
+        pub fn toInt(self: Neighbour) u4 {
+            return @bitCast(self);
+        }
+
+        pub const left: Neighbour = .init(-1, 0);
+        pub const top_left: Neighbour = .init(-1, -1);
+        pub const top: Neighbour = .init(0, -1);
+        pub const top_right: Neighbour = .init(1, -1);
+        pub const right: Neighbour = .init(1, 0);
+        pub const bottom_right: Neighbour = .init(1, 1);
+        pub const bottom: Neighbour = .init(0, 1);
+        pub const bottom_left: Neighbour = .init(-1, 1);
+
+        pub const four_neighbours: [4]Neighbour = .{
+            .left,
+            .top,
+            .right,
+            .bottom,
+        };
+        pub const eight_neighbours: [8]Neighbour = .{
+            .left,
+            .top_left,
+            .top,
+            .top_right,
+            .right,
+            .bottom_right,
+            .bottom,
+            .bottom_left,
+        };
     };
 };
 
-pub fn Bounds(Float: type) type {
-    assert(@typeInfo(Float) == .float);
-    return struct {
-        const vector = math(Float).vector;
-        pub const Vec = math(Float).Vec;
+pub const Bounds = struct {
+    pub const Float = f32;
 
-        pub const Detail = union(enum) {
-            grid: Grid,
-            step: Vec,
+    const vector = math(Float).vector;
+    pub const Vec = math(Float).Vec;
 
-            pub fn fromGrid(grid: Grid) Detail {
-                return .{ .grid = grid };
-            }
-
-            pub fn fromStep(step: Vec) Detail {
-                return .{ .step = step };
-            }
-
-            pub fn getBounds(self: Detail, size: Vec) struct { Grid, Vec } {
-                const grid: Grid = switch (self) {
-                    .grid => |grid| grid,
-                    .step => |step| blk: {
-                        const grid: math(Float).ElemVec = .init(size / step + vector.splat(1));
-                        break :blk .init(@intFromFloat(@round(grid.at(.y))), @intFromFloat(@round(grid.at(.x))));
-                    },
-                };
-                const count: Vec = vector.vec2(@floatFromInt(grid.columns - 1), @floatFromInt(grid.rows - 1));
-                return .{ grid, size / count };
-            }
-        };
-
-        grid: Grid,
-        size: Vec,
-        origin: Vec,
-        end: Vec,
+    pub const Detail = union(enum) {
+        shape: Shape,
         step: Vec,
 
-        pub fn limits(detail: Detail, origin: Vec, end: Vec) Bounds(Float) {
-            const size = end - origin;
-            const grid, const step = detail.getBounds(size);
-            return .{
-                .grid = grid,
-                .size = size,
-                .origin = origin,
-                .end = end,
-                .step = step,
+        pub fn fromGrid(shape: Shape) Detail {
+            return .{ .shape = shape };
+        }
+
+        pub fn fromStep(step: Vec) Detail {
+            return .{ .step = step };
+        }
+
+        pub fn getBounds(self: Detail, size: Vec) struct { Shape, Vec } {
+            const shape: Shape = switch (self) {
+                .shape => |shape| shape,
+                .step => |step| blk: {
+                    const shape: math(Float).ElemVec = .init(size / step + vector.splat(1));
+                    break :blk .init(@intFromFloat(@round(shape.at(.y))), @intFromFloat(@round(shape.at(.x))));
+                },
             };
-        }
-
-        pub fn scale(detail: Detail, size: Vec) Bounds(Float) {
-            return .scaleTranslate(detail, vector.zero, size);
-        }
-
-        pub fn scaleTranslate(detail: Detail, center: Vec, size: Vec) Bounds(Float) {
-            const half_size = size * vector.splat(0.5);
-            const grid, const step = detail.getBounds(size);
-            return .{
-                .grid = grid,
-                .size = size,
-                .origin = center - half_size,
-                .end = center + half_size,
-                .step = step,
-            };
-        }
-
-        pub fn contains(self: *const Bounds, point: Vec) bool {
-            // zig fmt: off
-            return (
-                self.origin.x < point.x and point.x < self.end.x and
-                self.origin.y < point.y and point.y < self.end.y
-            );
-            // zig fmt: on
-        }
-
-        pub const Kde = union(enum) {
-            triangular: struct {
-                scaling: Float = 1.0,
-
-                pub fn run(options: @This(), bounds: *const Bounds(Float), values: []Float, points: []const Vec) void {
-                    const grid = bounds.grid;
-                    for (points) |x| {
-                        const frac: math(Float).ElemVec = .init((x - bounds.origin) / bounds.step);
-                        if (frac.x() < 0 or frac.y() < 0) continue;
-                        const row: usize = @intFromFloat(@round(frac.y()));
-                        const col: usize = @intFromFloat(@round(frac.x()));
-                        if (grid.rows <= row + 1 or grid.columns <= col + 1) continue;
-                        const weight: struct { x: Float, y: Float } = .{ .x = @mod(frac.x(), 1), .y = @mod(frac.y(), 1) };
-                        const idx = grid.ravel(row, col);
-                        values[idx] += options.scaling * weight.x * weight.y;
-                        values[idx + grid.columns] += options.scaling * weight.x * (1 - weight.y);
-                        values[idx + 1 + grid.columns] += options.scaling * (1 - weight.x) * (1 - weight.y);
-                        values[idx + 1] += options.scaling * (1 - weight.x) * weight.y;
-                    }
-                }
-            },
-        };
-
-        pub fn kde(bounds: *const Bounds(Float), values: []Float, points: []const Vec, method: Kde) void {
-            switch (method) {
-                inline else => |options| options.run(bounds, values, points),
-            }
+            const count: Vec = vector.vec2(@floatFromInt(shape.columns - 1), @floatFromInt(shape.rows - 1));
+            return .{ shape, size / count };
         }
     };
-}
+
+    shape: Shape,
+    size: Vec,
+    origin: Vec,
+    end: Vec,
+    step: Vec,
+
+    pub fn limits(detail: Detail, origin: Vec, end: Vec) Bounds {
+        const size = end - origin;
+        const shape, const step = detail.getBounds(size);
+        return .{
+            .shape = shape,
+            .size = size,
+            .origin = origin,
+            .end = end,
+            .step = step,
+        };
+    }
+
+    pub fn scale(detail: Detail, size: Vec) Bounds {
+        return .scaleTranslate(detail, vector.zero, size);
+    }
+
+    pub fn scaleTranslate(detail: Detail, center: Vec, size: Vec) Bounds {
+        const half_size = size * vector.splat(0.5);
+        const shape, const step = detail.getBounds(size);
+        return .{
+            .shape = shape,
+            .size = size,
+            .origin = center - half_size,
+            .end = center + half_size,
+            .step = step,
+        };
+    }
+
+    pub fn contains(self: *const Bounds, point: Vec) bool {
+        return ( //
+            self.origin.x < point.x and point.x < self.end.x and //
+                self.origin.y < point.y and point.y < self.end.y //
+        );
+    }
+
+    pub fn mapping(self: *const Bounds, point: Vec) Vec {
+        return (point - self.origin) / self.step;
+    }
+
+    pub const Kde = union(enum) {
+        triangular: struct {
+            scaling: Float = 1.0,
+
+            pub fn run(options: @This(), bounds: *const Bounds, values: []Float, points: []const Vec) void {
+                const shape = bounds.shape;
+                for (points) |x| {
+                    const frac: math(Float).ElemVec = .init((x - bounds.origin) / bounds.step);
+                    if (frac.x() < 0 or frac.y() < 0) continue;
+                    const row: usize = @intFromFloat(@round(frac.y()));
+                    const col: usize = @intFromFloat(@round(frac.x()));
+                    if (shape.rows <= row + 1 or shape.columns <= col + 1) continue;
+                    const weight: struct { x: Float, y: Float } = .{ .x = @mod(frac.x(), 1), .y = @mod(frac.y(), 1) };
+                    const idx = shape.ravel(row, col);
+                    values[idx] += options.scaling * weight.x * weight.y;
+                    values[idx + shape.columns] += options.scaling * weight.x * (1 - weight.y);
+                    values[idx + 1 + shape.columns] += options.scaling * (1 - weight.x) * (1 - weight.y);
+                    values[idx + 1] += options.scaling * (1 - weight.x) * weight.y;
+                }
+            }
+        },
+    };
+
+    pub fn kde(bounds: *const Bounds, values: []Float, points: []const Vec, method: Kde) void {
+        switch (method) {
+            inline else => |options| options.run(bounds, values, points),
+        }
+    }
+};
 
 pub const Axis = enum { columns, rows };
 pub const MorphOperation = enum { erode, dilate };
@@ -205,26 +206,26 @@ pub fn apply(Type: type) type {
             (@typeInfo(Type) == .int or @typeInfo(Type) == .float) and
             std.math.isPowerOfTwo(@bitSizeOf(Type));
 
-        pub fn convolution(grid: Grid, values: []Type, aux: []Type, horizontal: []const Type, vertical: []const Type) void {
-            axisConvolution(.columns, grid, values, aux, vertical);
-            axisConvolution(.rows, grid, aux, values, horizontal);
+        pub fn convolution(shape: Shape, values: []Type, aux: []Type, horizontal: []const Type, vertical: []const Type) void {
+            axisConvolution(.columns, shape, values, aux, vertical);
+            axisConvolution(.rows, shape, aux, values, horizontal);
         }
 
-        pub fn axisConvolution(comptime axis: Axis, grid: Grid, input: []Type, output: []Type, array: []const Type) void {
+        pub fn axisConvolution(comptime axis: Axis, shape: Shape, input: []Type, output: []Type, array: []const Type) void {
             const mid_point = @divExact(array.len - 1, 2);
-            for (0..grid.rows) |row| {
-                for (0..grid.columns) |col| {
-                    const idx = grid.ravel(row, col);
+            for (0..shape.rows) |row| {
+                for (0..shape.columns) |col| {
+                    const idx = shape.ravel(row, col);
                     var val: Type = 0.0;
                     for (0..array.len) |diff| {
                         switch (axis) {
                             .rows => {
-                                if (col + diff < mid_point or grid.columns <= col + diff - mid_point) continue;
+                                if (col + diff < mid_point or shape.columns <= col + diff - mid_point) continue;
                                 val += array[diff] * input[idx + diff - mid_point];
                             },
                             .columns => {
-                                if (row + diff < mid_point or grid.rows <= row + diff - mid_point) continue;
-                                val += array[diff] * input[grid.ravel(row + diff - mid_point, col)];
+                                if (row + diff < mid_point or shape.rows <= row + diff - mid_point) continue;
+                                val += array[diff] * input[shape.ravel(row + diff - mid_point, col)];
                             },
                         }
                     }
@@ -252,26 +253,26 @@ pub fn apply(Type: type) type {
             }
         };
 
-        pub fn morph(grid: Grid, values: []Type, aux: []Type, size: Grid, comptime operation: MorphOperation) void {
-            axisMorph(.rows, grid, values, aux, size.rows, operation);
-            axisMorph(.columns, grid, aux, values, size.columns, operation);
+        pub fn morph(shape: Shape, values: []Type, aux: []Type, size: Shape, comptime operation: MorphOperation) void {
+            axisMorph(.rows, shape, values, aux, size.rows, operation);
+            axisMorph(.columns, shape, aux, values, size.columns, operation);
         }
 
-        pub fn axisMorph(comptime axis: Axis, grid: Grid, input: []Type, output: []Type, size: u32, comptime operation: MorphOperation) void {
+        pub fn axisMorph(comptime axis: Axis, shape: Shape, input: []Type, output: []Type, size: u32, comptime operation: MorphOperation) void {
             const mid_point = @divExact(size - 1, 2);
-            for (0..grid.rows) |row| {
-                for (0..grid.columns) |col| {
-                    const idx = grid.ravel(row, col);
+            for (0..shape.rows) |row| {
+                for (0..shape.columns) |col| {
+                    const idx = shape.ravel(row, col);
                     var val = input[idx];
                     for (0..size) |diff| {
                         const neighbour = switch (axis) {
                             .rows => blk: {
-                                if (col + diff < mid_point or grid.columns <= col + diff - mid_point) continue;
+                                if (col + diff < mid_point or shape.columns <= col + diff - mid_point) continue;
                                 break :blk input[idx + diff - mid_point];
                             },
                             .columns => blk: {
-                                if (row + diff < mid_point or grid.rows <= row + diff - mid_point) continue;
-                                break :blk input[grid.ravel(row + diff - mid_point, col)];
+                                if (row + diff < mid_point or shape.rows <= row + diff - mid_point) continue;
+                                break :blk input[shape.ravel(row + diff - mid_point, col)];
                             },
                         };
                         val = switch (operation) {
@@ -285,17 +286,17 @@ pub fn apply(Type: type) type {
         }
 
         pub const Window = struct {
-            grid: Grid,
+            shape: Shape,
             frames: []Type,
             current_frame: usize,
             size: usize,
             correction: Type = 1e-7,
 
-            pub fn init(gpa: Allocator, grid: Grid, size: usize) !Window {
-                const frames = try gpa.alloc(Type, grid.size * size);
+            pub fn init(gpa: Allocator, shape: Shape, size: usize) !Window {
+                const frames = try gpa.alloc(Type, shape.size * size);
                 @memset(frames, 0);
                 return .{
-                    .grid = grid,
+                    .shape = shape,
                     .frames = frames,
                     .current_frame = 0,
                     .size = size,
@@ -308,7 +309,7 @@ pub fn apply(Type: type) type {
             }
 
             pub fn get(self: *Window) []Type {
-                return self.frames[self.grid.size * self.current_frame ..][0..self.grid.size];
+                return self.frames[self.shape.size * self.current_frame ..][0..self.shape.size];
             }
 
             pub fn apply(self: *Window, values: []Type) void {
@@ -337,7 +338,7 @@ pub fn apply(Type: type) type {
 
             pub fn peek(self: *Window) []Type {
                 const next_frame = (self.current_frame + 1) % self.size;
-                const next = self.frames[self.grid.size * next_frame ..][0..self.grid.size];
+                const next = self.frames[self.shape.size * next_frame ..][0..self.shape.size];
                 return next;
             }
 
@@ -351,6 +352,7 @@ pub fn apply(Type: type) type {
             }
         };
 
+        /// Apply an operation elementwise between two slices
         pub fn elementWiseOp(lhs: []Type, comptime operation: Operator, rhs: []Type) void {
             const n = lhs.len;
             std.debug.assert(lhs.len == rhs.len);
@@ -387,6 +389,7 @@ pub fn apply(Type: type) type {
             }
         }
 
+        /// Apply an operation with a scalar value over all values in slice
         pub fn scalarOp(values: []Type, comptime operation: Operator, scalar: Type) void {
             const n = values.len;
             var i: usize = 0;

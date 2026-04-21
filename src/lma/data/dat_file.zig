@@ -381,7 +381,7 @@ pub const toa = struct {
             };
         }
 
-        pub fn parsePacket(self: Parser, bytes: []const u8, header: Header) data.types.ToA {
+        pub fn parsePacket(self: Parser, bytes: []const u8, header: Header) data.types.Toa {
             return switch (self.version) {
                 10, 12 => blk: {
                     // nnnnnnnn_0aaaannn
@@ -440,7 +440,7 @@ pub const toa = struct {
             var parser: Parser = undefined;
             var bytes: [latest_version]?[]const []const u8 = @splat(null);
             var header: [latest_version]?[]const Header = @splat(null);
-            var signal: [latest_version]?[]const data.types.ToA = @splat(null);
+            var signal: [latest_version]?[]const data.types.Toa = @splat(null);
 
             bytes[12] = &.{"\x8E\x16\x1C\x18\x7B\x4D"};
             header[12] = &.{.{ .start = 0, .size = 1, .epoch = 0, .count_correction = 0 }};

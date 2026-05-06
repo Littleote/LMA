@@ -9,14 +9,13 @@ pub const SubSlice = lma.index.SubSlice;
 pub const Float = f32;
 
 const max_network = lma.constants.network.max_network;
-const size = lma.constants.network.consensus;
+const max_consensus = lma.constants.network.max_consensus;
 
 /// Step size for discretizing the signal
 pub const Step = struct {
     /// Step size in seconds
     step: Float,
-    /// High bit of the nanosecond expressed with fixed precision 30.2
-    /// Equivalent to how much to shift a bit to get the step size
+    /// How much to shift a bit to get the step size expressed with fixed precision 30.2
     shift: u5,
 
     /// Generate a step size given the power of two of nanoseconds
@@ -400,27 +399,30 @@ pub const Query = struct {
         }
     }
 
+    pub const extreme_outlier: Query = .{ .min_corr = 3.5, .min_weight = 0, .min_weight_increase = 3.5 };
     pub const outlier: Query = .{ .min_corr = 2, .min_weight = 0, .min_weight_increase = 2 };
-    pub const likely: Query = .{ .min_corr = 1, .min_weight = 1, .min_weight_increase = 1 };
+    pub const unlikely: Query = .{ .min_corr = 1, .min_weight = 1, .min_weight_increase = 1 };
     pub const any: Query = .{ .min_corr = 0, .min_weight = 0, .min_weight_increase = 0 };
-    pub const permissive: Query = .{ .min_corr = 0.0, .min_weight = 0.5, .min_weight_increase = 1.0, .max_weight = 10.0 };
+    pub const permissive: Query = .{ .min_corr = 0.0, .min_weight = 0.5, .min_weight_increase = 1.0, .max_weight = 1.1 };
 
     pub const bad: Float = -1_000;
 };
 
-pub const BSOptions = struct {
-    query: Query,
-    width: ?usize,
-};
-
 pub const BeamSearch = struct {
+    pub const Options = struct {
+        query: Query,
+        width: usize,
+        consensus: usize = max_consensus,
+    };
+
     const Int = @Int(.unsigned, @typeInfo(Float).float.bits);
-    const Chain = [size - 1]Int;
+    const Chain = [max_consensus - 1]Int;
     index: usize,
+    chain_len: usize,
     buffer: []Float,
     candidates: []const Signal,
-    chains: std.ArrayList(Chain),
-    out: [size]Signal,
+    chains: []const Chain,
+    out: [max_consensus]Signal,
 
     inline fn cut(T: type, buffer: []Float, index: usize) struct { []T, []Float } {
         const chain_size = @typeInfo(Chain).array.len;
@@ -431,13 +433,14 @@ pub const BeamSearch = struct {
     }
 
     pub fn buffer_size(candidates: usize, width: usize) usize {
-        return (candidates + size - 1) * (width * 2);
+        return (candidates + max_consensus - 1) * (width * 2);
     }
 
-    pub fn init(initial: Signal, candidates: []const Signal, buffer: []Float, options: *const Matching.Correlation, bs_options: *const BSOptions) BeamSearch {
+    pub fn init(initial: Signal, candidates: []const Signal, buffer: []Float, corr: *const Matching.Correlation, options: *const Options) BeamSearch {
         const chunk = candidates.len;
-        const width = bs_options.width orelse buffer.len / (chunk + size) / 2;
+        const width = options.width;
         std.debug.assert(buffer.len >= buffer_size(chunk, width));
+        std.debug.assert(max_consensus >= options.consensus);
 
         // Divide the work buffer
         var unused = buffer;
@@ -452,9 +455,9 @@ pub const BeamSearch = struct {
         // Add empty chain and initialize weights as the initial signal isn't saved in the chain
         chains.appendAssumeCapacity(undefined);
         @memset(weights[0..chunk], 0);
-        bs_options.query.query(initial, candidates, weights[0..chunk], options);
+        options.query.query(initial, candidates, weights[0..chunk], corr);
 
-        for (1..size) |depth| {
+        for (1..options.consensus) |depth| {
             const scores = weights[0 .. chunk * chains.items.len];
             while (new_chains.items.len < new_chains.capacity) {
                 const idx = std.sort.argMax(Float, scores, {}, std.sort.asc(Float)) orelse break;
@@ -469,7 +472,7 @@ pub const BeamSearch = struct {
 
                 const weight_block = new_weights[chunk * new_chains.items.len ..][0..chunk];
                 @memcpy(weight_block, weights[chunk * group ..][0..chunk]);
-                bs_options.query.query(candidates[elem], candidates, weight_block, options);
+                options.query.query(candidates[elem], candidates, weight_block, corr);
 
                 new_chains.appendAssumeCapacity(sequence.*);
             }
@@ -486,126 +489,39 @@ pub const BeamSearch = struct {
             .index = 0,
             .buffer = buffer,
             .candidates = candidates,
-            .chains = chains,
+            .chains = chains.items,
+            .chain_len = options.consensus - 1,
             .out = @splat(initial),
         };
     }
 
     pub fn next(self: *BeamSearch) ?[]const Signal {
-        if (self.index >= self.chains.items.len) return null;
+        if (self.index >= self.chains.len) return null;
         defer self.index += 1;
-        for (self.chains.items[self.index], 1..) |elem, idx| {
+        for (self.chains[self.index][0..self.chain_len], 1..) |elem, idx| {
             self.out[idx] = self.candidates[elem];
         }
-        return &self.out;
+        return self.out[0 .. self.chain_len + 1];
     }
 };
 
-// test BeamSearch {
-//     var matrix = [_]Float{
-//         0, 5, 2, 1, 2, //
-//         5, 0, 6, 2, 1, //
-//         2, 6, 0, 3, 1, //
-//         1, 2, 3, 0, 9, //
-//         2, 1, 1, 9, 0, //
-//     };
-
-//     const opt: Options = .{
-//         .step = .fromPower(1),
-//         .shape = .init(5, 5),
-//         .corr = .{
-//             .matrix = blk: {
-//                 var corr: [matrix.len]?[]Float = @splat(null);
-//                 for (0..matrix.len) |i| {
-//                     corr[i] = matrix[i..][0..1];
-//                 }
-//                 break :blk &corr;
-//             },
-//             .aux_buffer = &.{},
-//             .refresh_rate = 0,
-//             .window_size = 0,
-//         },
-//         .network = .{ .max_size = 5, .max_station_candidates = 1 },
-//         .time_matrix = &@as([5 * 5]u32, @splat(0)),
-//     };
-
-//     const signals: []const Signal = &.{
-//         .{ .nanosecond = 0, .index = 0, .station = 0, .mask = .unset },
-//         .{ .nanosecond = 0, .index = 0, .station = 1, .mask = .unset },
-//         .{ .nanosecond = 0, .index = 0, .station = 2, .mask = .unset },
-//         .{ .nanosecond = 0, .index = 0, .station = 3, .mask = .unset },
-//         .{ .nanosecond = 0, .index = 0, .station = 4, .mask = .unset },
-//     };
-
-//     var buffer: [4096]Float = undefined;
-
-//     var beams: BeamSearch = .init(signals[0], signals, &buffer, &opt, &.{ .width = 20, .query = .likely });
-//     while (beams.next()) |sol| {
-//         for (sol) |sig|
-//             std.debug.print("{d} ", .{sig.station});
-//         std.debug.print("\n", .{});
-//     }
-//     return error.Print;
-// }
-
-pub const DFSOptions = struct {
-    pub const Attempts = enum(u16) {
-        single = 1,
-        unlimited = std.math.maxInt(u16),
-        _,
-
-        pub fn count(value: u16) Attempts {
-            return @enumFromInt(value);
-        }
-    };
-
-    query: Query,
-    attempts: Attempts,
-
-    pub const bad_value: Float = -1_000.0;
-
-    pub const yolo: DFSOptions = .{
-        .query = .{
-            .min_corr = 0.0,
-            .min_weight = 0.5,
-            .min_weight_increase = 1.0,
-            .max_weight = 10.0,
-        },
-        .attempts = .single,
-    };
-
-    pub const compromise: DFSOptions = .{
-        .query = .{
-            .min_corr = 1.0,
-            .min_weight = 0.5,
-            .min_weight_increase = 1.0,
-            .max_weight = 10.0,
-        },
-        .attempts = .count(2),
-    };
-
-    pub const exhaustive: DFSOptions = .{
-        .query = .{
-            .min_corr = 0.5,
-            .min_weight = 0.5,
-            .min_weight_increase = 1.5,
-            .max_weight = 5.0,
-        },
-        .attempts = .unlimited,
-    };
-
-    pub const unrestricted: DFSOptions = .{
-        .query = .{
-            .min_corr = 0.0,
-            .min_weight = 0.0,
-            .min_weight_increase = 0.0,
-        },
-        .attempts = .count(3),
-    };
-};
-
 pub const DepthFirstSearch = struct {
-    const max_frame_depth = size - 1;
+    pub const Options = struct {
+        pub const Attempts = enum(u16) {
+            single = 1,
+            unlimited = std.math.maxInt(u16),
+            _,
+
+            pub fn count(value: u16) Attempts {
+                return @enumFromInt(value);
+            }
+        };
+
+        query: Query,
+        attempts: Attempts,
+        consensus: usize = max_consensus,
+    };
+
     const Frame = struct {
         weights: []Float,
         attempt: u16 = 0,
@@ -620,35 +536,38 @@ pub const DepthFirstSearch = struct {
     depth: u16,
     candidates: []const Signal,
     weight_buffer: []Float,
-    signals: [size]Signal,
-    frames: [max_frame_depth]Frame,
-    options: *const Matching.Correlation,
-    dfs_options: *const DFSOptions,
+    signals: [max_consensus]Signal,
+    frames: [max_consensus - 1]Frame,
+    max_depth: u16,
+    corr: *const Matching.Correlation,
+    options: *const Options,
 
-    pub fn init(seed: Signal, candidates: []const Signal, weight_buffer: []Float, options: *const Matching.Correlation, dfs_options: *const DFSOptions) DepthFirstSearch {
-        std.debug.assert(weight_buffer.len >= candidates.len * size);
+    pub fn init(seed: Signal, candidates: []const Signal, buffer: []Float, corr: *const Matching.Correlation, options: *const Options) DepthFirstSearch {
+        std.debug.assert(buffer.len >= candidates.len * options.consensus);
+        std.debug.assert(max_consensus >= options.consensus);
 
         var self: DepthFirstSearch = .{
             .depth = 0,
             .candidates = candidates,
-            .weight_buffer = weight_buffer,
+            .weight_buffer = buffer,
             .signals = undefined,
-            .frames = undefined,
+            .frames = if (@import("builtin").mode == .Debug) @splat(.{ .weights = &.{}, .attempt = 0, .index = std.math.maxInt(u16) }) else undefined,
+            .max_depth = @intCast(options.consensus - 1),
+            .corr = corr,
             .options = options,
-            .dfs_options = dfs_options,
         };
 
-        self.frames[0] = .{ .weights = weight_buffer[0..candidates.len] };
+        self.frames[0] = .{ .weights = buffer[0..candidates.len] };
         self.signals[0] = seed;
 
         @memset(self.frames[0].weights, 0);
-        dfs_options.query.query(seed, candidates, self.frames[0].weights, options);
+        options.query.query(seed, candidates, self.frames[0].weights, corr);
 
         return self;
     }
 
     pub fn next(self: *DepthFirstSearch) ?[]const Signal {
-        const initial_state: State = if (self.depth >= max_frame_depth) .exit else .enter;
+        const initial_state: State = if (self.depth >= self.max_depth) .exit else .enter;
         state: switch (initial_state) {
             .exit => {
                 // Return when no more matches available
@@ -657,14 +576,14 @@ pub const DepthFirstSearch = struct {
 
                 // Update ols frame
                 const frame: *Frame = &self.frames[self.depth];
-                frame.weights[frame.index] = DFSOptions.bad_value;
+                frame.weights[frame.index] = Query.bad;
                 continue :state .enter;
             },
             .enter => {
                 // Search for the next match
                 const frame: *Frame = &self.frames[self.depth];
                 frame.attempt += 1;
-                if (frame.attempt > @intFromEnum(self.dfs_options.attempts)) continue :state .exit;
+                if (frame.attempt > @intFromEnum(self.options.attempts)) continue :state .exit;
                 const index: u16 = @intCast(std.sort.argMax(Float, frame.weights[0..self.candidates.len], {}, std.sort.asc(Float)) orelse unreachable);
                 if (frame.weights[index] <= Query.bad) continue :state .exit;
                 frame.index = index;
@@ -672,14 +591,14 @@ pub const DepthFirstSearch = struct {
                 // Advance frame depth and return on full match
                 self.depth += 1;
                 self.signals[self.depth] = self.candidates[index];
-                if (self.depth == max_frame_depth) return &self.signals;
+                if (self.depth >= self.max_depth) return self.signals[0..self.options.consensus];
 
                 // Set up new frame
                 const new_frame: *Frame = &self.frames[self.depth];
                 new_frame.* = .{ .weights = self.weight_buffer[self.candidates.len * self.depth ..][0..self.candidates.len] };
 
                 @memcpy(new_frame.weights, frame.weights);
-                self.dfs_options.query.query(self.candidates[index], self.candidates, new_frame.weights, self.options);
+                self.options.query.query(self.candidates[index], self.candidates, new_frame.weights, self.corr);
                 continue :state .enter;
             },
         }

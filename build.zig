@@ -89,7 +89,6 @@ const DateTime = struct {
             var self: DateTime = .{ .date = undefined, .time = undefined };
             _ = std.mem.replace(u8, date, "/", "", &self.date);
             _ = std.mem.replace(u8, time, ":", "", &self.time);
-            // std.fmt.parseInt(u32, &self.date, 10);
             return self;
         }
         std.log.err("Expected -Ddate to be in the form 'YYMMDD-HHMMSS', but received '{s}'", .{input});

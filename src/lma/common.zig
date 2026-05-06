@@ -259,7 +259,7 @@ pub const constants = struct {
         pub const max_network = getConstant(comptime_int, .max_network) orelse 32;
 
         /// Upper bound on the number of stations required to accept a solution
-        pub const consensus = getConstant(comptime_int, .consensus) orelse 6;
+        pub const max_consensus = getConstant(comptime_int, .consensus) orelse 8;
     };
 
     comptime {

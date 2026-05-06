@@ -119,6 +119,8 @@ pub fn main(init: std.process.Init) !void {
     };
 
     // Run program asynchronously divided by minutes
+    const timer_start: std.Io.Timestamp = .now(init.io, .real);
+    const resource_start: std.Io.Timestamp = .now(init.io, .cpu_process);
     const minutes = 10;
     var futures: [minutes]std.Io.Future(RunError!struct { lma.data.Points, ToaSolver.Counts }) = undefined;
     var counts: ToaSolver.Counts = .{};
@@ -146,6 +148,11 @@ pub fn main(init: std.process.Init) !void {
     inline for (comptime std.meta.fieldNames(ToaSolver.Counts)) |field| {
         std.debug.print("Var {s}: {d}\n", .{ field, @field(counts, field) });
     }
+
+    const timer_end: std.Io.Timestamp = .now(init.io, .real);
+    const resource_end: std.Io.Timestamp = .now(init.io, .cpu_process);
+    std.debug.print("Wall time: {d}s\n", .{lma.cast.to(f64, std.Io.Timestamp.durationTo(timer_start, timer_end).toNanoseconds()) / std.time.ns_per_s});
+    std.debug.print("Process time: {d}s\n", .{lma.cast.to(f64, std.Io.Timestamp.durationTo(resource_start, resource_end).toNanoseconds()) / std.time.ns_per_s});
 
     if (options.output) |csv_file| {
         var file_writer = csv_file.writer(init.io, &buffer);
@@ -236,14 +243,14 @@ pub fn run(
     const dfs_buffer = try gpa.alloc(Float, max_stations * max_matches * min_stations * 2);
     defer gpa.free(dfs_buffer);
 
-    var memory_buffer: [2]ToaSolver.Source = undefined;
+    var memory_buffer: [4]ToaSolver.Source = undefined;
     var solver: ToaSolver = .init(
         stations,
         &memory_buffer,
         dfs_buffer,
         .{
-            .beam_search = .{ .query = .permissive, .width = 3 },
-            .depth_first_search = .{ .query = .permissive, .attempts = .single },
+            .beam_search = .{ .query = .permissive, .width = 3, .consensus = min_stations },
+            .depth_first_search = .{ .query = .permissive, .attempts = .count(1), .consensus = min_stations },
         },
     );
     const config: match.Matching.Config = .{ .max_time_delta = time_matrix, .max_matches = max_matches, .network_size = @intCast(count) };

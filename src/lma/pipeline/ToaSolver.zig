@@ -16,7 +16,6 @@ const vec3 = math.vector.vec3;
 const splat = math.vector.splat;
 
 const max_network = lma.constants.network.max_network;
-const consensus = lma.constants.network.consensus;
 
 inline fn space_time(space: Vec, time: Float) Vec {
     return space + math.vector.vec4(0, 0, 0, time);
@@ -39,8 +38,8 @@ pub const Counts = struct {
 };
 
 pub const Config = struct {
-    beam_search: ?match.BSOptions = null,
-    depth_first_search: ?match.DFSOptions = null,
+    beam_search: ?match.BeamSearch.Options = null,
+    depth_first_search: ?match.DepthFirstSearch.Options = null,
     max_distance: Float = 200_000,
 };
 
@@ -51,14 +50,14 @@ pub const Source = struct {
     /// Compute the power as dBW at source from a buffer.
     fn dBW(self: *const Source, signals: []const []const Toa, buffer: *const Buffer) Float {
         var total: f32 = 0;
-        for (buffer.entries[0..buffer.next_key]) |entry| {
+        for (buffer.entries[0..buffer.len]) |entry| {
             const dbm: f32 = @floatCast(signals[entry.station][entry.index].dBm);
             const area = math.vector.norm2Square(entry.point - self.point);
             const log_surface = 10.0 * @log10(4.0 * std.math.pi * area);
             total += dbm + lma.cast.as(f32, log_surface);
         }
         // Subtract 30 to convert from dBm to dBW
-        return (total / buffer.next_key) - 30.0;
+        return (total / buffer.len) - 30.0;
     }
 
     fn isFinite(self: *const Source) bool {
@@ -77,20 +76,20 @@ pub const Source = struct {
     }
 
     pub fn toPoint(self: *const Source, solver: *const ToaSolver, buffer: *const Buffer) lma.data.types.Point {
-        const chi_sq = toa_problem.sqError(buffer.data[0..buffer.next_key], self.toVec()) / xyz_rms_squared / lma.cast.to(Float, buffer.next_key - 4);
+        const chi_sq = toa_problem.sqError(buffer.data[0..buffer.len], self.toVec()) / xyz_rms_squared / lma.cast.to(Float, buffer.len - 4);
         const xyz = self.point + buffer.ref_point;
         const t = (self.time + buffer.ref_time) / c;
-        const gps = lma.pipeline.transform.xyzToGPS(f32, math.ElemVec.init(xyz).cast(f32));
+        const gps = lma.pipeline.transform.xyzToGPS(f64, .init(xyz)).cast(f32);
         const nano = lma.nano.toNano(t);
         if (nano == std.math.maxInt(u32)) {
             std.debug.print("{any}\n", .{self});
-            for (buffer.entries[0..buffer.next_key]) |entry| {
+            for (buffer.entries[0..buffer.len]) |entry| {
                 std.debug.print("{any}\n", .{entry});
             }
             @panic("Bad time");
         }
         var mask: u32 = 0;
-        for (buffer.entries[0..buffer.next_key]) |entry| {
+        for (buffer.entries[0..buffer.len]) |entry| {
             mask |= @as(u32, 1) << @intCast(entry.station);
         }
 
@@ -116,7 +115,7 @@ const Buffer = struct {
         mask: match.Signal.MaskBit,
     };
 
-    next_key: u8,
+    len: u8,
     keys: [max_network]?u8,
     entries: [max_network]Entry,
     data: [max_network]Vec,
@@ -126,7 +125,7 @@ const Buffer = struct {
 
     pub fn at(ref_point: Vec, ref_time: Float) Buffer {
         return .{
-            .next_key = 0,
+            .len = 0,
             .keys = @splat(null),
             .entries = undefined,
             .data = undefined,
@@ -136,14 +135,14 @@ const Buffer = struct {
     }
 
     pub fn clear(self: *Buffer) void {
-        self.next_key = 0;
+        self.len = 0;
         self.keys = @splat(null);
     }
 
     pub fn append(self: *Buffer, obj: *const Entry) u8 {
         const key: u8 = @intCast(if (self.keys[obj.station]) |idx| idx else blk: {
-            const key = self.next_key;
-            self.next_key += 1;
+            const key = self.len;
+            self.len += 1;
             break :blk key;
         });
 
@@ -156,8 +155,8 @@ const Buffer = struct {
     pub fn remove(self: *Buffer, station: u8) void {
         if (self.keys[station]) |new_key| {
             self.keys[station] = null;
-            self.next_key -= 1;
-            const old_key = self.next_key;
+            self.len -= 1;
+            const old_key = self.len;
 
             if (old_key == new_key) return;
 
@@ -218,7 +217,7 @@ pub fn solve(self: *ToaSolver, initial: match.Signal, candidates: []const match.
 }
 
 fn initialSolution(self: *ToaSolver, buffer: *Buffer) ?Source {
-    if (buffer.next_key < 5) return null;
+    if (buffer.len < 5) return null;
 
     self.counts.solve_linear += 1;
     var source = solveLinear(buffer);
@@ -255,7 +254,7 @@ fn initialSolution(self: *ToaSolver, buffer: *Buffer) ?Source {
 }
 
 fn refinedSolution(self: *ToaSolver, buffer: *Buffer, input: *const Source) ?Source {
-    if (buffer.next_key < 5) return null;
+    if (buffer.len < 5) return null;
 
     // Solve quadratic optimization with L-M
     self.counts.solve_lm += 1;
@@ -274,7 +273,7 @@ fn refinedSolution(self: *ToaSolver, buffer: *Buffer, input: *const Source) ?Sou
 }
 
 fn validateSolution(self: *ToaSolver, buffer: *Buffer, source: *const Source) bool {
-    const chi_sq = toa_problem.sqError(buffer.data[0..buffer.next_key], source.toVec()) / xyz_rms_squared / lma.cast.to(Float, buffer.next_key - 4);
+    const chi_sq = toa_problem.sqError(buffer.data[0..buffer.len], source.toVec()) / xyz_rms_squared / lma.cast.to(Float, buffer.len - 4);
     const t = (source.time + buffer.ref_time) / c;
 
     if (t <= 0) return false;
@@ -355,7 +354,7 @@ fn bufferFromSource(self: *const ToaSolver, buffer: *Buffer, source: *const Sour
 /// Overrides previous values of errors
 fn bufferError(buffer: *Buffer, source: *const Source) Float {
     var max_error: Float = 0;
-    for (buffer.entries[0..buffer.next_key]) |*entry| {
+    for (buffer.entries[0..buffer.len]) |*entry| {
         const delta = length(entry.point - source.point);
         const delta_t = entry.time - source.time;
         entry.err = @abs(delta - delta_t);
@@ -369,10 +368,10 @@ fn bufferError(buffer: *Buffer, source: *const Source) Float {
 /// **NOTE**: the first element of buffer is expected to be the reference point
 pub fn solveLinear(buffer: *Buffer) Source {
     if (!@reduce(.And, buffer.data[0] == splat(0))) @panic("bad linear input");
-    const equations = buffer.next_key - 1;
+    const equations = buffer.len - 1;
     var bias: [max_network]Float = undefined;
     var coef: [max_network]Vec = undefined;
-    for (buffer.entries[1..buffer.next_key], 0..) |entry, idx| {
+    for (buffer.entries[1..buffer.len], 0..) |entry, idx| {
         const delta = entry.point;
         const delta_t = entry.time;
         bias[idx] = math.vector.sum(delta * delta) - delta_t * delta_t;
@@ -395,7 +394,7 @@ pub fn solveLM(buffer: *Buffer, input: *const Source, options: least_squares.lm.
     const input_vec: Vec = .{ input.point.x, input.point.y, input.point.z, input.time };
 
     // Solve quadratic optimization with L-M
-    const arr: [4]Float = least_squares.lm.solve(buffer.data[0..buffer.next_key], input_vec, options);
+    const arr: [4]Float = least_squares.lm.solve(buffer.data[0..buffer.len], input_vec, options);
     // std.debug.assert(std.math.isFinite(arr[3]));
 
     const out: Source = .{
@@ -409,7 +408,7 @@ pub fn solveGN(buffer: *Buffer, input: *const Source, options: least_squares.gn.
     const input_vec: Vec = space_time(input.point, input.time);
 
     // Solve quadratic optimization with L-M
-    const arr: math.ElemVec = .init(least_squares.gn.solve(buffer.data[0..buffer.next_key], input_vec, options));
+    const arr: math.ElemVec = .init(least_squares.gn.solve(buffer.data[0..buffer.len], input_vec, options));
 
     const out: Source = .{
         .point = vec3(arr.x(), arr.y(), arr.z()),
@@ -437,7 +436,7 @@ pub fn solveFromPoint(self: *ToaSolver, reference: match.Signal, base_source: *c
     const source = self.refinedSolution(&buffer, &initial) orelse return null;
     if (!self.validateSolution(&buffer, &source)) return null;
 
-    for (buffer.entries[0..buffer.next_key]) |entry| {
+    for (buffer.entries[0..buffer.len]) |entry| {
         if (entry.err < 100 and entry.mask.is_set)
             skip[entry.station] |= @as(match.Signal.Mask, 1) << entry.mask.bit;
     }
@@ -459,7 +458,7 @@ pub fn solveSet(self: *ToaSolver, matched: []const match.Signal, candidates: []c
     if (!self.validateSolution(&buffer, &source)) return null;
     const xyz = source.point + buffer.ref_point;
 
-    for (buffer.entries[0..buffer.next_key]) |entry| {
+    for (buffer.entries[0..buffer.len]) |entry| {
         if (entry.err < 100 and entry.mask.is_set)
             skip[entry.station] |= @as(match.Signal.Mask, 1) << entry.mask.bit;
     }

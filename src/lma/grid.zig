@@ -477,5 +477,33 @@ pub fn apply(Type: type) type {
                 item.* = (item.* - mean) / sd;
             }
         }
+
+        /// A simple approximation of loglikelihood of normal distribution
+        ///
+        /// `l = ln(y / (y + 1))`
+        ///
+        /// `y = e^(2 * sqrt(2 / pi) * x)`
+        pub fn loglikelihoodApprox(values: []Type) void {
+            const coef = @sqrt(8.0 / std.math.pi);
+
+            const n = values.len;
+            var i: usize = 0;
+
+            if (vectorize) {
+                if (std.simd.suggestVectorLength(Type)) |block_size| {
+                    const Block = @Vector(block_size, Type);
+                    const vec_coef: Block = @splat(coef);
+
+                    while (n - i >= block_size) : (i += block_size) {
+                        const block: Block = values[i..][0..block_size].*;
+                        values[i..][0..block_size].* = vec_coef * block - @log(@exp(vec_coef * block) + 1);
+                    }
+                }
+            }
+
+            for (values[i..n]) |*item| {
+                item.* = coef * item.* - @log(@exp(coef * item.*) + 1);
+            }
+        }
     };
 }

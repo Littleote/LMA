@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const lma = @import("lma");
-const ToA = lma.data.ToA;
+const Toa = lma.data.Toa;
 const nargs = @import("nargs");
 
 const utils = @import("utils.zig");
@@ -27,7 +27,9 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
     var iterator = dir.iterate();
     while (try iterator.next(io)) |entry| {
         var buffer: [1024]u8 = undefined;
-        var data: ToA = blk: {
+        var data: Toa = .init(gpa);
+        defer data.deinit();
+        {
             // Parse source file
             const file = try dir.openFile(
                 io,
@@ -36,8 +38,8 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
             );
             defer file.close(io);
             var file_reader = file.reader(io, &buffer);
-            break :blk try lma.data.dat_file.toa.fromFile(&file_reader, gpa);
-        };
+            try lma.data.dat_file.toa.fromFile(&file_reader, &data);
+        }
         defer data.deinit();
 
         {

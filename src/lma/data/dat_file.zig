@@ -78,9 +78,9 @@ test peekPreserve {
 }
 
 /// Helper function to parse an epoch value padded with spaces at the start
-fn parseEpoch(bytes: []const u8) !usize {
+fn parseEpoch(bytes: []const u8) error{InvalidValue}!usize {
     const number = std.mem.trimStart(u8, bytes, " ");
-    return std.fmt.parseInt(usize, number, 10);
+    return std.fmt.parseInt(usize, number, 10) catch error.InvalidValue;
 }
 
 test parseEpoch {
@@ -92,41 +92,43 @@ test parseEpoch {
 }
 
 pub const toa = struct {
+    pub const ReadError = error{ ReadFailed, OutOfMemory, BadFile, UnsupportedVersion };
+
     /// Load a Time of Arrival '.dat' file from a seeking file reader
-    pub fn fromFile(file_reader: *std.Io.File.Reader, gpa: Allocator) error{ ReadFailed, OutOfMemory, UnsupportedVersion }!data.ToA {
+    pub fn fromFile(file_reader: *std.Io.File.Reader, toa_data: *data.Toa) ReadError!void {
         const parser: Parser = try .init(&file_reader.interface);
 
         file_reader.seekTo(0) catch unreachable;
-        var dat_headers: std.ArrayList(Header) = try parser.parseAllHeaders(&file_reader.interface, gpa);
-        defer dat_headers.deinit(gpa);
+        var dat_headers: std.ArrayList(Header) = try parser.parseAllHeaders(&file_reader.interface, toa_data.allocator);
+        defer dat_headers.deinit(toa_data.allocator);
 
         file_reader.seekTo(0) catch unreachable;
-        return parser.parse(&file_reader.interface, gpa, dat_headers.items);
+        return parser.parse(dat_headers.items, &file_reader.interface, toa_data);
     }
 
     /// Load a Time of Arrival '.dat' file from a reader
-    pub fn fromReader(r: *Reader, gpa: Allocator) error{ ReadFailed, OutOfMemory, UnsupportedVersion }!data.ToA {
-        var writer: std.Io.Writer.Allocating = .init(gpa);
+    pub fn fromReader(r: *Reader, toa_data: *data.Toa) ReadError!void {
+        var writer: std.Io.Writer.Allocating = .init(toa_data.allocator);
         defer writer.deinit();
         _ = r.streamRemaining(&writer.writer) catch |err| switch (err) {
             error.ReadFailed => return error.ReadFailed,
             error.WriteFailed => return error.OutOfMemory,
         };
 
-        return fromBuffer(writer.written(), gpa);
+        return fromBuffer(writer.written(), toa_data);
     }
 
     /// Load a Time of Arrival '.dat' file from a buffer
-    pub fn fromBuffer(buffer: []const u8, gpa: Allocator) error{ ReadFailed, OutOfMemory, UnsupportedVersion }!data.ToA {
+    pub fn fromBuffer(buffer: []const u8, toa_data: *data.Toa) ReadError!void {
         var reader: Reader = .fixed(buffer);
         const parser: Parser = try .init(&reader);
 
         reader.seek = 0;
-        var dat_headers: std.ArrayList(Header) = try parser.parseAllHeaders(&reader, gpa);
-        defer dat_headers.deinit(gpa);
+        var dat_headers: std.ArrayList(Header) = try parser.parseAllHeaders(&reader, toa_data.allocator);
+        defer dat_headers.deinit(toa_data.allocator);
 
         reader.seek = 0;
-        return parser.parse(&reader, gpa, dat_headers.items);
+        return parser.parse(dat_headers.items, &reader, toa_data);
     }
 
     pub const Header = struct {
@@ -259,18 +261,8 @@ pub const toa = struct {
 
         /// Process an entire file given the header metadata
         /// saving the packet information into the data struct
-        pub fn parse(
-            self: Parser,
-            r: *Reader,
-            gpa: Allocator,
-            headers: []const Header,
-        ) error{
-            ReadFailed,
-            OutOfMemory,
-        }!data.ToA {
-            var parsed: data.ToA = .init(gpa);
-            errdefer parsed.deinit();
-            if (headers.len == 0) return parsed;
+        pub fn parse(self: Parser, headers: []const Header, r: *Reader, toa_data: *data.Toa) error{ ReadFailed, OutOfMemory, BadFile }!void {
+            if (headers.len == 0) return;
             _ = try self.nextPacketHeader(r, 0) orelse unreachable;
 
             const start = Offset.start(self).bytes;
@@ -283,36 +275,46 @@ pub const toa = struct {
                 }
             };
 
-            parsed.start_epoch = headers[0].epoch;
+            toa_data.start_epoch = headers[0].epoch;
             const end_epoch = headers[headers.len - 1].epoch + 1;
-            var epoch: u64 = parsed.start_epoch;
+            var epoch: u64 = toa_data.start_epoch;
 
-            try parsed.headers.ensureTotalCapacityPrecise(gpa, end_epoch - parsed.start_epoch);
+            try toa_data.headers.ensureTotalCapacityPrecise(toa_data.allocator, end_epoch - toa_data.start_epoch);
             for (headers) |header| {
-                if (epoch > header.epoch) {
+                if (epoch > header.epoch or header.epoch >= end_epoch) {
                     @branchHint(.cold);
-                    std.log.warn("Header {d} followed by header {d}. Truncating to latest appreance of the header.\n", .{ epoch - 1, header.epoch });
-                    parsed.headers.items.len = header.epoch - parsed.start_epoch;
+                    if (epoch - 1 == header.epoch) {
+                        std.log.warn("Header {d} followed by header {d}. Truncating to latest appreance of the header.\n", .{ epoch - 1, header.epoch });
+                        toa_data.headers.items.len = header.epoch - toa_data.start_epoch;
+                    } else {
+                        @branchHint(.cold);
+                        if (header.epoch >= end_epoch) {
+                            std.log.err("Header {d} outside expected range {{{d}, ..., {d}}}. Unable to keep parsing.\n", .{ header.epoch, toa_data.start_epoch, end_epoch - 1 });
+                        } else {
+                            std.log.err("Header {d} followed by header {d}. Unable to keep parsing.\n", .{ epoch - 1, header.epoch });
+                        }
+                        return error.BadFile;
+                    }
                 } else {
-                    parsed.headers.appendNTimesAssumeCapacity(.{
+                    toa_data.headers.appendNTimesAssumeCapacity(.{
                         .start = @intCast(header.start),
                         .size = 0,
                     }, header.epoch - epoch);
                 }
-                parsed.headers.appendAssumeCapacity(.{
+                toa_data.headers.appendAssumeCapacity(.{
                     .start = @intCast(header.start),
                     .size = @intCast(header.size),
                 });
                 epoch = header.epoch + 1;
-                try parsed.array.ensureUnusedCapacity(gpa, header.size);
-                for (0..header.size) |_| {
+                const elems = try toa_data.array.addManyAsSlice(toa_data.allocator, header.size);
+                for (elems) |*elem| {
                     const bytes = r.take(body) catch |err| {
                         switch (err) {
                             error.ReadFailed => |new_error| return new_error,
                             error.EndOfStream => unreachable,
                         }
                     };
-                    parsed.array.appendAssumeCapacity(self.parsePacket(bytes, header));
+                    elem.* = self.parsePacket(bytes, header);
                 }
                 r.discardAll(offset) catch |err| {
                     switch (err) {
@@ -321,7 +323,6 @@ pub const toa = struct {
                     }
                 };
             }
-            return parsed;
         }
 
         /// Computes the size of the block and parses the dat file header
@@ -539,7 +540,16 @@ pub const toa = struct {
 };
 
 pub const output = struct {
-    pub fn parse(r: *Reader, maybe_points: ?*data.Points, maybe_stations: ?*data.Stations) !void {
+    pub const ParseError = error{ ReadFailed, OutOfMemory, InvalidHeader, InvalidValue, BadFile };
+
+    pub fn parse(r: *Reader, maybe_points: ?*data.Points, maybe_stations: ?*data.Stations) ParseError!void {
+        innerParse(r, maybe_points, maybe_stations) catch |err| return switch (err) {
+            else => |new_err| new_err,
+            error.StreamTooLong => error.BadFile,
+        };
+    }
+
+    fn innerParse(r: *Reader, maybe_points: ?*data.Points, maybe_stations: ?*data.Stations) (error{StreamTooLong} || ParseError)!void {
         var start_time: ?u64 = null;
         var header_count: ?usize = null;
         var values_count: ?usize = null;
@@ -548,19 +558,19 @@ pub const output = struct {
         // Advance to station information
         while (try r.takeDelimiter('\n')) |line| {
             if (std.mem.startsWith(u8, line, "Number of seconds")) {
-                header_count = try std.fmt.parseInt(usize, line[28..], 10);
+                header_count = std.fmt.parseInt(usize, line[28..], 10) catch return error.InvalidHeader;
             } else if (std.mem.startsWith(u8, line, "Number of stations")) {
-                station_count = try std.fmt.parseInt(usize, line[20..], 10);
+                station_count = std.fmt.parseInt(usize, line[20..], 10) catch return error.InvalidHeader;
             } else if (std.mem.startsWith(u8, line, "Data start time")) {
                 const time = line[line.len - 8 ..];
-                const hour = try std.fmt.parseInt(usize, time[0..2], 10);
-                const minute = try std.fmt.parseInt(usize, time[3..5], 10);
-                const second = try std.fmt.parseInt(usize, time[6..8], 10);
+                const hour = std.fmt.parseInt(usize, time[0..2], 10) catch return error.InvalidHeader;
+                const minute = std.fmt.parseInt(usize, time[3..5], 10) catch return error.InvalidHeader;
+                const second = std.fmt.parseInt(usize, time[6..8], 10) catch return error.InvalidHeader;
                 start_time = (hour * 60 + minute) * 60 + second;
             } else if (std.mem.startsWith(u8, line, "Station information")) {
                 break;
             }
-        } else return error.EndOfStream;
+        } else return error.BadFile;
 
         if (maybe_points == null and maybe_stations == null) return;
 
@@ -582,16 +592,16 @@ pub const output = struct {
                             current_station.name = try stations.allocator.dupe(u8, token);
                         },
                         3 => {
-                            current_station.latitude = try std.fmt.parseFloat(f64, token);
+                            current_station.latitude = std.fmt.parseFloat(f64, token) catch return error.InvalidValue;
                         },
                         4 => {
-                            current_station.longitude = try std.fmt.parseFloat(f64, token);
+                            current_station.longitude = std.fmt.parseFloat(f64, token) catch return error.InvalidValue;
                         },
                         5 => {
-                            current_station.altitude = try std.fmt.parseFloat(f32, token);
+                            current_station.altitude = std.fmt.parseFloat(f32, token) catch return error.InvalidValue;
                         },
                         6 => {
-                            current_station.delay = 4 * try std.fmt.parseInt(i32, token, 10);
+                            current_station.delay = 4 * (std.fmt.parseInt(i32, token, 10) catch return error.InvalidValue);
                         },
                         7, 8 => break,
                         else => unreachable,
@@ -609,30 +619,40 @@ pub const output = struct {
             // Advance to data section
             while (try r.takeDelimiter('\n')) |line| {
                 if (std.mem.startsWith(u8, line, "Number of events")) {
-                    values_count = try std.fmt.parseInt(usize, line[18..], 10);
+                    values_count = std.fmt.parseInt(usize, line[18..], 10) catch return error.InvalidHeader;
                 } else if (std.mem.startsWith(u8, line, "*** data ***")) {
                     @branchHint(.unlikely);
                     break;
                 }
-            } else return error.EndOfStream;
+            } else return error.BadFile;
 
             if (values_count == 0) break :blk;
 
-            try parsePoints(r, points, start_time, header_count.? + 1, values_count.?);
+            try innerParsePoints(r, points, start_time, header_count.? + 1, values_count.?);
         }
 
         // No else branch necessary to synchronize the readers as all code paths end here
         return;
     }
 
-    pub fn parsePoints(r: *Reader, points: *data.Points, start_epoch: ?u64, headers: usize, entries: usize) !void {
+    pub fn parsePoints(r: *Reader, points: *data.Points, start_epoch: ?u64, headers: usize, entries: usize) ParseError!void {
+        innerParsePoints(r, points, start_epoch, headers, entries) catch |err| return switch (err) {
+            else => |new_err| new_err,
+            error.StreamTooLong => error.BadFile,
+        };
+    }
+
+    fn innerParsePoints(r: *Reader, points: *data.Points, start_epoch: ?u64, headers: usize, entries: usize) (error{StreamTooLong} || ParseError)!void {
         if (headers == 0 or entries == 0) return;
 
         // Parse data section
         try points.headers.ensureTotalCapacityPrecise(points.allocator, headers);
         try points.array.ensureTotalCapacityPrecise(points.allocator, entries);
 
-        const peek_line = try r.peekDelimiterExclusive('\n');
+        const peek_line = r.peekDelimiterExclusive('\n') catch |err| return switch (err) {
+            error.ReadFailed => |new_err| new_err,
+            error.StreamTooLong, error.EndOfStream => error.BadFile,
+        };
 
         var last_epoch: [5]u8 = undefined;
         @memcpy(&last_epoch, peek_line[0..5]);
@@ -657,7 +677,7 @@ pub const output = struct {
                 const target_epoch = try parseEpoch(&last_epoch);
                 if (target_epoch < points.start_epoch + points.headers.items.len) {
                     @branchHint(.cold);
-                    return error.BrokenFile;
+                    return error.BadFile;
                 }
                 points.headers.appendNTimesAssumeCapacity(.{ .start = array_size, .size = 0 }, target_epoch - current_epoch);
                 last_header = &points.headers.items[points.headers.items.len - 1];
@@ -666,24 +686,24 @@ pub const output = struct {
 
             var it = std.mem.tokenizeScalar(u8, line, ' ');
             var token: []const u8 = it.next() orelse break;
-            current_value.nanosecond = 4 * try std.fmt.parseInt(u32, token[token.len - 9 ..], 10);
+            current_value.nanosecond = 4 * (std.fmt.parseInt(u32, token[token.len - 9 ..], 10) catch return error.InvalidHeader);
             token = it.next() orelse break;
-            current_value.latitude = try std.fmt.parseFloat(f32, token);
+            current_value.latitude = std.fmt.parseFloat(f32, token) catch return error.InvalidHeader;
             token = it.next() orelse break;
-            current_value.longitude = try std.fmt.parseFloat(f32, token);
+            current_value.longitude = std.fmt.parseFloat(f32, token) catch return error.InvalidHeader;
             token = it.next() orelse break;
-            current_value.altitude = try std.fmt.parseFloat(f32, token);
+            current_value.altitude = std.fmt.parseFloat(f32, token) catch return error.InvalidHeader;
             token = it.next() orelse break;
-            current_value.measure_error = try std.fmt.parseFloat(f16, token);
+            current_value.measure_error = std.fmt.parseFloat(f16, token) catch return error.InvalidHeader;
             token = it.next() orelse break;
-            current_value.dBW = try std.fmt.parseFloat(f16, token);
+            current_value.dBW = std.fmt.parseFloat(f16, token) catch return error.InvalidHeader;
             token = it.next() orelse break;
-            current_value.station_mask = try std.fmt.parseInt(u32, token[2..], 16);
+            current_value.station_mask = std.fmt.parseInt(u32, token[2..], 16) catch return error.InvalidHeader;
         } else return;
-        return error.BrokenFile;
+        return error.BadFile;
     }
 
-    pub fn print(w: *Writer, points: *const data.Points, stations: *const data.Stations) !void {
+    pub fn print(w: *Writer, points: *const data.Points, stations: *const data.Stations) Writer.Error!void {
         try w.print("Number of stations: {d}\n", .{stations.stations.items.len});
         for (stations.stations.items) |station| {
             try w.print("Sta_info: ?  {s}  {d:.8}  {d:.8}  {d:.3}  {d}\n", .{

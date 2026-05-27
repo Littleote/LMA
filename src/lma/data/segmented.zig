@@ -64,7 +64,7 @@ pub fn Segmented(Elem: type) type {
             return self.start_epoch + self.headers.items.len;
         }
 
-        pub const ParseError = (Reader.DelimiterError || Allocator.Error || error{ InvalidHeader, InvalidValue, UnsupportedVersion });
+        pub const ParseError = error{ ReadFailed, OutOfMemory, InvalidHeader, InvalidValue, BadFile, UnsupportedVersion };
 
         /// Write segments to custom binary format
         pub fn toBin(self: *const Self, w: *Writer) Writer.Error!void {
@@ -86,7 +86,10 @@ pub fn Segmented(Elem: type) type {
 
         fn fromBinHeader(r: *Reader) Self.ParseError!u8 {
             const header_len = comptime 3 + 1 + Elem.bin.tag.len + 1 + 3 + 1;
-            const header = try r.take(header_len);
+            const header = r.take(header_len) catch |err| return switch (err) {
+                error.ReadFailed => |new_err| new_err,
+                error.EndOfStream => error.InvalidHeader,
+            };
             var header_match: bool = true;
             header_match &= std.mem.eql(u8, header[0..4], "LMA-");
             header_match &= std.mem.eql(u8, header[4..][0..Elem.bin.tag.len], Elem.bin.tag);
@@ -99,6 +102,13 @@ pub fn Segmented(Elem: type) type {
 
         /// Read segments from custom binary format
         pub fn fromBin(self: *Self, r: *Reader) Self.ParseError!void {
+            self.innerFromBin(r) catch |err| return switch (err) {
+                else => |new_err| new_err,
+                error.EndOfStream => error.BadFile,
+            };
+        }
+
+        pub fn innerFromBin(self: *Self, r: *Reader) (error{EndOfStream} || Self.ParseError)!void {
             const version: u8 = try Self.fromBinHeader(r);
 
             self.start_epoch = try r.takeInt(u64, .little);
@@ -150,6 +160,14 @@ pub fn Segmented(Elem: type) type {
         /// When delimiter is null, the most common delimiters are tested
         pub fn fromCsv(self: *Self, r: *Reader, delimiter: ?u8) Self.ParseError!void {
             if (!@hasDecl(Elem, "csv")) @compileError("Type " ++ @typeName(Elem) ++ " doesn't support writting/reading to CSV.");
+
+            self.innerFromCsv(r, delimiter) catch |err| return switch (err) {
+                else => |new_err| new_err,
+                error.StreamTooLong => error.BadFile,
+            };
+        }
+
+        fn innerFromCsv(self: *Self, r: *Reader, delimiter: ?u8) (error{StreamTooLong} || Self.ParseError)!void {
             // Read CSV header
             const csv_header = try r.takeDelimiter('\n') orelse return error.InvalidHeader;
             const del = delimiter orelse blk: {
@@ -164,7 +182,7 @@ pub fn Segmented(Elem: type) type {
             // Short-circuit for empty csv
             const first_line = r.peekDelimiterExclusive('\n') catch |err| switch (err) {
                 error.EndOfStream => return,
-                else => return err,
+                else => |new_err| return new_err,
             };
             var first_value: Elem = undefined;
             self.start_epoch = try first_value.fromCsv(first_line, del);

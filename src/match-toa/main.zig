@@ -4,14 +4,15 @@ const lma = @import("lma");
 const match = lma.pipeline.match;
 const ToaSolver = lma.pipeline.ToaSolver;
 const nargs = @import("nargs");
+const files = @import("files.zig");
 
 const max_stations = 32;
 const root = nargs.groups.any("match", .{
-    .weight_mode = nargs.params.param("weights", nargs.types.options(lma.pipeline.match.Weights), .single, .{ .short = .auto, .default = .decibels }),
-    .station = nargs.params.param("station", nargs.types.io.File.initDefaults(.open_file), .single, .{ .short = .auto }),
+    .weight_mode = nargs.params.param("corr-weight", nargs.types.options(lma.pipeline.match.Weights), .single, .{ .short = .set('w'), .default = .decibels }),
+    .station = nargs.params.param("station", nargs.types.string, .single, .{ .short = .auto }),
     .input = nargs.params.param("input", nargs.types.io.Glob.init, .single, .{ .short = .auto }),
-    .output = nargs.params.param("output", nargs.types.unset(nargs.types.io.File.initDefaults(.create_file)), .single, .{ .short = .auto, .default = @as(?[]u8, null) }),
-    .dat_output = nargs.params.param("dat-output", nargs.types.unset(nargs.types.io.File.initDefaults(.create_file)), .single, .{ .short = .auto, .default = @as(?[]u8, null) }),
+    .outputs = nargs.params.param("output", nargs.types.string, .unlimited, .{ .short = .auto }),
+    .probe = nargs.params.param("probe", nargs.types.unset(nargs.types.string), .single, .{ .default = @as(?[]const u8, null) }),
 });
 
 pub const Float = match.Float;
@@ -22,6 +23,8 @@ const max_distance = 200_000.0;
 const global_shift: u32 = 50_000_000;
 const max_matches: usize = @intFromFloat(1 + @ceil(max_distance / lma.constants.c / 0.000_080));
 const min_stations: usize = 6;
+
+var probe_data: ?match.probing.ProbeData = null;
 
 fn correlation_size(dist: Float, step: match.Step) u32 {
     return 1 + 4 * lma.cast.to(u32, @round(@min(max_distance, dist) / lma.constants.c / step.step));
@@ -40,15 +43,26 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [1024]u8 = undefined;
     const weight_mode: lma.pipeline.match.Weights = options.weight_mode;
 
+    if (options.probe) |probe_file| {
+        const file = try std.Io.Dir.cwd().openFile(init.io, probe_file, .{});
+        defer file.close(init.io);
+        var file_reader = file.reader(init.io, &buffer);
+        probe_data = .init(init.gpa);
+        errdefer probe_data.?.deinit();
+        try probe_data.?.fromDat(&file_reader.interface);
+    }
+    defer if (probe_data) |*data| data.deinit();
+
     // Load stations
     var stations: lma.data.Stations = .init(init.gpa);
     defer stations.deinit();
     {
-        var file_reader = options.station.reader(init.io, &buffer);
-        try stations.fromBin(&file_reader.interface);
+        const file = try std.Io.Dir.cwd().openFile(init.io, options.station, .{});
+        defer file.close(init.io);
+        var file_reader = file.reader(init.io, &buffer);
+        try files.loadStations(&stations, options.station, &file_reader.interface);
     }
     const count: u32 = @intCast(stations.stations.items.len);
-    // const shape: lma.grid.Shape = .init(count, count);
     if (count > max_stations) @panic("Station limit reached.");
 
     var shift_buffer: [max_stations]u32 = undefined;
@@ -60,10 +74,10 @@ pub fn main(init: std.process.Init) !void {
         point.* = lma.pipeline.transform.gpsToXYZ(Precise, station.point()).build();
     }
 
-    // Load ToA signals
+    // Load Toa signals
     var active_stations: usize = 0;
-    var full_signal_buffer: [max_stations]lma.data.ToA = @splat(.init(init.gpa));
-    const full_signals: []lma.data.ToA = full_signal_buffer[0..count];
+    var full_signal_buffer: [max_stations]lma.data.Toa = @splat(.init(init.gpa));
+    const full_signals: []lma.data.Toa = full_signal_buffer[0..count];
     defer for (full_signals) |*signal| signal.deinit();
 
     var date: ?[6]u8 = null;
@@ -76,20 +90,30 @@ pub fn main(init: std.process.Init) !void {
         _, _ = .{ split.next().?, split.next().? };
 
         var back_split = std.mem.splitBackwardsScalar(u8, split.rest(), '_');
-        const file_time, const file_date, const name = .{ back_split.next().?, back_split.next().?, back_split.next().? };
+        const file_time, const file_date, const name = .{ back_split.next().?, back_split.next().?, back_split.rest() };
 
         if (file_date.len != 6 or file_time.len != 6) {
-            std.debug.print("Invalid file name: {s}\n", .{entry.basename});
-            std.debug.print("Date: {s}, Time: {s}\n", .{ file_date, file_time });
-            return error.WrongFormat;
+            std.log.err(
+                \\Invalid file name: "{s}"
+                \\Date and time must be 6 characters but found:
+                \\    date: "{s}"
+                \\    time: "{s}"
+            , .{ entry.basename, file_date, file_time });
+            return error.BadName;
         }
         if (date == null and time == null) {
             date = file_date[0..6].*;
             time = file_time[0..6].*;
         } else {
             if (!std.mem.eql(u8, &date.?, file_date) or !std.mem.eql(u8, &time.?, file_time)) {
-                std.debug.print("Invalid file name: {s}\n", .{entry.basename});
-                return error.WrongFormat;
+                std.log.err("Invalid file name: {s}\n", .{entry.basename});
+                std.log.err(
+                    \\Invalid file name: "{s}"
+                    \\Date and time must match for all input files
+                    \\    date: "{s}" != "{s}"
+                    \\    time: "{s}" != "{s}"
+                , .{ entry.basename, &date.?, file_date, &time.?, file_time });
+                return error.BadName;
             }
         }
 
@@ -99,13 +123,16 @@ pub fn main(init: std.process.Init) !void {
 
         for (stations.stations.items, 0..) |info, idx| {
             if (std.mem.eql(u8, info.name.?, name)) {
-                try full_signals[idx].fromBin(&file_reader.interface);
+                std.debug.assert(full_signals[idx].empty());
+                try files.loadSignals(&full_signals[idx], entry.basename, &file_reader.interface);
                 for (full_signals[idx].array.items) |*toa| {
                     toa.nanosecond += shifts[idx];
                 }
                 active_stations += 1;
                 break;
             }
+        } else {
+            std.log.warn("Unknown station \"{s}\"", .{name});
         }
     }
 
@@ -145,25 +172,40 @@ pub fn main(init: std.process.Init) !void {
     try output.epochApplyShift({}, shiftBack);
     output.epochApplyShift({}, sortSegment) catch unreachable;
 
-    inline for (comptime std.meta.fieldNames(ToaSolver.Counts)) |field| {
-        std.debug.print("Var {s}: {d}\n", .{ field, @field(counts, field) });
-    }
-
+    std.debug.print("{f}", .{counts});
     const timer_end: std.Io.Timestamp = .now(init.io, .real);
     const resource_end: std.Io.Timestamp = .now(init.io, .cpu_process);
     std.debug.print("Wall time: {d}s\n", .{lma.cast.to(f64, std.Io.Timestamp.durationTo(timer_start, timer_end).toNanoseconds()) / std.time.ns_per_s});
     std.debug.print("Process time: {d}s\n", .{lma.cast.to(f64, std.Io.Timestamp.durationTo(resource_start, resource_end).toNanoseconds()) / std.time.ns_per_s});
 
-    if (options.output) |csv_file| {
-        var file_writer = csv_file.writer(init.io, &buffer);
-        try output.toCsv(&file_writer.interface, null);
-    }
-    if (options.dat_output) |dat_file| {
-        var file_writer = dat_file.writer(init.io, &buffer);
-        try lma.data.dat_file.output.print(&file_writer.interface, &output, &stations);
+    for (options.outputs) |out| {
+        const err: anyerror = skip: {
+            const file = std.Io.Dir.cwd().createFile(init.io, out, .{}) catch |err| break :skip err;
+            defer file.close(init.io);
+            var file_writer = file.writer(init.io, &buffer);
+            files.savePoints(&output, &stations, out, &file_writer.interface) catch |err| break :skip err;
+            continue;
+        };
+        std.log.warn(
+            \\Failed to write to file "{s}" with {}
+        , .{ out, err });
     }
 
     std.debug.print("Total points: {d}\n", .{output.array.items.len});
+
+    if (false) {
+        var err_buffer: [max_stations]f32 = undefined;
+        counts.calibration(&err_buffer);
+        for (stations.stations.items, 0..) |*station, i| {
+            const correction = lma.nano.toFixed(i32, err_buffer[i]);
+            station.delay += correction;
+        }
+        var writer: std.Io.Writer.Allocating = .init(init.gpa);
+        defer writer.deinit();
+
+        stations.toCsv(&writer.writer, null) catch {};
+        std.debug.print("Updated stations:\n{s}", .{writer.written()});
+    }
 }
 
 const RunError = error{ Canceled, OutOfMemory };
@@ -172,7 +214,7 @@ pub fn run(
     io: std.Io,
     gpa: std.mem.Allocator,
     stations: []math.Vec,
-    full_signals: []const lma.data.ToA,
+    full_signals: []const lma.data.Toa,
     weight_mode: lma.pipeline.match.Weights,
     span: lma.index.SubSlice,
 ) RunError!struct { lma.data.Points, ToaSolver.Counts } {
@@ -240,17 +282,30 @@ pub fn run(
     var sources: std.ArrayList(lma.data.types.Point) = .empty;
     defer sources.deinit(gpa);
 
-    const dfs_buffer = try gpa.alloc(Float, max_stations * max_matches * min_stations * 2);
-    defer gpa.free(dfs_buffer);
+    const bs_width = 5;
+    const work_buffer = try gpa.alloc(
+        Float,
+        @max(
+            (max_stations * max_matches + min_stations) * bs_width * 2,
+            max_stations * max_matches * min_stations,
+        ),
+    );
+    defer gpa.free(work_buffer);
 
     var memory_buffer: [4]ToaSolver.Source = undefined;
+    var probe: match.probing.Probe = undefined;
+    const probe_ptr: ?*match.probing.Probe = if (probe_data) |*data| blk: {
+        probe = .{ .data = data };
+        break :blk &probe;
+    } else null;
     var solver: ToaSolver = .init(
         stations,
         &memory_buffer,
-        dfs_buffer,
+        work_buffer,
         .{
-            .beam_search = .{ .query = .permissive, .width = 3, .consensus = min_stations },
-            .depth_first_search = .{ .query = .permissive, .attempts = .count(1), .consensus = min_stations },
+            .beam_search = .{ .query = .permissive, .width = bs_width, .consensus = min_stations },
+            .depth_first_search = .{ .query = .permissive, .attempts = .count(2), .consensus = min_stations },
+            .probe = probe_ptr,
         },
     );
     const config: match.Matching.Config = .{ .max_time_delta = time_matrix, .max_matches = max_matches, .network_size = @intCast(count) };
@@ -284,6 +339,11 @@ pub fn run(
         try sources.ensureTotalCapacity(gpa, size);
 
         solver.signals = signals;
+        if (probe_ptr) |ptr| {
+            ptr.current_epoch = time;
+            ptr.signals = signals;
+        }
+        for (solver.memory) |*mem| mem.time -= 1;
         sources.items.len = matching.process(signals, weights, sources.allocatedSlice(), @as(*ToaSolver, &solver), ToaSolver.solve);
 
         try output.headers.append(gpa, .init(@intCast(output.array.items.len), @intCast(sources.items.len)));

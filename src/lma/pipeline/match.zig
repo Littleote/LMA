@@ -5,6 +5,7 @@ const common = lma.common;
 const Toa = lma.data.types.Toa;
 const Point = lma.data.types.Point;
 pub const SubSlice = lma.index.SubSlice;
+pub const probing = @import("probing.zig");
 
 pub const Float = f32;
 
@@ -60,7 +61,7 @@ pub const Weights = enum {
         return @intFromFloat(@trunc(std.math.clamp(dBm + 90, 0, 119)));
     }
 
-    /// Calculate the sparse time series values given the ToA data
+    /// Calculate the sparse time series values given the Toa data
     pub fn calculate(method: Weights, slice: []const Toa, weights: []Float) void {
         switch (method) {
             .power => {
@@ -131,7 +132,7 @@ pub fn getSpan(slice: []const Toa, span: SubSlice) SubSlice {
 
 /// Find the correlation between the sparse signals x and y.
 ///
-/// Time described by the nanosecond of the ToA field.
+/// Time described by the nanosecond of the Toa field.
 /// Weight described by the weights slice.
 pub fn correlation(signal_x: []const Toa, weights_x: []const Float, signal_y: []const Toa, weights_y: []const Float, corr: []Float, step: Step) void {
     const offset_round: usize = @intCast(corr.len << (step.shift - 1));
@@ -374,7 +375,7 @@ pub const Query = struct {
     min_weight_increase: Float,
     max_weight: Float = 1_000.0,
 
-    fn query(
+    pub fn query(
         self: *const Query,
         reference: Signal,
         candidates: []const Signal,
@@ -441,6 +442,7 @@ pub const BeamSearch = struct {
         const width = options.width;
         std.debug.assert(buffer.len >= buffer_size(chunk, width));
         std.debug.assert(max_consensus >= options.consensus);
+        std.debug.assert(width > 0);
 
         // Divide the work buffer
         var unused = buffer;
@@ -606,7 +608,7 @@ pub const DepthFirstSearch = struct {
     }
 };
 
-inline fn getToA(scale: u32, comptime times: []const u32) [times.len]Toa {
+inline fn getToa(scale: u32, comptime times: []const u32) [times.len]Toa {
     var out: [times.len]Toa = undefined;
     for (times, &out) |nano, *toa| {
         toa.* = .{
@@ -618,7 +620,7 @@ inline fn getToA(scale: u32, comptime times: []const u32) [times.len]Toa {
 }
 
 test findTime {
-    var buffer: [16]Toa = getToA(16, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    var buffer: [16]Toa = getToa(16, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
 
     try std.testing.expect(findTime(&buffer, 0) == 0);
     try std.testing.expect(findTime(&buffer, std.math.maxInt(u32)) == 16);
@@ -628,7 +630,7 @@ test findTime {
 }
 
 test getSpan {
-    var sequence: [16]Toa = getToA(1, &.{ 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 });
+    var sequence: [16]Toa = getToa(1, &.{ 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 });
 
     try std.testing.expectEqual(SubSlice.initRange(3, 7), getSpan(&sequence, .initRange(7, 11)));
     try std.testing.expectEqual(SubSlice.initRange(0, 1), getSpan(&sequence, .initRange(1, 5)));
@@ -636,7 +638,7 @@ test getSpan {
 }
 
 test "autocorrelation" {
-    var signal: [16]Toa = getToA(16, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    var signal: [16]Toa = getToa(16, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
     var weights: [16]Float = @splat(1);
     var corr_buffer: [5]Float = @splat(std.math.nan(Float));
 
@@ -648,9 +650,9 @@ test "autocorrelation" {
 
 test correlation {
     const length = 20;
-    const signal_x: [length]Toa = getToA(4, &.{ 6, 7, 11, 15, 23, 33, 37, 43, 46, 51, 59, 66, 75, 84, 86, 93, 101, 109, 118, 120 });
+    const signal_x: [length]Toa = getToa(4, &.{ 6, 7, 11, 15, 23, 33, 37, 43, 46, 51, 59, 66, 75, 84, 86, 93, 101, 109, 118, 120 });
     const weights_x: [length]Float = .{ 10, 10, 1, 5, 8, 4, 3, 8, 3, 1, 1, 5, 6, 6, 7, 9, 5, 2, 5, 10 };
-    const signal_y: [length]Toa = getToA(4, &.{ 6, 16, 25, 35, 40, 44, 45, 49, 55, 56, 59, 63, 72, 74, 78, 82, 86, 94, 95, 97 });
+    const signal_y: [length]Toa = getToa(4, &.{ 6, 16, 25, 35, 40, 44, 45, 49, 55, 56, 59, 63, 72, 74, 78, 82, 86, 94, 95, 97 });
     const weights_y: [length]Float = .{ 9, 2, 2, 8, 10, 10, 4, 7, 8, 3, 1, 4, 6, 10, 5, 5, 7, 5, 5, 4 };
     var corr: [21]Float = @splat(std.math.nan(Float));
     const expected: [21]Float = .{ 69, 79, 98, 100, 86, 5, 48, 81, 167, 135, 140, 162, 91, 139, 63, 9, 89, 119, 107, 45, 82 };
@@ -672,12 +674,12 @@ test quantileScale {
 
 // test mergeSignals {
 //     const length = 74;
-//     const signals: [5][]const ToA = .{
-//         &getToA(1, &.{ 15, 19, 23, 31, 41, 61, 80, 85, 92, 105, 107, 114, 122, 137, 155 }),
-//         &getToA(1, &.{ 27, 36, 46, 66, 83, 103, 109, 125, 141, 142, 161, 165, 183, 203, 223 }),
-//         &getToA(1, &.{ 32, 40, 41, 43, 53, 54, 65, 69, 81, 100, 103, 104, 105 }),
-//         &getToA(1, &.{ 21, 28, 37, 55, 71, 76, 86, 97, 99, 101, 109, 119, 123, 130 }),
-//         &getToA(1, &.{ 27, 42, 61, 62, 77, 81, 94, 105, 117, 122, 129, 134, 150, 154, 167, 172, 181 }),
+//     const signals: [5][]const Toa = .{
+//         &getToa(1, &.{ 15, 19, 23, 31, 41, 61, 80, 85, 92, 105, 107, 114, 122, 137, 155 }),
+//         &getToa(1, &.{ 27, 36, 46, 66, 83, 103, 109, 125, 141, 142, 161, 165, 183, 203, 223 }),
+//         &getToa(1, &.{ 32, 40, 41, 43, 53, 54, 65, 69, 81, 100, 103, 104, 105 }),
+//         &getToa(1, &.{ 21, 28, 37, 55, 71, 76, 86, 97, 99, 101, 109, 119, 123, 130 }),
+//         &getToa(1, &.{ 27, 42, 61, 62, 77, 81, 94, 105, 117, 122, 129, 134, 150, 154, 167, 172, 181 }),
 //     };
 
 //     var buffer: [length]Signal = undefined;

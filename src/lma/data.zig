@@ -5,7 +5,7 @@ pub const segmented = @import("data/segmented.zig");
 pub const Segmented = segmented.Segmented;
 pub const types = @import("data/types.zig");
 
-pub const ToA = Segmented(types.Toa);
+pub const Toa = Segmented(types.Toa);
 pub const Points = Segmented(types.Point);
 pub const Clusters = Segmented(types.Clustered);
 pub const Stations = @import("data/Stations.zig");

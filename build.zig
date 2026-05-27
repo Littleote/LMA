@@ -151,12 +151,12 @@ fn parserExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
     if (maybe_date_time) |date_time| {
         if (stage.toa) {
             const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "-i=data/ToA/" ++ date_time.date ++ "/sources", "toa" });
+            run.addArgs(&.{ "-i=data/Toa/" ++ date_time.date ++ "/sources", "toa" });
             step.dependOn(&run.step);
         }
         if (stage.points) {
             const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "-i=data/points/" ++ date_time.date ++ "/output", "points", "-s=data/ToA/stations" });
+            run.addArgs(&.{ "-i=data/points/" ++ date_time.date ++ "/output", "points", "-s=data/stations" });
             step.dependOn(&run.step);
         }
         if (stage.clusters) {
@@ -193,13 +193,21 @@ fn matchExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
 
     // DEMO
     if (maybe_date_time) |date_time| {
+        const probing = b.option(bool, "probe", "Pass a probe file to the matching algorithm.") orelse false;
+
         const run_match = b.addRunArtifact(exe);
         run_match.addArgs(&.{
             "-w=const+decibels",
-            "-s=data/ToA/stations/stations.bin",
-            "-i=data/ToA/" ++ date_time.date ++ "/bin/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".bin",
-            "-o=data/points/" ++ date_time.date ++ "/csv/corr-" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.csv",
-            "-d=data/points/" ++ date_time.date ++ "/output/CUSTOM_" ++ date_time.date ++ "_" ++ date_time.time ++ "_0600.dat",
+            "-s=data/stations/stations_new.csv",
+            "-i=data/Toa/" ++ date_time.date ++ "/bin/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".bin",
+            "-o",
+            // "data/points/" ++ date_time.date ++ "/bin/" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.bin",
+            "data/points/" ++ date_time.date ++ "/csv/corr-" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.csv",
+            "data/points/" ++ date_time.date ++ "/output/CUSTOM_" ++ date_time.date ++ "_" ++ date_time.time ++ "_0600.dat.gz",
+        });
+        if (probing) run_match.addArgs(&.{
+            "--probe",
+            "data/points/" ++ date_time.date ++ "/probes/" ++ date_time.date ++ "_" ++ date_time.time ++ "_0600.dat",
         });
         step.dependOn(&run_match.step);
     }

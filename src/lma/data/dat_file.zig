@@ -91,44 +91,44 @@ test parseEpoch {
     try std.testing.expect(epoch_5678 == 5678);
 }
 
-pub const toa = struct {
+pub const signals = struct {
     pub const ReadError = error{ ReadFailed, OutOfMemory, BadFile, UnsupportedVersion };
 
     /// Load a Time of Arrival '.dat' file from a seeking file reader
-    pub fn fromFile(file_reader: *std.Io.File.Reader, toa_data: *data.Toa) ReadError!void {
+    pub fn fromFile(file_reader: *std.Io.File.Reader, signal_data: *data.Signal) ReadError!void {
         const parser: Parser = try .init(&file_reader.interface);
 
         file_reader.seekTo(0) catch unreachable;
-        var dat_headers: std.ArrayList(Header) = try parser.parseAllHeaders(&file_reader.interface, toa_data.allocator);
-        defer dat_headers.deinit(toa_data.allocator);
+        var dat_headers: std.ArrayList(Header) = try parser.parseAllHeaders(&file_reader.interface, signal_data.allocator);
+        defer dat_headers.deinit(signal_data.allocator);
 
         file_reader.seekTo(0) catch unreachable;
-        return parser.parse(dat_headers.items, &file_reader.interface, toa_data);
+        return parser.parse(dat_headers.items, &file_reader.interface, signal_data);
     }
 
     /// Load a Time of Arrival '.dat' file from a reader
-    pub fn fromReader(r: *Reader, toa_data: *data.Toa) ReadError!void {
-        var writer: std.Io.Writer.Allocating = .init(toa_data.allocator);
+    pub fn fromReader(r: *Reader, signal_data: *data.Signal) ReadError!void {
+        var writer: std.Io.Writer.Allocating = .init(signal_data.allocator);
         defer writer.deinit();
         _ = r.streamRemaining(&writer.writer) catch |err| switch (err) {
             error.ReadFailed => return error.ReadFailed,
             error.WriteFailed => return error.OutOfMemory,
         };
 
-        return fromBuffer(writer.written(), toa_data);
+        return fromBuffer(writer.written(), signal_data);
     }
 
     /// Load a Time of Arrival '.dat' file from a buffer
-    pub fn fromBuffer(buffer: []const u8, toa_data: *data.Toa) ReadError!void {
+    pub fn fromBuffer(buffer: []const u8, signal_data: *data.Signal) ReadError!void {
         var reader: Reader = .fixed(buffer);
         const parser: Parser = try .init(&reader);
 
         reader.seek = 0;
-        var dat_headers: std.ArrayList(Header) = try parser.parseAllHeaders(&reader, toa_data.allocator);
-        defer dat_headers.deinit(toa_data.allocator);
+        var dat_headers: std.ArrayList(Header) = try parser.parseAllHeaders(&reader, signal_data.allocator);
+        defer dat_headers.deinit(signal_data.allocator);
 
         reader.seek = 0;
-        return parser.parse(dat_headers.items, &reader, toa_data);
+        return parser.parse(dat_headers.items, &reader, signal_data);
     }
 
     pub const Header = struct {
@@ -261,7 +261,7 @@ pub const toa = struct {
 
         /// Process an entire file given the header metadata
         /// saving the packet information into the data struct
-        pub fn parse(self: Parser, headers: []const Header, r: *Reader, toa_data: *data.Toa) error{ ReadFailed, OutOfMemory, BadFile }!void {
+        pub fn parse(self: Parser, headers: []const Header, r: *Reader, signal_data: *data.Signal) error{ ReadFailed, OutOfMemory, BadFile }!void {
             if (headers.len == 0) return;
             _ = try self.nextPacketHeader(r, 0) orelse unreachable;
 
@@ -275,38 +275,38 @@ pub const toa = struct {
                 }
             };
 
-            toa_data.start_epoch = headers[0].epoch;
+            signal_data.start_epoch = headers[0].epoch;
             const end_epoch = headers[headers.len - 1].epoch + 1;
-            var epoch: u64 = toa_data.start_epoch;
+            var epoch: u64 = signal_data.start_epoch;
 
-            try toa_data.headers.ensureTotalCapacityPrecise(toa_data.allocator, end_epoch - toa_data.start_epoch);
+            try signal_data.headers.ensureTotalCapacityPrecise(signal_data.allocator, end_epoch - signal_data.start_epoch);
             for (headers) |header| {
                 if (epoch > header.epoch or header.epoch >= end_epoch) {
                     @branchHint(.cold);
                     if (epoch - 1 == header.epoch) {
                         std.log.warn("Header {d} followed by header {d}. Truncating to latest appreance of the header.\n", .{ epoch - 1, header.epoch });
-                        toa_data.headers.items.len = header.epoch - toa_data.start_epoch;
+                        signal_data.headers.items.len = header.epoch - signal_data.start_epoch;
                     } else {
                         @branchHint(.cold);
                         if (header.epoch >= end_epoch) {
-                            std.log.err("Header {d} outside expected range {{{d}, ..., {d}}}. Unable to keep parsing.\n", .{ header.epoch, toa_data.start_epoch, end_epoch - 1 });
+                            std.log.err("Header {d} outside expected range {{{d}, ..., {d}}}. Unable to keep parsing.\n", .{ header.epoch, signal_data.start_epoch, end_epoch - 1 });
                         } else {
                             std.log.err("Header {d} followed by header {d}. Unable to keep parsing.\n", .{ epoch - 1, header.epoch });
                         }
                         return error.BadFile;
                     }
                 } else {
-                    toa_data.headers.appendNTimesAssumeCapacity(.{
+                    signal_data.headers.appendNTimesAssumeCapacity(.{
                         .start = @intCast(header.start),
                         .size = 0,
                     }, header.epoch - epoch);
                 }
-                toa_data.headers.appendAssumeCapacity(.{
+                signal_data.headers.appendAssumeCapacity(.{
                     .start = @intCast(header.start),
                     .size = @intCast(header.size),
                 });
                 epoch = header.epoch + 1;
-                const elems = try toa_data.array.addManyAsSlice(toa_data.allocator, header.size);
+                const elems = try signal_data.array.addManyAsSlice(signal_data.allocator, header.size);
                 for (elems) |*elem| {
                     const bytes = r.take(body) catch |err| {
                         switch (err) {
@@ -382,7 +382,7 @@ pub const toa = struct {
             };
         }
 
-        pub fn parsePacket(self: Parser, bytes: []const u8, header: Header) data.types.Toa {
+        pub fn parsePacket(self: Parser, bytes: []const u8, header: Header) data.types.Signal {
             return switch (self.version) {
                 10, 12 => blk: {
                     // nnnnnnnn_0aaaannn
@@ -441,7 +441,7 @@ pub const toa = struct {
             var parser: Parser = undefined;
             var bytes: [latest_version]?[]const []const u8 = @splat(null);
             var header: [latest_version]?[]const Header = @splat(null);
-            var signal: [latest_version]?[]const data.types.Toa = @splat(null);
+            var signal: [latest_version]?[]const data.types.Signal = @splat(null);
 
             bytes[12] = &.{"\x8E\x16\x1C\x18\x7B\x4D"};
             header[12] = &.{.{ .start = 0, .size = 1, .epoch = 0, .count_correction = 0 }};
@@ -737,5 +737,5 @@ pub const output = struct {
 
 comptime {
     std.testing.refAllDecls(output);
-    std.testing.refAllDecls(toa.Parser);
+    std.testing.refAllDecls(signals.Parser);
 }

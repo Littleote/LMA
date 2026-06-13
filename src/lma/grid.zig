@@ -483,8 +483,8 @@ pub fn apply(Type: type) type {
         /// `l = ln(y / (y + 1))`
         ///
         /// `y = e^(2 * sqrt(2 / pi) * x)`
-        pub fn loglikelihoodApprox(values: []Type) void {
-            const coef = @sqrt(8.0 / std.math.pi);
+        pub fn loglikelihoodApprox(values: []Type, sd: Type) void {
+            const coef = @sqrt(8.0 / std.math.pi) / sd;
 
             const n = values.len;
             var i: usize = 0;
@@ -493,10 +493,11 @@ pub fn apply(Type: type) type {
                 if (std.simd.suggestVectorLength(Type)) |block_size| {
                     const Block = @Vector(block_size, Type);
                     const vec_coef: Block = @splat(coef);
+                    const one: Block = @splat(1);
 
                     while (n - i >= block_size) : (i += block_size) {
                         const block: Block = values[i..][0..block_size].*;
-                        values[i..][0..block_size].* = vec_coef * block - @log(@exp(vec_coef * block) + 1);
+                        values[i..][0..block_size].* = vec_coef * block - @log(@exp(vec_coef * block) + one);
                     }
                 }
             }

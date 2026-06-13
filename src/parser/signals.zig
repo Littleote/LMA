@@ -1,12 +1,12 @@
 const std = @import("std");
 
 const lma = @import("lma");
-const Toa = lma.data.Toa;
+const Signal = lma.data.Signal;
 const nargs = @import("nargs");
 
 const utils = @import("utils.zig");
 
-pub const root = nargs.groups.any("TOA", .{});
+pub const root = nargs.groups.any("SIGNAL", .{});
 
 pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf(root).Type) !void {
     _ = args;
@@ -27,7 +27,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
     var iterator = dir.iterate();
     while (try iterator.next(io)) |entry| {
         var buffer: [1024]u8 = undefined;
-        var data: Toa = .init(gpa);
+        var data: Signal = .init(gpa);
         defer data.deinit();
         {
             // Parse source file
@@ -38,7 +38,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
             );
             defer file.close(io);
             var file_reader = file.reader(io, &buffer);
-            try lma.data.dat_file.toa.fromFile(&file_reader, &data);
+            try lma.data.dat_file.signal.fromFile(&file_reader, &data);
         }
         defer data.deinit();
 

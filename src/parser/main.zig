@@ -2,18 +2,18 @@ const std = @import("std");
 const builtin = @import("builtin");
 const nargs = @import("nargs");
 
-const toa = @import("toa.zig");
+const signals = @import("signals.zig");
 const points = @import("points.zig");
 const clusters = @import("clusters.zig");
 
-pub const root = nargs.groups.any("PARSER", .{
-    .path = nargs.params.param("input", nargs.types.string, .single, .{ .short = .auto }),
-    .command = nargs.groups.subcommand("STAGE", .{
-        .toa = toa.root,
-        .points = points.root,
-        .clusters = clusters.root,
-    }, true, .read_any(null)),
-});
+pub const root: nargs.Node = .wrap(nargs.groups.Any(.{ .name = "PARSER" }, &.{
+    .set("path", .wrap(nargs.args.param.Single(.string, .{ .name = "input", .short = .auto }))),
+    .set("command", .wrap(nargs.groups.SubCommand(.{ .name = "STAGE", .greedy = false }, &.{
+        .set("signals", signals.root),
+        .set("points", points.root),
+        .set("clusters", clusters.root),
+    }))),
+}));
 
 pub fn main(init: std.process.Init) !void {
     const ctx = .{ .allocator = init.gpa };
@@ -26,7 +26,7 @@ pub fn main(init: std.process.Init) !void {
     defer root.destroy(ctx, &options);
 
     switch (options.command) {
-        .toa => |specific| try toa.parse(init.io, init.gpa, options.path, specific),
+        .signals => |specific| try signals.parse(init.io, init.gpa, options.path, specific),
         .points => |specific| try points.parse(init.io, init.gpa, options.path, specific),
         .clusters => |specific| try clusters.parse(init.io, init.gpa, options.path, specific),
     }

@@ -15,11 +15,21 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }).module("nice_args");
 
+    const math = b.createModule(.{
+        .root_source_file = b.path("src/lma/math.zig"),
+        .target = target,
+        .optimize = if (optimize == .Debug) .Debug else .ReleaseFast,
+        .single_threaded = single_threaded,
+    });
+
     const lma = b.createModule(.{
         .root_source_file = b.path("src/lma/lma.zig"),
         .target = target,
         .optimize = optimize,
         .single_threaded = single_threaded,
+        .imports = &.{
+            .{ .name = "math", .module = math },
+        },
     });
 
     docs(b, lma);
@@ -52,7 +62,7 @@ pub fn build(b: *std.Build) void {
     matchExe(b, b.addExecutable(.{
         .name = "match",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/match-toa/main.zig"),
+            .root_source_file = b.path("src/match/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -100,7 +110,7 @@ const DateTime = struct {
 const ParseStage = packed struct(u3) {
     pub const BuildOptions = enum {
         none,
-        toa,
+        signals,
         points,
         clusters,
         all,
@@ -109,14 +119,14 @@ const ParseStage = packed struct(u3) {
     pub fn init(options: BuildOptions) ParseStage {
         return switch (options) {
             .none => .{},
-            .toa => .{ .toa = true },
+            .signals => .{ .signals = true },
             .points => .{ .points = true },
             .clusters => .{ .clusters = true },
-            .all => .{ .toa = true, .points = true, .clusters = true },
+            .all => .{ .signals = true, .points = true, .clusters = true },
         };
     }
 
-    toa: bool = false,
+    signals: bool = false,
     points: bool = false,
     clusters: bool = false,
 };
@@ -149,9 +159,9 @@ fn parserExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
     ) orelse .none);
 
     if (maybe_date_time) |date_time| {
-        if (stage.toa) {
+        if (stage.signals) {
             const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "-i=data/Toa/" ++ date_time.date ++ "/sources", "toa" });
+            run.addArgs(&.{ "-i=data/signals/" ++ date_time.date ++ "/sources", "signals" });
             step.dependOn(&run.step);
         }
         if (stage.points) {
@@ -197,13 +207,16 @@ fn matchExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
 
         const run_match = b.addRunArtifact(exe);
         run_match.addArgs(&.{
-            "-w=const+decibels",
             "-s=data/stations/stations_new.csv",
-            "-i=data/Toa/" ++ date_time.date ++ "/bin/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".bin",
+            "-i=data/signals/" ++ date_time.date ++ "/bin/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".bin",
             "-o",
             // "data/points/" ++ date_time.date ++ "/bin/" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.bin",
             "data/points/" ++ date_time.date ++ "/csv/corr-" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.csv",
             "data/points/" ++ date_time.date ++ "/output/CUSTOM_" ++ date_time.date ++ "_" ++ date_time.time ++ "_0600.dat.gz",
+            "--verbose",
+            "-d=" ++ date_time.date,
+            "-h=" ++ date_time.time,
+            "--analyse=10:00",
         });
         if (probing) run_match.addArgs(&.{
             "--probe",

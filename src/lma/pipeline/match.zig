@@ -2,7 +2,7 @@ const std = @import("std");
 
 const lma = @import("../lma.zig");
 const common = lma.common;
-const Toa = lma.data.types.Toa;
+const Signal = lma.data.types.Signal;
 const Point = lma.data.types.Point;
 pub const SubSlice = lma.index.SubSlice;
 pub const probing = @import("probing.zig");
@@ -62,36 +62,36 @@ pub const Weights = enum {
     }
 
     /// Calculate the sparse time series values given the Toa data
-    pub fn calculate(method: Weights, slice: []const Toa, weights: []Float) void {
+    pub fn calculate(method: Weights, slice: []const Signal, weights: []Float) void {
         switch (method) {
             .power => {
                 const factor = @log2(10.0) / 10.0;
                 // Upscale power by 100_000 to make the mean order of magnitude around 1
-                for (slice, weights) |toa, *w| w.* = @exp2(16.5 + factor * lma.cast.as(Float, toa.dBm));
+                for (slice, weights) |signal, *w| w.* = @exp2(16.5 + factor * lma.cast.as(Float, signal.dBm));
             },
             .decibels => {
                 // Downscale decibels by 100 to make the vales around 1
-                for (slice, weights) |toa, *w| w.* = @max(0.0, lma.cast.as(Float, toa.dBm) / 70.0 + 1.0);
+                for (slice, weights) |signal, *w| w.* = @max(0.0, lma.cast.as(Float, signal.dBm) / 70.0 + 1.0);
             },
             .cumulative => {
                 var bins: [120]Float = @splat(0);
                 const inc = 1.0 / lma.cast.to(Float, slice.len);
-                for (slice) |toa| bins[binning(toa.dBm)] += inc;
+                for (slice) |signal| bins[binning(signal.dBm)] += inc;
                 for (1..120) |idx| bins[idx] += bins[idx - 1];
-                for (slice, weights) |toa, *w| w.* = bins[binning(toa.dBm)];
+                for (slice, weights) |signal, *w| w.* = bins[binning(signal.dBm)];
             },
             .constant => {
                 @memset(weights, 1);
             },
             .@"const+decibels" => {
-                for (slice, weights) |toa, *w| w.* = lma.cast.as(Float, toa.dBm) / 100.0 + 2.0;
+                for (slice, weights) |signal, *w| w.* = lma.cast.as(Float, signal.dBm) / 100.0 + 2.0;
             },
         }
     }
 };
 
 /// Data used from the signal to match values
-pub const Signal = struct {
+pub const Candidate = struct {
     pub const Mask = u32;
     pub const MaskBit = packed struct(u8) {
         is_set: bool,
@@ -115,17 +115,17 @@ pub const Signal = struct {
     mask: MaskBit,
 };
 
-fn before(time: u32, toa: Toa) bool {
-    return toa.nanosecond < time;
+fn before(time: u32, signal: Signal) bool {
+    return signal.nanosecond < time;
 }
 
 /// Find the index of the first value with time equal or less than requested
-fn findTime(slice: []const Toa, time: u32) u32 {
-    return @intCast(std.sort.partitionPoint(Toa, slice, time, before));
+fn findTime(slice: []const Signal, time: u32) u32 {
+    return @intCast(std.sort.partitionPoint(Signal, slice, time, before));
 }
 
 /// Find the SubSlice for the given time span
-pub fn getSpan(slice: []const Toa, span: SubSlice) SubSlice {
+pub fn getSpan(slice: []const Signal, span: SubSlice) SubSlice {
     const start = findTime(slice, span.start);
     return .init(start, findTime(slice[start..], span.end()));
 }
@@ -134,7 +134,7 @@ pub fn getSpan(slice: []const Toa, span: SubSlice) SubSlice {
 ///
 /// Time described by the nanosecond of the Toa field.
 /// Weight described by the weights slice.
-pub fn correlation(signal_x: []const Toa, weights_x: []const Float, signal_y: []const Toa, weights_y: []const Float, corr: []Float, step: Step) void {
+pub fn correlation(signal_x: []const Signal, weights_x: []const Float, signal_y: []const Signal, weights_y: []const Float, corr: []Float, step: Step) void {
     const offset_round: usize = @intCast(corr.len << (step.shift - 1));
     const above: u32 = @intCast(offset_round);
     const below: u32 = above - 1;
@@ -177,14 +177,14 @@ pub fn quantileScale(corr: []Float, aux: []Float) void {
 
     const q1 = (aux[q1_idx] + aux[q1_idx + ceil]) / 2;
     const q3 = (aux[q3_idx] + aux[q3_idx + ceil]) / 2;
-    const iqr = q3 - q1;
+    const iqr = (q3 - q1);
     const center = (q1 + q3) / 2;
     lma.grid.apply(Float).standardise(corr, center, iqr);
 }
 
 /// Computes the lower triangle of the matrix of scaled cross-correlation vectors for the given time span.
 /// If the upper triangle is non-null makes a copy with the reversed cross-correlation vectors
-pub fn correlationMatrix(signals: []const []const Toa, weights: []const []const Float, span: SubSlice, step: Step, buffer: []Float, indices: []const SubSlice, aux_buffer: []Float) void {
+pub fn correlationMatrix(signals: []const []const Signal, weights: []const []const Float, span: SubSlice, step: Step, buffer: []Float, indices: []const SubSlice, aux_buffer: []Float) void {
     const stations: u32 = @intCast(signals.len);
     const shape: lma.grid.Shape = .init(stations, stations);
     for (0..stations) |row| {
@@ -194,9 +194,9 @@ pub fn correlationMatrix(signals: []const []const Toa, weights: []const []const 
             const corr = indices[shape.ravel(row, col)].getReference(Float, buffer);
             if (corr.len == 0) continue;
             correlation(
-                row_split.getConst(Toa, signals[row]),
+                row_split.getConst(Signal, signals[row]),
                 row_split.getConst(Float, weights[row]),
-                col_split.getConst(Toa, signals[col]),
+                col_split.getConst(Signal, signals[col]),
                 col_split.getConst(Float, weights[col]),
                 corr,
                 step,
@@ -209,6 +209,8 @@ pub fn correlationMatrix(signals: []const []const Toa, weights: []const []const 
             std.mem.reverse(Float, rev_corr);
         }
     }
+
+    lma.grid.apply(Float).loglikelihoodApprox(buffer, 0.7412898443291327);
 }
 
 pub const Matching = struct {
@@ -219,8 +221,8 @@ pub const Matching = struct {
     pub const Buffers = struct {
         indices: []u16,
         nanos: []lma.nano.Nano,
-        masks: []Signal.Mask,
-        candidates: []Signal,
+        masks: []Candidate.Mask,
+        candidates: []Candidate,
 
         pub fn init(gpa: std.mem.Allocator, config: Config) error{OutOfMemory}!Buffers {
             var out: Buffers = .{
@@ -233,8 +235,8 @@ pub const Matching = struct {
             errdefer out.deinit(gpa);
             out.indices = try gpa.alloc(u16, config.network_size);
             out.nanos = try gpa.alloc(lma.nano.Nano, config.network_size);
-            out.masks = try gpa.alloc(Signal.Mask, config.network_size);
-            out.candidates = try gpa.alloc(Signal, config.network_size * config.max_matches);
+            out.masks = try gpa.alloc(Candidate.Mask, config.network_size);
+            out.candidates = try gpa.alloc(Candidate, config.network_size * config.max_matches);
 
             return out;
         }
@@ -267,7 +269,7 @@ pub const Matching = struct {
             return .initRange(from, to);
         }
 
-        pub fn update(self: *const Correlation, signals: []const []const Toa, weights: []const []const Float, time: lma.nano.Nano) lma.nano.Nano {
+        pub fn update(self: *const Correlation, signals: []const []const Signal, weights: []const []const Float, time: lma.nano.Nano) lma.nano.Nano {
             correlationMatrix(signals, weights, self.endpoints(time), self.step, self.correlation, self.matrix, self.aux_buffer);
             return time +| self.refresh_rate;
         }
@@ -285,11 +287,10 @@ pub const Matching = struct {
     /// This set is then passed to the provided solver along the correlation matrix
     pub fn process(
         self: *const Matching,
-        signals: []const []const Toa,
+        signals: []const []const Signal,
         weights: []const []const Float,
         point_buffer: []Point,
-        context: anytype,
-        solve: fn (@TypeOf(context), Signal, []const Signal, []u32, *const Correlation) ?Point,
+        solver: *lma.pipeline.ToaSolver,
     ) usize {
         const count = signals.len;
         std.debug.assert(count <= self.config.network_size);
@@ -338,24 +339,24 @@ pub const Matching = struct {
             }
 
             // Match buffer
-            const initial: Signal = .{
+            const initial: Candidate = .{
                 .nanosecond = nanos[idx],
                 .index = index[idx],
                 .station = @intCast(idx),
                 .mask = .set(0),
             };
-            var candidates: std.ArrayList(Signal) = .initBuffer(self.buffers.candidates);
+            var candidates: std.ArrayList(Candidate) = .initBuffer(self.buffers.candidates);
 
             // Get all possible paired signals
             for (0..signals.len) |station| {
                 const base = index[station];
                 const signal = signals[station][base..];
-                for (signal[0..@min(signal.len, self.config.max_matches)], 0..) |toa, offset| {
-                    if (nanos[idx] + self.config.max_time_delta[self.corr.shape.ravel(idx, station)] < toa.nanosecond) break;
-                    const mask: Signal.MaskBit = if (offset < @typeInfo(Signal.Mask).int.bits) .set(@intCast(offset)) else .unset;
+                for (signal[0..@min(signal.len, self.config.max_matches)], 0..) |entry, offset| {
+                    if (nanos[idx] + self.config.max_time_delta[self.corr.shape.ravel(idx, station)] < entry.nanosecond) break;
+                    const mask: Candidate.MaskBit = if (offset < @typeInfo(Candidate.Mask).int.bits) .set(@intCast(offset)) else .unset;
                     if (mask.is_set and (masks[station] >> mask.bit) & 1 == 1) continue;
                     candidates.appendAssumeCapacity(.{
-                        .nanosecond = toa.nanosecond,
+                        .nanosecond = entry.nanosecond,
                         .index = @intCast(base + offset),
                         .station = @intCast(station),
                         .mask = mask,
@@ -363,55 +364,39 @@ pub const Matching = struct {
                 }
             }
 
-            if (solve(context, initial, candidates.items, masks, &self.corr)) |point| points.appendAssumeCapacity(point);
+            if (solver.solve(initial, candidates.items, masks, &self.corr)) |point| points.appendAssumeCapacity(point);
         }
         return points.items.len;
     }
 };
 
-pub const Query = struct {
-    min_corr: Float,
-    min_weight: Float,
-    min_weight_increase: Float,
-    max_weight: Float = 1_000.0,
+pub fn updateLoglikelihood(
+    reference: Candidate,
+    candidates: []const Candidate,
+    loglikelihoods: []Float,
+    options: *const Matching.Correlation,
+) void {
+    const bad = comptime -std.math.inf(Float);
+    for (candidates, loglikelihoods[0..candidates.len]) |candidate, *total| {
+        if (!std.math.isFinite(total.*)) continue;
+        total.* += blk: {
+            if (reference.station == candidate.station) break :blk bad;
+            const idx = options.shape.ravel(reference.station, candidate.station);
+            const max_time = options.time_matrix[idx];
 
-    pub fn query(
-        self: *const Query,
-        reference: Signal,
-        candidates: []const Signal,
-        weights: []Float,
-        options: *const Matching.Correlation,
-    ) void {
-        for (candidates, weights[0..candidates.len]) |candidate, *weight| {
-            if (weight.* == Query.bad) continue;
-            weight.* += blk: {
-                if (reference.station == candidate.station) break :blk Query.bad;
-                const idx = options.shape.ravel(reference.station, candidate.station);
-                const max_time = options.time_matrix[idx];
-
-                const delta: u32 = @max(reference.nanosecond, candidate.nanosecond) - @min(reference.nanosecond, candidate.nanosecond);
-                if (delta > max_time) break :blk Query.bad;
-                const sub_slice = options.matrix[idx];
-                if (sub_slice.size == 0) break :blk Query.bad;
-                const corr = options.step.get(sub_slice.getConst(Float, options.correlation), reference.nanosecond, candidate.nanosecond);
-                break :blk if (corr < self.min_corr) Query.bad else corr;
-            } - self.min_weight_increase;
-            weight.* = if (weight.* < self.min_weight) Query.bad else @min(weight.*, self.max_weight);
-        }
+            const delta: u32 = @max(reference.nanosecond, candidate.nanosecond) - @min(reference.nanosecond, candidate.nanosecond);
+            if (delta > max_time) break :blk bad;
+            const sub_slice = options.matrix[idx];
+            if (sub_slice.size == 0) break :blk bad;
+            const l = options.step.get(sub_slice.getConst(Float, options.correlation), reference.nanosecond, candidate.nanosecond);
+            break :blk l;
+        };
     }
-
-    pub const extreme_outlier: Query = .{ .min_corr = 3.5, .min_weight = 0, .min_weight_increase = 3.5 };
-    pub const outlier: Query = .{ .min_corr = 2, .min_weight = 0, .min_weight_increase = 2 };
-    pub const unlikely: Query = .{ .min_corr = 1, .min_weight = 1, .min_weight_increase = 1 };
-    pub const any: Query = .{ .min_corr = 0, .min_weight = 0, .min_weight_increase = 0 };
-    pub const permissive: Query = .{ .min_corr = 0.0, .min_weight = 0.5, .min_weight_increase = 1.0, .max_weight = 1.1 };
-
-    pub const bad: Float = -1_000;
-};
+}
 
 pub const BeamSearch = struct {
     pub const Options = struct {
-        query: Query,
+        loglikelihood: Float,
         width: usize,
         consensus: usize = max_consensus,
     };
@@ -421,9 +406,9 @@ pub const BeamSearch = struct {
     index: usize,
     chain_len: usize,
     buffer: []Float,
-    candidates: []const Signal,
+    candidates: []const Candidate,
     chains: []const Chain,
-    out: [max_consensus]Signal,
+    out: [max_consensus]Candidate,
 
     inline fn cut(T: type, buffer: []Float, index: usize) struct { []T, []Float } {
         const chain_size = @typeInfo(Chain).array.len;
@@ -437,7 +422,7 @@ pub const BeamSearch = struct {
         return (candidates + max_consensus - 1) * (width * 2);
     }
 
-    pub fn init(initial: Signal, candidates: []const Signal, buffer: []Float, corr: *const Matching.Correlation, options: *const Options) BeamSearch {
+    pub fn init(initial: Candidate, candidates: []const Candidate, buffer: []Float, corr: *const Matching.Correlation, options: *const Options) BeamSearch {
         const chunk = candidates.len;
         const width = options.width;
         std.debug.assert(buffer.len >= buffer_size(chunk, width));
@@ -457,14 +442,14 @@ pub const BeamSearch = struct {
         // Add empty chain and initialize weights as the initial signal isn't saved in the chain
         chains.appendAssumeCapacity(undefined);
         @memset(weights[0..chunk], 0);
-        options.query.query(initial, candidates, weights[0..chunk], corr);
+        updateLoglikelihood(initial, candidates, weights[0..chunk], corr);
 
         for (1..options.consensus) |depth| {
             const scores = weights[0 .. chunk * chains.items.len];
             while (new_chains.items.len < new_chains.capacity) {
                 const idx = std.sort.argMax(Float, scores, {}, std.sort.asc(Float)) orelse break;
-                if (scores[idx] == Query.bad) break;
-                scores[idx] = Query.bad;
+                if (scores[idx] < options.loglikelihood * lma.cast.to(Float, depth)) break;
+                scores[idx] = -std.math.inf(Float);
 
                 const group = idx / chunk;
                 const elem: Int = @intCast(idx % chunk);
@@ -474,7 +459,7 @@ pub const BeamSearch = struct {
 
                 const weight_block = new_weights[chunk * new_chains.items.len ..][0..chunk];
                 @memcpy(weight_block, weights[chunk * group ..][0..chunk]);
-                options.query.query(candidates[elem], candidates, weight_block, corr);
+                updateLoglikelihood(candidates[elem], candidates, weight_block, corr);
 
                 new_chains.appendAssumeCapacity(sequence.*);
             }
@@ -497,7 +482,7 @@ pub const BeamSearch = struct {
         };
     }
 
-    pub fn next(self: *BeamSearch) ?[]const Signal {
+    pub fn next(self: *BeamSearch) ?[]const Candidate {
         if (self.index >= self.chains.len) return null;
         defer self.index += 1;
         for (self.chains[self.index][0..self.chain_len], 1..) |elem, idx| {
@@ -519,13 +504,13 @@ pub const DepthFirstSearch = struct {
             }
         };
 
-        query: Query,
+        loglikelihood: Float,
         attempts: Attempts,
         consensus: usize = max_consensus,
     };
 
     const Frame = struct {
-        weights: []Float,
+        loglikelihood: []Float,
         attempt: u16 = 0,
         index: u16 = 0,
     };
@@ -536,15 +521,15 @@ pub const DepthFirstSearch = struct {
     };
 
     depth: u16,
-    candidates: []const Signal,
+    candidates: []const Candidate,
     weight_buffer: []Float,
-    signals: [max_consensus]Signal,
+    out: [max_consensus]Candidate,
     frames: [max_consensus - 1]Frame,
     max_depth: u16,
     corr: *const Matching.Correlation,
     options: *const Options,
 
-    pub fn init(seed: Signal, candidates: []const Signal, buffer: []Float, corr: *const Matching.Correlation, options: *const Options) DepthFirstSearch {
+    pub fn init(seed: Candidate, candidates: []const Candidate, buffer: []Float, corr: *const Matching.Correlation, options: *const Options) DepthFirstSearch {
         std.debug.assert(buffer.len >= candidates.len * options.consensus);
         std.debug.assert(max_consensus >= options.consensus);
 
@@ -552,23 +537,23 @@ pub const DepthFirstSearch = struct {
             .depth = 0,
             .candidates = candidates,
             .weight_buffer = buffer,
-            .signals = undefined,
-            .frames = if (@import("builtin").mode == .Debug) @splat(.{ .weights = &.{}, .attempt = 0, .index = std.math.maxInt(u16) }) else undefined,
+            .out = undefined,
+            .frames = undefined,
             .max_depth = @intCast(options.consensus - 1),
             .corr = corr,
             .options = options,
         };
 
-        self.frames[0] = .{ .weights = buffer[0..candidates.len] };
-        self.signals[0] = seed;
+        self.frames[0] = .{ .loglikelihood = buffer[0..candidates.len] };
+        self.out[0] = seed;
 
-        @memset(self.frames[0].weights, 0);
-        options.query.query(seed, candidates, self.frames[0].weights, corr);
+        @memset(self.frames[0].loglikelihood, 0);
+        updateLoglikelihood(seed, candidates, self.frames[0].loglikelihood, corr);
 
         return self;
     }
 
-    pub fn next(self: *DepthFirstSearch) ?[]const Signal {
+    pub fn next(self: *DepthFirstSearch) ?[]const Candidate {
         const initial_state: State = if (self.depth >= self.max_depth) .exit else .enter;
         state: switch (initial_state) {
             .exit => {
@@ -578,7 +563,7 @@ pub const DepthFirstSearch = struct {
 
                 // Update ols frame
                 const frame: *Frame = &self.frames[self.depth];
-                frame.weights[frame.index] = Query.bad;
+                frame.loglikelihood[frame.index] = -std.math.inf(Float);
                 continue :state .enter;
             },
             .enter => {
@@ -586,21 +571,21 @@ pub const DepthFirstSearch = struct {
                 const frame: *Frame = &self.frames[self.depth];
                 frame.attempt += 1;
                 if (frame.attempt > @intFromEnum(self.options.attempts)) continue :state .exit;
-                const index: u16 = @intCast(std.sort.argMax(Float, frame.weights[0..self.candidates.len], {}, std.sort.asc(Float)) orelse unreachable);
-                if (frame.weights[index] <= Query.bad) continue :state .exit;
+                const index: u16 = @intCast(std.sort.argMax(Float, frame.loglikelihood[0..self.candidates.len], {}, std.sort.asc(Float)) orelse unreachable);
+                if (frame.loglikelihood[index] <= self.options.loglikelihood * (1 + self.depth)) continue :state .exit;
                 frame.index = index;
 
                 // Advance frame depth and return on full match
                 self.depth += 1;
-                self.signals[self.depth] = self.candidates[index];
-                if (self.depth >= self.max_depth) return self.signals[0..self.options.consensus];
+                self.out[self.depth] = self.candidates[index];
+                if (self.depth >= self.max_depth) return self.out[0..self.options.consensus];
 
                 // Set up new frame
                 const new_frame: *Frame = &self.frames[self.depth];
-                new_frame.* = .{ .weights = self.weight_buffer[self.candidates.len * self.depth ..][0..self.candidates.len] };
+                new_frame.* = .{ .loglikelihood = self.weight_buffer[self.candidates.len * self.depth ..][0..self.candidates.len] };
 
-                @memcpy(new_frame.weights, frame.weights);
-                self.options.query.query(self.candidates[index], self.candidates, new_frame.weights, self.corr);
+                @memcpy(new_frame.loglikelihood, frame.loglikelihood);
+                updateLoglikelihood(self.candidates[index], self.candidates, new_frame.loglikelihood, self.corr);
                 continue :state .enter;
             },
         }
@@ -608,10 +593,10 @@ pub const DepthFirstSearch = struct {
     }
 };
 
-inline fn getToa(scale: u32, comptime times: []const u32) [times.len]Toa {
-    var out: [times.len]Toa = undefined;
-    for (times, &out) |nano, *toa| {
-        toa.* = .{
+inline fn getSignals(scale: u32, comptime times: []const u32) [times.len]Signal {
+    var out: [times.len]Signal = undefined;
+    for (times, &out) |nano, *signal| {
+        signal.* = .{
             .nanosecond = scale * nano,
             .dBm = 0.0,
         };
@@ -620,7 +605,7 @@ inline fn getToa(scale: u32, comptime times: []const u32) [times.len]Toa {
 }
 
 test findTime {
-    var buffer: [16]Toa = getToa(16, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    var buffer: [16]Signal = getSignals(16, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
 
     try std.testing.expect(findTime(&buffer, 0) == 0);
     try std.testing.expect(findTime(&buffer, std.math.maxInt(u32)) == 16);
@@ -630,7 +615,7 @@ test findTime {
 }
 
 test getSpan {
-    var sequence: [16]Toa = getToa(1, &.{ 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 });
+    var sequence: [16]Signal = getSignals(1, &.{ 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 });
 
     try std.testing.expectEqual(SubSlice.initRange(3, 7), getSpan(&sequence, .initRange(7, 11)));
     try std.testing.expectEqual(SubSlice.initRange(0, 1), getSpan(&sequence, .initRange(1, 5)));
@@ -638,7 +623,7 @@ test getSpan {
 }
 
 test "autocorrelation" {
-    var signal: [16]Toa = getToa(16, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    var signal: [16]Signal = getSignals(16, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
     var weights: [16]Float = @splat(1);
     var corr_buffer: [5]Float = @splat(std.math.nan(Float));
 
@@ -650,9 +635,9 @@ test "autocorrelation" {
 
 test correlation {
     const length = 20;
-    const signal_x: [length]Toa = getToa(4, &.{ 6, 7, 11, 15, 23, 33, 37, 43, 46, 51, 59, 66, 75, 84, 86, 93, 101, 109, 118, 120 });
+    const signal_x: [length]Signal = getSignals(4, &.{ 6, 7, 11, 15, 23, 33, 37, 43, 46, 51, 59, 66, 75, 84, 86, 93, 101, 109, 118, 120 });
     const weights_x: [length]Float = .{ 10, 10, 1, 5, 8, 4, 3, 8, 3, 1, 1, 5, 6, 6, 7, 9, 5, 2, 5, 10 };
-    const signal_y: [length]Toa = getToa(4, &.{ 6, 16, 25, 35, 40, 44, 45, 49, 55, 56, 59, 63, 72, 74, 78, 82, 86, 94, 95, 97 });
+    const signal_y: [length]Signal = getSignals(4, &.{ 6, 16, 25, 35, 40, 44, 45, 49, 55, 56, 59, 63, 72, 74, 78, 82, 86, 94, 95, 97 });
     const weights_y: [length]Float = .{ 9, 2, 2, 8, 10, 10, 4, 7, 8, 3, 1, 4, 6, 10, 5, 5, 7, 5, 5, 4 };
     var corr: [21]Float = @splat(std.math.nan(Float));
     const expected: [21]Float = .{ 69, 79, 98, 100, 86, 5, 48, 81, 167, 135, 140, 162, 91, 139, 63, 9, 89, 119, 107, 45, 82 };

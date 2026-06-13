@@ -1,20 +1,20 @@
 const std = @import("std");
 const lma = @import("../lma.zig");
-const Signal = lma.pipeline.match.Signal;
+const Candidate = lma.pipeline.match.Candidate;
 
 const force_probe = false;
 
 pub const Probe = struct {
     data: *ProbeData,
     current_epoch: u64 = 0,
-    signals: []const []const lma.data.types.Toa = &.{},
-    out: [lma.constants.network.max_network]Signal = undefined,
+    signals: []const []const lma.data.types.Signal = &.{},
+    out: [lma.constants.network.max_network]Candidate = undefined,
 
-    pub fn has(self: *Probe, reference: Signal) bool {
+    pub fn has(self: *Probe, reference: Candidate) bool {
         return self.data.map.contains(self.key(reference));
     }
 
-    pub fn get(self: *Probe, reference: Signal, candidates: []const Signal) ?[]Signal {
+    pub fn get(self: *Probe, reference: Candidate, candidates: []const Candidate) ?[]Candidate {
         const value = self.data.map.get(self.key(reference)) orelse return null;
         if (self.data.flags.items[value.probe_id].valid) return null;
         const entries = self.data.getEntries(value);
@@ -37,12 +37,12 @@ pub const Probe = struct {
         return self.out[0..idx];
     }
 
-    pub fn mark(self: *const Probe, reference: Signal, comptime field: enum { valid, found }) void {
+    pub fn mark(self: *const Probe, reference: Candidate, comptime field: enum { valid, found }) void {
         const value = self.data.map.get(self.key(reference)) orelse return;
         @field(self.data.flags.items[value.probe_id], @tagName(field)) = true;
     }
 
-    inline fn key(self: *const Probe, signal: Signal) Key {
+    inline fn key(self: *const Probe, signal: Candidate) Key {
         return .{ .epoch = self.current_epoch, .subindex = signal.index, .station = signal.station };
     }
 };

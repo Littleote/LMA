@@ -45,7 +45,7 @@ inline fn innerLoadStations(data: *lma.data.Stations, basename: []const u8, r: *
     }
 }
 
-pub fn loadSignals(data: *lma.data.Toa, file_name: []const u8, r: *Reader) ReadError!void {
+pub fn loadSignals(data: *lma.data.Signal, file_name: []const u8, r: *Reader) ReadError!void {
     innerLoadSignals(data, std.fs.path.basename(file_name), r, true) catch |err| switch (err) {
         error.OutOfMemory => {
             std.log.err(
@@ -57,13 +57,13 @@ pub fn loadSignals(data: *lma.data.Toa, file_name: []const u8, r: *Reader) ReadE
     };
 }
 
-inline fn innerLoadSignals(data: *lma.data.Toa, basename: []const u8, r: *Reader, comptime allow_compression: bool) ReadErrorOrOOM!void {
+inline fn innerLoadSignals(data: *lma.data.Signal, basename: []const u8, r: *Reader, comptime allow_compression: bool) ReadErrorOrOOM!void {
     const stem, const suffix = std.mem.cutScalarLast(u8, basename, '.') orelse .{ basename, "" };
     const extension: Extension = .parse(suffix);
     switch (extension) {
         .csv => try data.fromCsv(r, null),
         .bin => try data.fromBin(r),
-        .dat => try lma.data.dat_file.toa.fromReader(r, data),
+        .dat => try lma.data.dat_file.signals.fromReader(r, data),
         .gz => {
             if (!allow_compression) return error.InvalidExtension;
             var flate_buffer: [std.compress.flate.max_window_len]u8 = undefined;

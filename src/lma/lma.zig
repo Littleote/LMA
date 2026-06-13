@@ -10,7 +10,7 @@ pub const sort = common.sort;
 pub const data = @import("data.zig");
 pub const pipeline = @import("pipeline.zig");
 pub const graphics = @import("graphics.zig");
-pub const math = @import("math.zig").math;
+pub const math = @import("math").math;
 pub const grid = @import("grid.zig");
 
 comptime {

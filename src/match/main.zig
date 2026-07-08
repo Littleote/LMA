@@ -38,26 +38,20 @@ const root: nargs.Node = .wrap(nargs.groups.Any(.{ .name = "match", .show = .com
         }))),
     }))),
     .set("files", .wrap(nargs.groups.Any(.{ .name = "FILES", .show = .compact }, &.{
-        .set("station", .wrap(nargs.args.param.Single(.string, .{
-            .name = "station",
-            .description = "File with station data. Accepts \".csv\" and \".bin\".",
+        .set("stations", .wrap(nargs.args.param.Variable(.string, .{ .min = 1 }, .{
+            .name = "stations",
+            .description = "File with station data. Accepts \".csv\", \".gps\" and \".loc\".",
             .display = "FILE",
             .short = .auto,
         }))),
-        .set("in_glob", .wrap(nargs.args.param.Single(.wrap(nargs.types.io.Glob), .{
-            .name = "input-glob",
+        .set("inputs", .wrap(nargs.args.param.Variable(.wrap(nargs.types.io.Glob), .{ .min = 1 }, .{
+            .name = "input",
             .description = "Glob pattern for all signal input files. Accepts \".csv\", \".dat\" and \".bin\" (with or without \".gz\").",
             .display = "GLOB",
             .short = .auto,
         }))),
-        .set("in_include", .wrap(nargs.args.param.Variable(.string, .{}, .{
-            .name = "input-add",
-            .description = "Input signal files to add by name. Accepts \".csv\", \".dat\" and \".bin\" (with or without \".gz\").",
-            .display = "FILE",
-            .default = .fromStrings(&.{}, "none"),
-        }))),
-        .set("in_exclude", .wrap(nargs.args.param.Variable(.string, .{}, .{
-            .name = "input-exclude",
+        .set("excluded", .wrap(nargs.args.param.Variable(.string, .{}, .{
+            .name = "exclude",
             .description = "Input signal files to exclude by name. Exclusion has higher precedence than inclusion. Only the file name is necessary (with its extension).",
             .display = "FILE",
             .default = .fromStrings(&.{}, "none"),
@@ -94,12 +88,13 @@ pub fn correlation_size(dist: Float, step: match.Step) u32 {
     return 1 + 4 * lma.cast.to(u32, @round(@min(max_distance, dist) / lma.constants.c / step.step));
 }
 
-pub fn main(init: std.process.Init.Minimal) !void {
-    var allocator: if (builtin.mode == .Debug) std.heap.DebugAllocator(.{}) else void = if (builtin.mode == .Debug) .init else {};
-    defer if (builtin.mode == .Debug) {
+pub fn main(init: std.process.Init.Minimal) void {
+    const use_debug = builtin.mode == .Debug or builtin.single_threaded;
+    var allocator: if (use_debug) std.heap.DebugAllocator(.{}) else void = if (use_debug) .init else {};
+    defer if (use_debug) {
         _ = allocator.deinit();
     };
-    const gpa: std.mem.Allocator = if (builtin.mode == .Debug) allocator.allocator() else std.heap.smp_allocator;
+    const gpa: std.mem.Allocator = if (use_debug) allocator.allocator() else std.heap.smp_allocator;
 
     var threaded: std.Io.Threaded = .init(gpa, .{ .async_limit = .nothing, .concurrent_limit = .nothing, .environ = init.environ });
     const io = threaded.io();
@@ -110,7 +105,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
     {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
-        const args = try init.args.toSlice(arena.allocator());
+        const args = init.args.toSlice(arena.allocator()) catch @panic("OOM while parsing CLI args.");
 
         var tokenizer: nargs.Tokenizer = .initFromStatic(args[1..]);
         var diag: nargs.Diagnostic = .init(gpa, .{});
@@ -144,12 +139,12 @@ pub fn main(init: std.process.Init.Minimal) !void {
         if (help) {
             var help_buf: [128]u8 = undefined;
             var stdout = std.Io.File.stdout().writer(io, &help_buf);
-            try stdout.interface.print("{f}\n", .{std.fmt.Alt([]const nargs.Node.Help, nargs.Node.Help.format){ .data = root.help_info }});
-            try stdout.flush();
+            stdout.interface.print("{f}\n", .{std.fmt.Alt([]const nargs.Node.Help, nargs.Node.Help.format){ .data = root.help_info }}) catch {};
+            stdout.flush() catch {};
             return;
         }
 
-        try root.init(Options, &mem, &diag, ctx, &options);
+        root.init(Options, &mem, &diag, ctx, &options) catch return;
     }
     defer root.deinit(Options, ctx, &options);
 
@@ -168,24 +163,37 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     var buffer: [1024]u8 = undefined;
 
-    if (options.files.probe) |probe_file| {
-        const file = try std.Io.Dir.cwd().openFile(io, probe_file, .{});
+    if (options.files.probe) |probe_file| probe: {
+        const file = std.Io.Dir.cwd().openFile(io, probe_file, .{}) catch break :probe;
         defer file.close(io);
         var file_reader = file.reader(io, &buffer);
         probe_data = .init(gpa);
-        errdefer probe_data.?.deinit();
-        try probe_data.?.fromDat(&file_reader.interface);
+        probe_data.?.fromDat(&file_reader.interface) catch {
+            probe_data.?.deinit();
+            probe_data = null;
+            std.log.err("TODO", .{});
+            break :probe;
+        };
     }
     defer if (probe_data) |*data| data.deinit();
 
     // Load stations
     var stations: lma.data.Stations = .init(gpa);
     defer stations.deinit();
-    {
-        const file = try std.Io.Dir.cwd().openFile(io, options.files.station, .{});
+    for (options.files.stations) |network| {
+        const file = std.Io.Dir.cwd().openFile(io, network, .{}) catch {
+            std.log.err("TODO", .{});
+            continue;
+        };
         defer file.close(io);
         var file_reader = file.reader(io, &buffer);
-        try files.loadStations(&stations, options.files.station, &file_reader.interface);
+        files.loadStations(&stations, network, &file_reader.interface) catch |err| switch (err) {
+            error.Logged => continue,
+            error.ReadFailed => {
+                std.log.err("TODO", .{});
+                continue;
+            },
+        };
     }
     const count: u32 = @intCast(stations.stations.items.len);
     if (count > lma.constants.network.max_network) @panic("Station limit reached.");
@@ -205,63 +213,50 @@ pub fn main(init: std.process.Init.Minimal) !void {
     const full_signals: []lma.data.Signal = full_signal_buffer[0..count];
     defer for (full_signals) |*signal| signal.deinit();
 
-    while (try options.files.in_glob.next()) |entry| {
-        for (options.files.in_exclude) |exclude| {
-            const name = std.fs.path.basename(exclude);
-            if (std.mem.eql(u8, entry.basename, name)) continue;
-        }
-
-        for (options.files.in_include) |*include| {
-            const name = std.fs.path.basename(include.*);
-            if (std.mem.eql(u8, entry.basename, name)) {
-                gpa.free(include.*);
-                @constCast(include).* = &.{};
+    for (options.files.inputs) |*const_glob| {
+        const glob: *nargs.types.io.GlobWalker = @constCast(const_glob);
+        while (glob.next() catch |err| switch (err) {
+            error.Canceled => unreachable,
+            else => |new_err| blk: {
+                std.log.err("TODO {}", .{new_err});
+                break :blk null;
+            },
+        }) |entry| {
+            for (options.files.excluded) |exclude| {
+                const name = std.fs.path.basename(exclude);
+                if (std.mem.eql(u8, entry.basename, name)) continue;
             }
-        }
 
-        loadStation(io, entry.dir, entry.path, options.time.date.string[2..8].*, options.time.time.string, stations, full_signals) catch |err| {
-            switch (err) {
-                error.BadName => std.log.err(
-                    \\File "{s}" doesn't conform to naming convention "{{CODE}}_{{NETWORK}}_{{STATION_NAME}}_{{YYMMDD}}_{{HHMMSS}}". (With YYMMDD = {s} and HHMMSS = {s})
-                , .{ entry.basename, options.time.date.string[2..8].*, options.time.time.string }),
-                error.UnknownStation => std.log.err(
-                    \\No station associated to "{s}".
-                , .{entry.basename}),
-                error.Reported => {},
-            }
-            continue;
-        };
-        active_stations += 1;
+            loadStation(io, entry.dir, entry.path, options.time.date.string[2..8].*, options.time.time.string, stations, full_signals) catch |err| {
+                switch (err) {
+                    error.BadName => std.log.err(
+                        \\File "{s}" doesn't conform to naming convention "{{CODE}}_{{NETWORK}}_{{STATION_NAME}}_{{YYMMDD}}_{{HHMMSS}}". (With YYMMDD = {s} and HHMMSS = {s})
+                    , .{ entry.basename, options.time.date.string[2..8].*, options.time.time.string }),
+                    error.UnknownStation => std.log.err(
+                        \\No station associated to "{s}".
+                    , .{entry.basename}),
+                    error.Reported => {},
+                }
+                continue;
+            };
+            active_stations += 1;
+        }
     }
 
-    for (options.files.in_include) |include| {
-        if (include.len == 0) continue;
-        const in_name = std.fs.path.basename(include);
-        for (options.files.in_exclude) |exclude| {
-            const exc_name = std.fs.path.basename(exclude);
-            if (std.mem.eql(u8, in_name, exc_name)) continue;
-        }
-
-        loadStation(io, .cwd(), include, options.time.date.string[2..8].*, options.time.time.string, stations, full_signals) catch |err| {
-            switch (err) {
-                error.BadName => std.log.err(
-                    \\File "{s}" doesn't conform to naming convention "{{CODE}}_{{NETWORK}}_{{STATION_NAME}}_{{YYMMDD}}_{{HHMMSS}}".
-                , .{in_name}),
-                error.UnknownStation => std.log.err(
-                    \\No station associated to "{s}".
-                , .{in_name}),
-                error.Reported => {},
-            }
-            continue;
-        };
-        active_stations += 1;
-    }
-
-    var out_dir: std.Io.Dir = if (options.files.out_dir) |dir| try std.Io.Dir.cwd().openDir(io, dir, .{}) else .cwd();
+    var out_dir: std.Io.Dir = if (options.files.out_dir) |dir| std.Io.Dir.cwd().openDir(io, dir, .{}) catch |err| switch (err) {
+        error.Canceled => unreachable,
+        else => |new_err| blk: {
+            std.log.err("TODO {} defaulting to cwd.", .{new_err});
+            break :blk .cwd();
+        },
+    } else .cwd();
 
     const start_time = options.time.time.toSeconds();
 
-    const result = try runner.run(io, gpa, points, full_signals, config, .init(start_time, options.time.seconds));
+    const result = runner.run(io, gpa, points, full_signals, config, .init(start_time, options.time.seconds)) catch |err| switch (err) {
+        error.Canceled => unreachable,
+        error.OutOfMemory => @panic("OOM"),
+    };
     var output = result.points;
     defer output.deinit();
     _ = result.stats;
@@ -276,7 +271,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
             const file = out_dir.createFile(io, out, .{}) catch |err| break :skip err;
             defer file.close(io);
             var file_writer = file.writer(io, &buffer);
-            files.savePoints(&output, &stations, out, &file_writer.interface) catch |err| break :skip err;
+            files.savePoints(&output, &stations, (&result.stats)[0..1], out, &file_writer.interface) catch |err| break :skip err;
             continue;
         };
         std.log.warn(
@@ -286,21 +281,20 @@ pub fn main(init: std.process.Init.Minimal) !void {
 
     std.debug.print("Total points: {d}\n", .{output.array.items.len});
 
-    // if (false) {
-    //     var err_buffer: [max_stations]f32 = undefined;
-    //     statistics.calibration(&err_buffer);
-    //     for (stations.stations.items, 0..) |*station, i| {
-    //         const correction = lma.nano.toFixed(i32, err_buffer[i]);
-    //         station.delay += correction;
-    //     }
-    //     var writer: std.Io.Writer.Allocating = .init(init.gpa);
-    //     defer writer.deinit();
+    if (config.verbose) {
+        for (stations.stations.items, 0..) |*station, i| {
+            const correction = lma.nano.toFixed(i32, result.stats.stations[i].calibration());
+            station.delay -= correction;
+        }
+        var writer: std.Io.Writer.Allocating = .init(gpa);
+        defer writer.deinit();
 
-    //     stations.toCsv(&writer.writer, null) catch {};
-    //     std.debug.print("Updated stations:\n{s}", .{writer.written()});
-    // }
+        stations.toCsv(&writer.writer, null) catch {};
+        std.debug.print("Updated stations:\n{s}", .{writer.written()});
+    }
 }
 
+// TODO
 pub fn loadStation(io: std.Io, dir: std.Io.Dir, file: []const u8, date: [6]u8, time: [6]u8, stations: lma.data.Stations, signals: []lma.data.Signal) error{ Reported, BadName, UnknownStation }!void {
     const basename = std.fs.path.basename(file);
     var buffer: [1024]u8 = undefined;
@@ -326,7 +320,7 @@ pub fn loadStation(io: std.Io, dir: std.Io.Dir, file: []const u8, date: [6]u8, t
     var file_reader = handle.reader(io, &buffer);
 
     for (stations.stations.items, 0..) |info, idx| {
-        if (std.mem.eql(u8, info.name.?, name)) {
+        if (std.mem.eql(u8, info.name, name)) {
             std.debug.assert(signals[idx].empty());
             const delay: u32 = lma.index.offset(u32, global_shift, info.delay);
             files.loadSignals(&signals[idx], basename, &file_reader.interface) catch |err| {

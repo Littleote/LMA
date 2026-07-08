@@ -131,7 +131,7 @@ fn drawPaletteDemo(comptime name: []const u8, palette: *const Palette) !void {
     }
 
     var buffer: [1024]u8 = undefined;
-    const output = try std.Io.Dir.cwd().createFile(std.testing.io, std.fmt.comptimePrint("test/test_palette_{s}.bmp", .{name}), .{});
+    const output = try std.Io.Dir.cwd().createFile(std.testing.io, std.fmt.comptimePrint("test/graphics/test_palette_{s}.bmp", .{name}), .{});
     defer output.close(std.testing.io);
     var output_writer = output.writer(std.testing.io, &buffer);
 

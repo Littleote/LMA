@@ -16,9 +16,11 @@ const Delimiter = enum(u8) {
     space = ' ',
 };
 
-pub const root = nargs.groups.any("CLUSTERS", .{ .delimiter = nargs.params.param("delimiter", nargs.types.options(Delimiter), .single, .{ .short = .auto, .default = .space }) });
+pub const root: nargs.Node = .wrap(nargs.groups.Any(.{ .name = "clusters" }, &.{
+    .set("delimiter", .wrap(nargs.args.param.Single(.options(Delimiter), .{ .name = "delimiter", .description = "CSV file delimiter.", .default = .fromValues(.space, null) }))),
+}));
 
-pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf(root).Type) !void {
+pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: root.Parsed(null)) !void {
     const delimiter = @intFromEnum(args.delimiter);
 
     // Input file

@@ -5,12 +5,12 @@ const nargs = @import("nargs");
 
 const utils = @import("utils.zig");
 
-pub const root = nargs.groups.any("POINTS", .{
-    .station = nargs.params.param("station", nargs.types.unset(nargs.types.string), .single, .{ .short = .auto, .default = @as(?[]const u8, null) }),
-    .frequency = nargs.params.param("freq", nargs.types.unsigned, .single, .{ .default = 60 * 60 * 1 }),
-});
+pub const root: nargs.Node = .wrap(nargs.groups.Any(.{ .name = "points" }, &.{
+    .set("station", .wrap(nargs.args.param.Single(.optional(.string), .{ .name = "station", .description = "Directory where to store station data.", .short = .auto }))),
+    .set("frequency", .wrap(nargs.args.param.Single(.integer(usize, .{}), .{ .name = "freq", .description = "Unused.", .default = .fromValues(60 * 60 * 1, null) }))),
+}));
 
-pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf(root).Type) !void {
+pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: root.Parsed(null)) !void {
 
     // Input directory
     var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
@@ -105,10 +105,10 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
             }
 
             if (load_stations and loaded) {
-                const bin = try station.?.createFile(io, "stations.bin", .{});
-                defer bin.close(io);
-                var file_writer = bin.writer(io, &buffer);
-                try stations.toBin(&file_writer.interface);
+                const csv = try station.?.createFile(io, "stations.csv", .{});
+                defer csv.close(io);
+                var file_writer = csv.writer(io, &buffer);
+                try stations.toCsv(&file_writer.interface, null);
             }
         }
         load_stations = load_stations and !loaded;

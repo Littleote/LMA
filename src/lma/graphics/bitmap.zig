@@ -100,7 +100,7 @@ pub fn writeHeader(
 
 test fromBytes {
     const gpa = std.testing.allocator;
-    const file = try std.Io.Dir.cwd().createFile(std.testing.io, "test/test_bitmap_fromBytes.bmp", .{});
+    const file = try std.Io.Dir.cwd().createFile(std.testing.io, "test/graphics/test_bitmap_fromBytes.bmp", .{});
     defer file.close(std.testing.io);
 
     var buffer: [1024]u8 = undefined;

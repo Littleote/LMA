@@ -208,6 +208,9 @@ fn matchExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
         const run_match = b.addRunArtifact(exe);
         run_match.addArgs(&.{
             "-s=data/stations/stations_new.csv",
+            // "--stations",
+            // "data/stations/upc.gps",
+            // "data/stations/mcat.gps",
             "-i=data/signals/" ++ date_time.date ++ "/bin/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".bin",
             "-o",
             // "data/points/" ++ date_time.date ++ "/bin/" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.bin",

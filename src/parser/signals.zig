@@ -6,9 +6,9 @@ const nargs = @import("nargs");
 
 const utils = @import("utils.zig");
 
-pub const root = nargs.groups.any("SIGNAL", .{});
+pub const root: nargs.Node = .wrap(nargs.groups.Any(.{ .name = "signals" }, &.{}));
 
-pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf(root).Type) !void {
+pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: root.Parsed(null)) !void {
     _ = args;
 
     // Input directory
@@ -38,7 +38,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: @TypeOf
             );
             defer file.close(io);
             var file_reader = file.reader(io, &buffer);
-            try lma.data.dat_file.signal.fromFile(&file_reader, &data);
+            try lma.data.dat_file.signals.fromFile(&file_reader, &data);
         }
         defer data.deinit();
 

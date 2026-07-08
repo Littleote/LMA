@@ -106,7 +106,7 @@ pub fn solveFromPoint(self: *ToaSolver, reference: match.Candidate, base_source:
     });
 
     const xyz = base_source.point - self.buffer.ref_point;
-    self.statistics.buffer_source += 1;
+    self.statistics.counts.buffer_source += 1;
     self.bufferFromSource(&.{ .point = xyz, .time = -length(xyz) }, candidates, 500);
     if (self.buffer.len < 5) return null;
 
@@ -117,7 +117,7 @@ pub fn solveFromPoint(self: *ToaSolver, reference: match.Candidate, base_source:
 
 pub fn solveSet(self: *ToaSolver, matched: []const match.Candidate, candidates: []const match.Candidate) ?Source {
     self.buffer.clear();
-    self.statistics.buffer_set += 1;
+    self.statistics.counts.buffer_set += 1;
     self.bufferFromSet(matched);
 
     const initial = self.initialSolution() orelse return null;
@@ -128,7 +128,7 @@ pub fn solveSet(self: *ToaSolver, matched: []const match.Candidate, candidates: 
 fn initialSolution(self: *ToaSolver) ?Source {
     if (self.buffer.len < 5) return null;
 
-    self.statistics.solve_linear += 1;
+    self.statistics.counts.solve_linear += 1;
     var source = solveLinear(&self.buffer);
 
     // Assert the solution is reasonable
@@ -149,7 +149,7 @@ fn initialSolution(self: *ToaSolver) ?Source {
     };
 
     // Clean solution
-    self.statistics.solve_lm += 1;
+    self.statistics.counts.solve_quadratic += 1;
     source = solveLeastSquares(&self.buffer, &source, .{ .termination = .{ .max_iterations = 5 } });
     // Assert the solution is reasonable
     {
@@ -163,7 +163,7 @@ fn initialSolution(self: *ToaSolver) ?Source {
         if (max_error > 500) return null;
     }
 
-    self.statistics.out_initial += 1;
+    self.statistics.counts.out_initial += 1;
     return source;
 }
 
@@ -171,7 +171,7 @@ fn refinedSolution(self: *ToaSolver, input: *const Source) ?Source {
     while (self.buffer.len >= 5) {
 
         // Solve quadratic optimization with L-M
-        self.statistics.solve_lm += 1;
+        self.statistics.counts.solve_quadratic += 1;
         const source = solveLeastSquares(&self.buffer, input, .{ .termination = .{ .max_iterations = 100 } });
 
         // Assert the solution is reasonable
@@ -186,7 +186,7 @@ fn refinedSolution(self: *ToaSolver, input: *const Source) ?Source {
             }
         }
 
-        self.statistics.out_refined += 1;
+        self.statistics.counts.out_refined += 1;
         return source;
     }
     return null;
@@ -240,7 +240,7 @@ pub fn sourceToPoint(self: *ToaSolver, source: *const Source) ?lma.data.types.Po
     const nano = lma.nano.toNano(t);
 
     self.timing(source);
-    self.statistics.out_solutions += 1;
+    self.statistics.counts.out_solutions += 1;
     self.addSource(&.{ .point = source.point + self.buffer.ref_point, .time = source.time + self.buffer.ref_time });
 
     var mask: u32 = 0;
@@ -294,8 +294,10 @@ fn timing(self: *ToaSolver, source: *const Source) void {
     for (self.buffer.entries[0..self.buffer.len]) |entry| {
         const delta = length(source.point - entry.point);
         const err = source.time - entry.time + delta;
-        self.statistics.timing_error[entry.station] += err / denominator;
-        self.statistics.timing_weight[entry.station] += 1 / denominator;
+        const station = &self.statistics.stations[entry.station];
+        station.timing_error += err / denominator;
+        station.timing_weight += 1 / denominator;
+        station.solutions += 1;
     }
 }
 
@@ -364,56 +366,58 @@ pub const Source = struct {
 };
 
 pub const Statistics = struct {
-    buffer_set: usize = 0,
-    buffer_source: usize = 0,
-    solve_linear: usize = 0,
-    solve_lm: usize = 0,
-    out_initial: usize = 0,
-    out_refined: usize = 0,
-    out_solutions: usize = 0,
+    pub const Counts = struct {
+        buffer_set: u32 = 0,
+        buffer_source: u32 = 0,
+        solve_linear: u32 = 0,
+        solve_quadratic: u32 = 0,
+        out_initial: u32 = 0,
+        out_refined: u32 = 0,
+        out_solutions: u32 = 0,
+    };
 
-    timing_error: [max_network]f128 = @splat(0),
-    timing_weight: [max_network]f128 = @splat(0),
+    pub const Station = struct {
+        timing_error: f128 = 0,
+        timing_weight: f128 = 0,
+        solutions: u32 = 0,
 
-    pub fn add(self: *Statistics, other: *const Statistics) void {
-        inline for (@typeInfo(Statistics).@"struct".fields) |field| {
-            switch (@typeInfo(field.type)) {
-                .int, .float, .comptime_int, .comptime_float => @field(self, field.name) += @field(other, field.name),
-                .array => {
-                    for (&@field(self, field.name), @field(other, field.name)) |*s, o|
-                        s.* += o;
-                },
-                else => comptime unreachable,
+        pub fn calibration(self: Station) f32 {
+            const constant = -2.0 / c;
+            const out: f32 = @floatCast(constant * (self.timing_error / self.timing_weight));
+
+            return if (std.math.isFinite(out)) out else 0;
+        }
+
+        pub fn add(self: *Station, other: Station) void {
+            inline for (comptime std.meta.fieldNames(Station)) |name| {
+                @field(self, name) += @field(other, name);
             }
         }
-    }
+    };
 
-    pub inline fn calibration(self: *const Statistics, out: *[max_network]f32) void {
-        const constant = -2.0 / c;
-        for (self.timing_error, self.timing_weight, out) |err, weight, *out_item| {
-            out_item.* = @floatCast(constant * (err / weight));
-            if (!std.math.isFinite(out_item.*)) out_item.* = 0.0;
+    counts: Counts = .{},
+    stations: [max_network]Station = @splat(.{}),
+
+    pub fn add(self: *Statistics, other: *const Statistics) void {
+        inline for (comptime std.meta.fieldNames(Counts)) |name| {
+            @field(self.counts, name) += @field(other.counts, name);
+        }
+        for (&self.stations, other.stations) |*lhs, rhs| {
+            lhs.add(rhs);
         }
     }
 
     pub fn format(self: *const Statistics, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        inline for (@typeInfo(Statistics).@"struct".fields) |field| {
-            switch (@typeInfo(field.type)) {
-                .int, .float, .comptime_int, .comptime_float => try w.print("Var {s}: {d}\n", .{ field.name, @field(self, field.name) }),
-                .array => continue,
-                else => comptime unreachable,
-            }
+        inline for (comptime std.meta.fieldNames(Counts)) |name| {
+            try w.print("Variable {s} = {d}\n", .{ name, @field(self.counts, name) });
         }
         {
-            var err_buffer: [max_network]f32 = undefined;
-            self.calibration(&err_buffer);
-            try w.writeAll("Extra time_ns:\n");
-            for (err_buffer, 1..) |err, i| {
-                try w.writeByte(if (i % 4 == 1) '\t' else ' ');
-                try w.print("[{d:>2}]: {d:>9.3} ns", .{ i, err * std.time.ns_per_s });
-                if (i % 4 == 0) try w.writeByte('\n');
+            try w.print("Station {s: >2}: {s: >12.2} {s: >9}\n", .{ "ID", "Calibration", "Solutions" });
+            for (self.stations, 1..) |station, idx| {
+                try w.print("Station {d: >2}: {d: >12.2} {d: >9}\n", .{
+                    idx, station.calibration() * std.time.ns_per_s, station.solutions,
+                });
             }
-            if (max_network % 4 != 0) try w.writeByte('\n');
         }
     }
 };

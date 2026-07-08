@@ -539,6 +539,14 @@ pub const signals = struct {
     };
 };
 
+inline fn getFloat(Float: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Float {
+    return std.fmt.parseFloat(Float, std.mem.trim(u8, s orelse return error.BadFile, " ")) catch error.InvalidValue;
+}
+
+inline fn getInt(Int: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Int {
+    return std.fmt.parseInt(Int, std.mem.trim(u8, s orelse return error.BadFile, " "), 10) catch error.InvalidValue;
+}
+
 pub const output = struct {
     pub const ParseError = error{ ReadFailed, OutOfMemory, InvalidHeader, InvalidValue, BadFile };
 
@@ -579,35 +587,22 @@ pub const output = struct {
             try stations.stations.ensureTotalCapacityPrecise(stations.allocator, station_count.?);
 
             for (0..station_count.?) |_| {
+                const line = (try r.takeDelimiter('\n')) orelse return error.BadFile;
+                var iter = std.mem.tokenizeScalar(u8, line, ' ');
+                _ = iter.next() orelse return error.BadFile;
                 const current_station = stations.stations.addOneAssumeCapacity();
-                current_station.* = .init;
-                const line = (try r.takeDelimiter('\n')).?;
-                var iterator = std.mem.tokenizeScalar(u8, line, ' ');
-                var column: usize = 0;
-                while (iterator.next()) |token| {
-                    if (token.len == 0) continue;
-                    switch (column) {
-                        0, 1 => {},
-                        2 => {
-                            current_station.name = try stations.allocator.dupe(u8, token);
-                        },
-                        3 => {
-                            current_station.latitude = std.fmt.parseFloat(f64, token) catch return error.InvalidValue;
-                        },
-                        4 => {
-                            current_station.longitude = std.fmt.parseFloat(f64, token) catch return error.InvalidValue;
-                        },
-                        5 => {
-                            current_station.altitude = std.fmt.parseFloat(f32, token) catch return error.InvalidValue;
-                        },
-                        6 => {
-                            current_station.delay = 4 * (std.fmt.parseInt(i32, token, 10) catch return error.InvalidValue);
-                        },
-                        7, 8 => break,
-                        else => unreachable,
-                    }
-                    column += 1;
-                }
+                current_station.* = .{
+                    // Tokenizer ensures that non null entries are not empty
+                    .letter = (iter.next() orelse return error.BadFile)[0],
+                    .id = 0, // Unset
+                    .name = try stations.arena.allocator().dupe(u8, iter.next() orelse return error.BadFile),
+                    .latitude = try getFloat(f64, iter.next()),
+                    .longitude = try getFloat(f64, iter.next()),
+                    .altitude = try getFloat(f32, iter.next()),
+                    .delay = 4 * try getInt(i32, iter.next()),
+                    .revision = try getInt(u8, iter.next()),
+                    .channel = try getInt(u8, iter.next()),
+                };
             }
         } else {
             for (0..station_count.?) |_| {
@@ -703,24 +698,117 @@ pub const output = struct {
         return error.BadFile;
     }
 
-    pub fn print(w: *Writer, points: *const data.Points, stations: *const data.Stations) Writer.Error!void {
+    pub fn print(
+        w: *Writer,
+        points: *const data.Points,
+        stations: *const data.Stations,
+        statistics: []const lma.pipeline.ToaSolver.Statistics,
+    ) Writer.Error!void {
+        // Data start time: YY/MM/DD HH:MM:SS
+        // Number of seconds analyzed: ANALYSIS_TIME
+        // Location: NETWORK_NAME
+        try w.writeAll("Location: CUSTOM\n");
+
+        // Coordinate center (lat,lon,alt): LATITUDE  LONGITUDE  DUMMY_ALTITUDE
+        var network_xyz = lma.math(f64).vector.zero;
+        for (stations.stations.items) |station|
+            network_xyz += lma.pipeline.transform.gpsToXYZ(f64, .{ .elems = .{ station.latitude, station.longitude, station.altitude, 0 } }).build();
+        const center = lma.pipeline.transform.xyzToSurface(f64, .init(network_xyz / lma.math(f64).vector.splat(lma.cast.to(f64, stations.stations.items.len))));
+        try w.print("Coordinate center (lat,lon,alt): {d:.8} {d:.8} -1000.00\n", .{ center.x(), center.y() });
+        // Coordinate frame: cartesian
+        try w.writeAll("Coordinate frame: cartesian\n");
+        // Maximum diameter of LMA (km): DIAMETER
+        // Maximum light-time across LMA (ns): DIAMETER / C
+
+        // Number of stations: STATIONS_LEN
         try w.print("Number of stations: {d}\n", .{stations.stations.items.len});
+        // Number of active stations: SIZE_UNION_SETS
+        var active_count: usize = 0;
+        for (0..lma.constants.network.max_network) |idx| {
+            for (statistics) |stats| {
+                if (stats.stations[idx].solutions != 0) {
+                    active_count += 1;
+                    break;
+                }
+            }
+        }
+        try w.print("Number of active stations: {d}\n", .{active_count});
+
+        // Active stations: LETTER_SET_1 LETTER_SET_2 ...
+        try w.writeAll("Active stations:");
+        for (statistics) |stats| {
+            try w.writeByte(' ');
+            for (stats.stations, 0..) |station, idx| {
+                if (station.solutions != 0) try w.writeByte(stations.stations.items[idx].letter);
+            }
+        }
+        try w.writeByte('\n');
+
+        // Minimum number of stations per solution: 6
+        // Maximum reduced chi-squared: 0.75
+        // Maximum number of chi-squared iterations: 20
+
+        // Station information: id, name, lat(d), lon(d), alt(m), delay(ns), board_rev, rec_ch
+        // Sta_info: LETTER  NAME  LATITUDE  LONGITUDE  ALTITUDE  DELAY  REVISION  CHANNEL
+        try w.writeAll("Station information: id, name, lat(d), lon(d), alt(m), delay(ns), board_rev, rec_ch\n");
         for (stations.stations.items) |station| {
-            try w.print("Sta_info: ?  {s}  {d:.8}  {d:.8}  {d:.3}  {d}\n", .{
-                station.name orelse "NO_NAME",
+            try w.print("Sta_info: {c}  {s: <16}  {d: >11.7}  {d: >11.7}  {d: >7.2}  {d: >3.0} {d: >1} {d: >2}\n", .{
+                station.letter,
+                station.name,
                 station.latitude,
                 station.longitude,
                 station.altitude,
-                @divTrunc(station.delay, 4),
+                lma.nano.fromNano(f32, station.delay) * std.time.ns_per_s,
+                station.revision,
+                station.channel,
             });
         }
-        try w.writeAll("Coordinate center (lat,lon,alt): 41.50 1.50 -1000.00\n");
-        try w.writeAll("Location: CUSTOM\n");
+
+        // Station data: id, name, win(us), data_ver, rms_error(ns), sources, %, <P/P_m>, active
+        // Sta_data: LETTER  NAME  WINDOW(80)_OR_0  VERSION(12)_OR_0  RMS(40)_OR_0  SOLUTIONS  SOLUTIONS % TOTAL_SOLUTIONS  ???  ACTIVE(A)_OR_NA
+        try w.writeAll("Station data: id, name, win(us), data_ver, rms_error(ns), sources, %, <P/P_m>, active\n");
+        for (statistics) |stats| {
+            for (stations.stations.items, 0..) |station, idx| {
+                const info = stats.stations[idx];
+                const active = info.solutions != 0;
+                try w.print("Sta_data: {c}  {s: <16}  {d: >4}  {d: >4}  {d: >3}  {d: >7}  {d: >4.1}  {d: >4.2}  {s: >2}\n", .{
+                    station.letter,
+                    station.name,
+                    @as(u32, if (active) 80 else 0),
+                    @as(u32, if (active) 12 else 0),
+                    // fixed rms constant
+                    // TODO: read constant from ToaSolver
+                    @as(u32, 40),
+                    info.solutions,
+                    100 * lma.cast.to(f32, info.solutions) / lma.cast.to(f32, @max(1, stats.counts.out_solutions)),
+                    @as(f32, if (active) 1.0 else 0.0),
+                    if (active) "A" else "NA",
+                });
+            }
+        }
+
+        // Station mask order: REVERSE_STATIONS_LETTER_SET
+        try w.writeAll("Station mask order: ");
+        var station_iter = std.mem.reverseIterator(stations.stations.items);
+        while (station_iter.next()) |station| {
+            try w.writeByte(station.letter);
+        }
+        try w.writeByte('\n');
+        // Data: time (UT sec of day), lat, lon, alt(m), reduced chi^2, P(dBW), mask
+        try w.writeAll("Data: time (UT sec of day), lat, lon, alt(m), reduced chi^2, P(dBW), mask\n");
+        // Data format: 15.9f 12.8f 13.8f 9.2f 6.2f 5.1f 10x
+        try w.writeAll("Data format: 15.9f 12.8f 13.8f 9.2f 6.2f 5.1f 10x\n");
+        // Number of events: SOLUTIONS
+        var solutions: usize = 0;
+        for (statistics) |stats| solutions += stats.counts.out_solutions;
+        try w.print("Number of events: {d}\n", .{solutions});
+
         try w.writeAll("*** data ***\n");
         var it = points.epochIterator(null, .all);
         while (it.nextEpoch()) |info| {
             for (info.values) |entry| {
-                try w.print("{d:.10} {d:.8} {d:.8} {d:.3} {d:.2} {d:.3} 0x{x:0>8}\n", .{
+                // Data format: 15.9f 12.8f 13.8f 9.2f 6.2f 5.1f 10x
+                try w.print("{d:15.9} {d:12.8} {d:13.8} {d:9.2} {d:6.2} {d:5.1} 0x{x:0>8}\n", .{
                     cast.to(f64, info.epoch) + lma.nano.fromNano(f64, entry.nanosecond),
                     entry.latitude,
                     entry.longitude,

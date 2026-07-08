@@ -85,12 +85,12 @@ test "map" {
 
     const bounds: grid.Bounds = .scale(.fromGrid(shape), math.vector.vec2(300_000, 300_000));
     var buffer: [1024]u8 = undefined;
-    const input = try std.Io.Dir.cwd().openFile(std.testing.io, "test/input_map.geojson", .{});
+    const input = try std.Io.Dir.cwd().openFile(std.testing.io, "test/graphics/input_map.geojson", .{});
     var input_reader = input.reader(std.testing.io, &buffer);
 
     try map.loadAndDraw(std.testing.allocator, &bounds, 253, &canvas, &rotation, &input_reader.interface);
 
-    const output = try std.Io.Dir.cwd().createFile(std.testing.io, "test/test_map.bmp", .{});
+    const output = try std.Io.Dir.cwd().createFile(std.testing.io, "test/graphics/test_map.bmp", .{});
     var output_writer = output.writer(std.testing.io, &buffer);
     try lma.graphics.bitmap.fromBytes(shape, &canvas, &lma.graphics.palettes.marked_black2white, &output_writer.interface);
 }

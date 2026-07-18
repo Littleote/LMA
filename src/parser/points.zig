@@ -5,12 +5,12 @@ const nargs = @import("nargs");
 
 const utils = @import("utils.zig");
 
-pub const root: nargs.Node = .wrap(nargs.groups.Any(.{ .name = "points" }, &.{
-    .set("station", .wrap(nargs.args.param.Single(.optional(.string), .{ .name = "station", .description = "Directory where to store station data.", .short = .auto }))),
-    .set("frequency", .wrap(nargs.args.param.Single(.integer(usize, .{}), .{ .name = "freq", .description = "Unused.", .default = .fromValues(60 * 60 * 1, null) }))),
+pub const Cli = struct { station: ?[]const u8 };
+pub const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "points" }, .{
+    .station = .build(nargs.Params, .single(.optional(.string), .{ .name = "station", .description = "Directory where to store station data.", .short = .auto })),
 }));
 
-pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: root.Parsed(null)) !void {
+pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !void {
 
     // Input directory
     var dir = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });

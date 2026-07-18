@@ -5,9 +5,6 @@ const lma = @import("lma");
 const transform = lma.pipeline.transform;
 const Detail = lma.grid.Bounds.Detail;
 const nargs = @import("nargs");
-const groups = nargs.groups;
-const params = nargs.params;
-const types = nargs.types;
 
 pub const Float = @import("main.zig").Float;
 pub const Generator = @import("Generator.zig");
@@ -125,60 +122,127 @@ pub fn generator(self: Args, gpa: Allocator, io: std.Io) !*Generator {
 }
 
 const coord_parsers = .{
-    .latitude = types.Floating(Float).interval(-90, 90, .closed),
-    .longitude = types.Floating(Float).interval(-180, 180, .closed),
+    .latitude = nargs.types.Floating(Float, .{ .min = .closed(-90), .max = .closed(90) }),
+    .longitude = nargs.types.Floating(Float, .{ .min = .closed(-180), .max = .closed(180) }),
 };
-fn coord(name: []const u8, options: params.Mixed(@TypeOf(coord_parsers)).Options) params.Mixed(@TypeOf(coord_parsers)) {
-    return params.mixed(name, coord_parsers, options);
+// fn coord(name: []const u8, options: nargs.Mixed(struct{Float, Float}).Options) nargs.Node(struct{Float, Float}) {
+//     return params.mixed(name, coord_parsers, options);
+// }
+fn coord(options: nargs.Params([2]Float).Options) nargs.Node([2]Float) {
+    return .build(nargs.Params, .array(.floating(.{ .min = .closed(-180), .max = .closed(180) }), options));
 }
 
+const Cli = struct {
+    input: []const u8,
+    info: struct {
+        format: FileFormat = .bin,
+        stage: Stage = .clusters,
+    },
+    output: []const u8,
+    map: []const u8,
+    ffmpeg: bool,
+    region: union(enum) {
+        center_scale: struct {
+            center: [2]Float,
+            scale: [2]Float,
+        },
+        end_points: struct {
+            from: [2]Float,
+            to: [2]Float,
+        },
+        preset: enum { catalunya, valencia },
+    },
+    detail: union(enum) {
+        fixed_size: [2]u32,
+        resolution: Resolution,
+    },
+    half_life: Float = 2.5,
+    luminosity: Float = 1.0,
+};
+
+const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "holes" }, .{
+    .input = .build(nargs.Params, .single(.string, .{ .name = "input", .description = "Input file with the flash sources", .short = .auto })),
+    .info = .build(nargs.Groups, .any(.{ .name = "FILE INFO" }, .{
+        .format = .build(nargs.Params, .single(.options, .{ .name = "Fformat", .description = "File format" })),
+        .stage = .build(nargs.Params, .single(.options, .{ .name = "Fstage", .description = "Pipeline stage of the file" })),
+    })),
+    .output = .build(nargs.Params, .single(.string, .{ .name = "output", .description = "Output folder for the generated images", .short = .auto, .default = .init("img/demo/holes", null) })),
+    .map = .build(nargs.Params, .single(.string, .{
+        .name = "map",
+        .description = "Background map th display in the images as a geographical reference",
+        .short = .auto,
+        .default = .init("", "None"),
+        .presets = &.{
+            .init("cat-map", "data/map/comarques-compressed.geojson", "Catalonia map"),
+            .init("val-map", "data/map/comarques-cv.geojson", "Valencia map"),
+        },
+    })),
+    .ffmpeg = nargs.flags.Flag(.{ .name = "ffmpeg", .description = "Generate a video from all the images using ffmpeg" }),
+
+    .region = .build(nargs.Groups, .exclusive(.{ .name = "REGION" }, .preset, .{
+        .center_scale = .build(nargs.Groups, .incremental(.{ .name = "CENTER & SCALE" }, .{
+            .center = coord(.{ .name = "center", .description = "Center of the area", .shape = .{ .payload = ',' } }),
+            .scale = .build(nargs.Params, .array(.floating(.{}), .{ .name = "scale", .description = "Area size", .shape = .{ .payload = ',' }, .default = .init(.{ 512, 512 }, null) })),
+        })),
+        .end_points = .build(nargs.Groups, .incremental(.{ .name = "END POINTS" }, .{
+            .from = coord(.{ .name = "from", .description = "Top left", .shape = .{ .payload = ',' } }),
+            .to = coord(.{ .name = "to", .description = "Bottom right", .shape = .{ .payload = ',' } }),
+        })),
+        .preset = .build(nargs.Params, .single(.options, .{ .name = "region", .description = "Auto adjust to the given region area", .default = .init(.catalunya, "Catalunya") })),
+    })),
+    .detail = .build(nargs.Groups, .exclusive(.{ .name = "DETAIL" }, .resolution, .{
+        .fixed_size = .build(nargs.Params, .array(.integer(.{}), .{ .name = "fixed-size", .description = "Resolution of the full image", .shape = .{ .payload = ',' } })),
+        .resolution = .build(nargs.Params, .single(.options, .{ .name = "resolution", .description = "Resolution per km²", .short = .auto, .default = .init(.medium, null) })),
+    })),
+
+    .half_life = .build(nargs.Params, .single(.floating(.{}), .{ .name = "half-life", .description = "Half-life for flash source persistence", .short = .auto })),
+    .luminosity = .build(nargs.Params, .single(.floating(.{}), .{ .name = "luminosity", .description = "Scaling of image scale", .short = .auto })),
+}));
+
 pub fn parseNargs(gpa: Allocator, io: std.Io, cli: std.process.Args) !Args {
-    var root = groups.any("holes", .{
-        .input = params.param("input", types.string, .single, .{ .short = .auto }),
-        .info = groups.any("FILE INFO", .{
-            .format = params.param("Fformat", types.options(FileFormat), .single, .{ .default = .bin }),
-            .stage = params.param("Fstage", types.options(Stage), .single, .{ .default = .clusters }),
-        }),
-        .output = params.param("output", types.string, .single, .{ .short = .auto, .default = "img/demo/holes" }),
-        .map = params.param(
-            "map",
-            types.string,
-            .single,
-            .{ .short = .auto, .default = "", .alias = &.{
-                .pair("cat-map", "data/map/comarques-compressed.geojson"),
-                .pair("val-map", "data/map/comarques-cv.geojson"),
-            } },
-        ),
-        .ffmpeg = params.flag("ffmpeg", .{}),
+    var command: Cli = undefined;
+    {
+        var tokenizer: nargs.Tokenizer = try .initFromArgs(gpa, cli);
+        defer tokenizer.deinit();
+        var diag: nargs.Diagnostic = .init(gpa, .{});
+        defer {
+            for (diag.error_list.items) |info| {
+                std.log.err("{s}: {s}", .{ @tagName(info.err), info.message });
+            }
+            diag.deinit();
+        }
 
-        .region = groups.exclusive("REGION", .{
-            .center_scale = groups.incremental("CENTER & SCALE", .{
-                .center = coord("center", .{ .delimiter = ',' }),
-                .scale = params.param("scale", types.Floating(Float).init, .array(2), .{ .delimiter = ',', .default = .{ 512, 512 } }),
-            }),
-            .end_points = groups.incremental("END POINTS", .{
-                .from = coord("from", .{ .delimiter = ',' }),
-                .to = coord("to", .{ .delimiter = ',' }),
-            }),
-            .preset = params.param("region", types.options(enum { catalunya, valencia }), .single, .{ .default = .catalunya }),
-        }, .preset),
-        .detail = groups.exclusive("DETAIL", .{
-            .fixed_size = params.param("fixed-size", types.Integer(u16).init, .array(2), .{ .delimiter = ',' }),
-            .resolution = params.param("resolution", types.options(Resolution), .single, .{ .short = .auto, .default = .medium }),
-        }, .resolution),
+        var mem = root.initMemory().*;
+        var help = false;
+        while (tokenizer.peek()) |token| {
+            if (root.parse(&mem, &tokenizer, &diag) == .no_match) {
+                tokenizer.discardAssumeToken();
+                switch (token) {
+                    .short => |short| if (short.name == 'h') {
+                        help = true;
+                        continue;
+                    },
+                    .long => |long| if (std.mem.eql(u8, "help", long.name)) {
+                        help = true;
+                        continue;
+                    },
+                    else => {},
+                }
+                diag.log(.unused_argument, "{f}", .{token});
+            }
+        }
 
-        .half_life = params.param("half-life", types.Floating(Float).init, .single, .{ .short = .auto, .default = 2.5 }),
-        .luminosity = params.param("luminosity", types.Floating(Float).init, .single, .{ .short = .auto, .default = 1.0 }),
-    });
+        if (help) {
+            var help_buf: [128]u8 = undefined;
+            var stdout = std.Io.File.stdout().writer(io, &help_buf);
+            try root.buildHelp(&stdout.interface);
+            try stdout.flush();
+            return error.Help;
+        }
 
-    const ctx = .{ .allocator = gpa };
-    var command = blk: {
-        var args: nargs.Args = .init(gpa);
-        defer args.deinit();
-        try args.appendArguments(cli);
-        break :blk try args.parseAndCreate(io, ctx, root);
-    };
-    defer root.destroy(ctx, &command);
+        try root.init(&mem, &diag, gpa, &command);
+    }
+    defer root.deinit(gpa, &command);
 
     const input = try gpa.dupe(u8, command.input);
     errdefer gpa.free(input);
@@ -196,12 +260,12 @@ pub fn parseNargs(gpa: Allocator, io: std.Io, cli: std.process.Args) !Args {
 
         .region = switch (command.region) {
             .center_scale => |center_scale| .{ .center_size = .{
-                .center = math.vector.vec2(center_scale.center.latitude, center_scale.center.longitude),
+                .center = math.vector.vec2(center_scale.center[0], center_scale.center[1]),
                 .size = math.vector.vec2(1_000 * center_scale.scale[0], 1_000 * center_scale.scale[1]),
             } },
             .end_points => |end_points| .{ .end_points = .{
-                .origin = math.vector.vec2(end_points.from.latitude, end_points.from.longitude),
-                .end = math.vector.vec2(end_points.to.latitude, end_points.to.longitude),
+                .origin = math.vector.vec2(end_points.from[0], end_points.from[1]),
+                .end = math.vector.vec2(end_points.to[0], end_points.to[1]),
             } },
             .preset => |location| switch (location) {
                 .catalunya => .{ .center_size = .{ .center = math.vector.vec2(41.70, 1.75), .size = math.vector.vec2(300_000, 300_000) } },

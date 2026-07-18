@@ -6,25 +6,21 @@ const signals = @import("signals.zig");
 const points = @import("points.zig");
 const clusters = @import("clusters.zig");
 
-pub const root: nargs.Node = .wrap(nargs.groups.Any(.{ .name = "PARSER" }, &.{
-    .set("path", .wrap(nargs.args.param.Single(.string, .{ .name = "input", .description = "Input file to transform.", .short = .auto }))),
-    .set("command", .wrap(nargs.groups.SubCommand(.{ .name = "STAGE", .greedy = false }, &.{
-        .set("signals", signals.root),
-        .set("points", points.root),
-        .set("clusters", clusters.root),
-    }))),
+const Cli = struct { path: []const u8, command: union(enum) { signals: signals.Cli, points: points.Cli, clusters: clusters.Cli } };
+const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "parser" }, .{
+    .path = .build(nargs.Params, .single(.string, .{ .name = "input", .description = "Input file to transform.", .short = .auto })),
+    .command = .build(nargs.Groups, .subcommand(.{ .name = "STAGE", .greedy = false }, .{
+        .signals = signals.root,
+        .points = points.root,
+        .clusters = clusters.root,
+    })),
 }));
 
 pub fn main(init: std.process.Init) !void {
-    const ctx = .{ .allocator = init.gpa };
-    const Options = root.Parsed(null);
-    var options: Options = undefined;
+    var options: Cli = undefined;
     {
-        var arena: std.heap.ArenaAllocator = .init(init.gpa);
-        defer arena.deinit();
-        const args = try init.minimal.args.toSlice(arena.allocator());
-
-        var tokenizer: nargs.Tokenizer = .initFromStatic(args[1..]);
+        var tokenizer: nargs.Tokenizer = try .initFromArgs(init.gpa, init.minimal.args);
+        defer tokenizer.deinit();
         var diag: nargs.Diagnostic = .init(init.gpa, .{});
         defer {
             for (diag.error_list.items) |info| {
@@ -36,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
         var mem = root.initMemory().*;
         var help = false;
         while (tokenizer.peek()) |token| {
-            if (root.parse(&tokenizer, &mem, &diag) == .no_match) {
+            if (root.parse(&mem, &tokenizer, &diag) == .no_match) {
                 tokenizer.discardAssumeToken();
                 switch (token) {
                     .short => |short| if (short.name == 'h') {
@@ -56,14 +52,14 @@ pub fn main(init: std.process.Init) !void {
         if (help) {
             var help_buf: [128]u8 = undefined;
             var stdout = std.Io.File.stdout().writer(init.io, &help_buf);
-            try stdout.interface.print("{f}\n", .{std.fmt.Alt([]const nargs.Node.Help, nargs.Node.Help.format){ .data = root.help_info }});
+            try root.buildHelp(&stdout.interface);
             try stdout.flush();
             return;
         }
 
-        try root.init(Options, &mem, &diag, ctx, &options);
+        try root.init(&mem, &diag, init.gpa, &options);
     }
-    defer root.deinit(Options, ctx, &options);
+    defer root.deinit(init.gpa, &options);
 
     switch (options.command) {
         .signals => |specific| try signals.parse(init.io, init.gpa, options.path, specific),

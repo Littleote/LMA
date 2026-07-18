@@ -10,68 +10,71 @@ const files = @import("files.zig");
 const runner = @import("runner.zig");
 const parse_time = @import("parse_time.zig");
 
-const root: nargs.Node = .wrap(nargs.groups.Any(.{ .name = "match", .show = .compact }, &.{
-    .set("threads", .wrap(nargs.args.param.Single(.integer(usize, .{ .min = 1, .max_str = "unlimited" }), .{
+const CliTime = struct { date: parse_time.Date.Type, time: parse_time.Time.Type, seconds: parse_time.Seconds.Type };
+const CliFiles = struct { stations: []const []const u8, inputs: []nargs.types.io.Glob.Pattern, excluded: []const []const u8, outputs: []const []const u8, out_dir: ?[]const u8, probe: ?[]const u8 };
+const Cli = struct { threads: usize, time: CliTime, files: CliFiles, config: runner.Config };
+const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "match" }, .{
+    .threads = .build(nargs.Params, .single(.integer(.{ .min = 1, .max_str = "unlimited" }), .{
         .name = "threads",
         .description = "Number of threads to use for execution.",
         .display = "COUNT",
-        .default = .{ .inner = .{ .values = @intFromEnum(std.Io.Limit.unlimited) }, .description = "auto" },
+        .default = .init(@intFromEnum(std.Io.Limit.unlimited), "auto"),
         .short = .auto,
-    }))),
-    .set("time", .wrap(nargs.groups.Any(.{ .name = "DATE" }, &.{
-        .set("date", .wrap(nargs.args.param.Single(.wrap(parse_time.Date), .{
+    })),
+    .time = .build(nargs.Groups, .any(.{ .name = "DATE" }, .{
+        .date = .build(nargs.Params, .single(.wrap(parse_time.Date), .{
             .name = "date",
             .description = "Date specified as either YYYYMMDD or YYMMDD. Accepts '/' as date separators.",
             .display = "DATE",
             .short = .auto,
-        }))),
-        .set("time", .wrap(nargs.args.param.Single(.wrap(parse_time.Time), .{
+        })),
+        .time = .build(nargs.Params, .single(.wrap(parse_time.Time), .{
             .name = "time",
             .description = "Time specified as HHMMSS. Accepts ':' as time separators.",
             .display = "TIME",
             .short = .set('h'),
-        }))),
-        .set("seconds", .wrap(nargs.args.param.Single(.wrap(parse_time.Seconds), .{
+        })),
+        .seconds = .build(nargs.Params, .single(.wrap(parse_time.Seconds), .{
             .name = "analyse",
             .description = "Total time to analyse as either SECONDS or HH:MM:SS.",
             .display = "SECONDS",
-        }))),
-    }))),
-    .set("files", .wrap(nargs.groups.Any(.{ .name = "FILES", .show = .compact }, &.{
-        .set("stations", .wrap(nargs.args.param.Variable(.string, .{ .min = 1 }, .{
+        })),
+    })),
+    .files = .build(nargs.Groups, .any(.{ .name = "FILES", .show = .compact }, .{
+        .stations = .build(nargs.Params, .variable(.string, .{ .min = 1 }, .{
             .name = "stations",
             .description = "File with station data. Accepts \".csv\", \".gps\" and \".loc\".",
             .display = "FILE",
             .short = .auto,
-        }))),
-        .set("inputs", .wrap(nargs.args.param.Variable(.wrap(nargs.types.io.Glob), .{ .min = 1 }, .{
+        })),
+        .inputs = .build(nargs.Params, .variable(.wrap(nargs.types.io.Glob), .{ .min = 1 }, .{
             .name = "input",
             .description = "Glob pattern for all signal input files. Accepts \".csv\", \".dat\" and \".bin\" (with or without \".gz\").",
             .display = "GLOB",
             .short = .auto,
-        }))),
-        .set("excluded", .wrap(nargs.args.param.Variable(.string, .{}, .{
+        })),
+        .excluded = .build(nargs.Params, .variable(.string, .{}, .{
             .name = "exclude",
             .description = "Input signal files to exclude by name. Exclusion has higher precedence than inclusion. Only the file name is necessary (with its extension).",
             .display = "FILE",
-            .default = .fromStrings(&.{}, "none"),
-        }))),
-        .set("outputs", .wrap(nargs.args.param.Variable(.string, .{ .max = 5 }, .{
+            .default = .init(&.{}, "none"),
+        })),
+        .outputs = .build(nargs.Params, .variable(.string, .{ .max = 5 }, .{
             .name = "output",
             .description = "Destination file to store the results. Defaults to \"CUSTOM_{YYMMDD}_{HHMMSS}_{SECONDS}.dat.gz\". Accepts \".csv\", \".dat\" and \".bin\" (with or without \".gz\").",
             .display = "FILE",
             .short = .auto,
-            .default = .fromStrings(&.{}, "CUSTOM_{YYMMDD}_{HHMMSS}_{SSSS}.dat.gz"),
-        }))),
-        .set("out_dir", .wrap(nargs.args.param.Single(.optional(.string), .{
+            .default = .init(&.{}, "CUSTOM_{YYMMDD}_{HHMMSS}_{SSSS}.dat.gz"),
+        })),
+        .out_dir = .build(nargs.Params, .single(.optional(.string), .{
             .name = "output-path",
             .description = "Destination path were to create the generated files.",
             .display = "PATH",
-            .default = .{ .inner = .{ .values = null }, .description = "current working directory" },
-        }))),
-        .set("probe", .wrap(nargs.args.param.Single(.optional(.string), .{ .name = "probe", .description = "Points to probe the method. Accepts \".dat\".", .display = "FILE" }))),
-    }))),
-    .set("config", runner.config_parser),
+            .default = .init(null, "current working directory"),
+        })),
+        .probe = .build(nargs.Params, .single(.optional(.string), .{ .name = "probe", .description = "Points to probe the method. Accepts \".dat\".", .display = "FILE" })),
+    })),
+    .config = runner.config_parser,
 }));
 
 pub const Float = match.Float;
@@ -99,15 +102,11 @@ pub fn main(init: std.process.Init.Minimal) void {
     var threaded: std.Io.Threaded = .init(gpa, .{ .async_limit = .nothing, .concurrent_limit = .nothing, .environ = init.environ });
     const io = threaded.io();
 
-    const ctx = .{ .allocator = gpa, .io = io };
-    const Options = root.Parsed(null);
-    var options: Options = undefined;
+    var options: Cli = undefined;
     {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
-        const args = init.args.toSlice(arena.allocator()) catch @panic("OOM while parsing CLI args.");
-
-        var tokenizer: nargs.Tokenizer = .initFromStatic(args[1..]);
+        var tokenizer: nargs.Tokenizer = .initFromStatic((init.args.toSlice(arena.allocator()) catch @panic("OOM"))[1..]);
         var diag: nargs.Diagnostic = .init(gpa, .{});
         defer {
             for (diag.error_list.items) |info| {
@@ -119,7 +118,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         var mem = root.initMemory().*;
         var help = false;
         while (tokenizer.peek()) |token| {
-            if (root.parse(&tokenizer, &mem, &diag) == .no_match) {
+            if (root.parse(&mem, &tokenizer, &diag) == .no_match) {
                 tokenizer.discardAssumeToken();
                 switch (token) {
                     .short => |short| if (short.name == 'h') {
@@ -139,14 +138,14 @@ pub fn main(init: std.process.Init.Minimal) void {
         if (help) {
             var help_buf: [128]u8 = undefined;
             var stdout = std.Io.File.stdout().writer(io, &help_buf);
-            stdout.interface.print("{f}\n", .{std.fmt.Alt([]const nargs.Node.Help, nargs.Node.Help.format){ .data = root.help_info }}) catch {};
+            root.buildHelp(&stdout.interface) catch {};
             stdout.flush() catch {};
             return;
         }
 
-        root.init(Options, &mem, &diag, ctx, &options) catch return;
+        root.init(&mem, &diag, gpa, &options) catch return;
     }
-    defer root.deinit(Options, ctx, &options);
+    defer root.deinit(gpa, &options);
 
     const config: runner.Config = .{
         .beam_width = options.config.beam_width,
@@ -213,12 +212,18 @@ pub fn main(init: std.process.Init.Minimal) void {
     const full_signals: []lma.data.Signal = full_signal_buffer[0..count];
     defer for (full_signals) |*signal| signal.deinit();
 
-    for (options.files.inputs) |*const_glob| {
-        const glob: *nargs.types.io.GlobWalker = @constCast(const_glob);
+    for (options.files.inputs) |*pattern| {
+        var glob: nargs.types.io.Glob.Iterator = pattern.iterator(io, null) catch |err| switch (err) {
+            error.Canceled => unreachable,
+            else => |new_err| {
+                std.log.err("Unable to load all files with error {}", .{new_err});
+                continue;
+            },
+        };
         while (glob.next() catch |err| switch (err) {
             error.Canceled => unreachable,
             else => |new_err| blk: {
-                std.log.err("TODO {}", .{new_err});
+                std.log.err("Unable to load all files with error {}", .{new_err});
                 break :blk null;
             },
         }) |entry| {

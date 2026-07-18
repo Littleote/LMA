@@ -53,7 +53,8 @@ inline fn space_time(space: Vec, time: Float) Vec {
 }
 
 const c = lma.constants.c / lma.constants.refractive_index.airRange(1_000, 8_000);
-const max_chi_sq = 5;
+const rms = 0.000_000_070;
+const max_chi_sq = 1.5;
 
 pub fn solve(self: *ToaSolver, reference: match.Candidate, candidates: []const match.Candidate, masking: []match.Candidate.Mask, options: *const match.Matching.Correlation) ?lma.data.types.Point {
     self.masking = masking;
@@ -330,7 +331,7 @@ pub const Source = struct {
     }
 
     pub fn chiSquared(self: *const Source, buffer: *const Buffer) Float {
-        const xyz_rms = (0.000_000_040 * c);
+        const xyz_rms = (rms * c);
         const xyz_rms_squared = xyz_rms * xyz_rms;
         return toa.squareError(buffer.data[0..buffer.len], self.toVec()) / xyz_rms_squared / lma.cast.to(Float, buffer.len - 4);
     }

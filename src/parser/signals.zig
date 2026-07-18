@@ -6,9 +6,10 @@ const nargs = @import("nargs");
 
 const utils = @import("utils.zig");
 
-pub const root: nargs.Node = .wrap(nargs.groups.Any(.{ .name = "signals" }, &.{}));
+pub const Cli = struct {};
+pub const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "signals" }, .{}));
 
-pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: root.Parsed(null)) !void {
+pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !void {
     _ = args;
 
     // Input directory

@@ -12,54 +12,47 @@ const math = lma.math(ToaSolver.Float);
 const network = lma.constants.network;
 const Float = match.Float;
 
-const default_config: Config = .{ .chunk = 60 };
 pub const Config = struct {
     weights: lma.pipeline.match.Weights = .@"const+decibels",
     beam_width: u16 = 0,
-    dfs_attempts: u16 = 3,
+    dfs_attempts: u16 = 4,
     memory: u32 = 5,
-    probability: f32 = 0.95,
-    chunk: u32,
+    probability: f32 = 0.90,
+    chunk: u32 = if (@import("builtin").single_threaded) 24 * 60 * 60 else 60,
     verbose: bool = false,
 };
 
-pub const config_parser: nargs.Node = .wrap(nargs.groups.Any(.{ .name = "CONFIG", .show = .{ .description = "LMA solver configuration" }, .Type = Config }, &.{
-    .set("memory", .wrap(nargs.args.param.Single(.integer(u32, .{ .max = 20 }), .{
+pub const config_parser: nargs.Node(Config) = .build(nargs.Groups, .any(.{ .name = "CONFIG", .show = .{ .description = "LMA solver configuration" } }, .{
+    .memory = .build(nargs.Params, .single(.integer(.{ .max = 20 }), .{
         .name = "memory",
         .description = "Number of solutions saved to check for new nearby solutions.",
-        .default = .fromValues(default_config.memory, null),
-    }))),
-    .set("beam_width", .wrap(nargs.args.param.Single(.integer(u16, .{ .max = 50 }), .{
+    })),
+    .beam_width = .build(nargs.Params, .single(.integer(.{ .max = 50 }), .{
         .name = "beam-width",
         .description = "Beam search width: Maximum number of solutions tested with this method.",
-        .default = .fromValues(default_config.beam_width, null),
-    }))),
-    .set("dfs_attempts", .wrap(nargs.args.param.Single(.integer(u16, .{ .max = 50 }), .{
+    })),
+    .dfs_attempts = .build(nargs.Params, .single(.integer(.{ .max = 50 }), .{
         .name = "depth-tries",
         .description = "Depth first search attempts: Number of tries to find promising combinations at each depth.",
-        .default = .fromValues(default_config.dfs_attempts, null),
-    }))),
-    .set("probability", .wrap(nargs.args.param.Single(.floating(f32, .{ .min = .open(0), .max = .closed(1) }), .{
+    })),
+    .probability = .build(nargs.Params, .single(.floating(.{ .min = .open(0), .max = .closed(1) }), .{
         .name = "threshold",
         .description = "Average probability of the station combination.",
-        .default = .fromValues(default_config.probability, null),
-    }))),
-    .set("weights", .wrap(nargs.args.param.Single(.options(lma.pipeline.match.Weights), .{
+    })),
+    .weights = .build(nargs.Params, .single(.options, .{
         .name = "corr-weight",
         .description = "Value to use to compute the correlation input weights",
         .display = "WEIGHT",
-        .default = .fromValues(default_config.weights, null),
-    }))),
-    .set("verbose", .wrap(nargs.args.flag.Flag(.{
+    })),
+    .verbose = nargs.flags.Flag(.{
         .name = "verbose",
         .description = "Show run statistics",
-    }))),
-    .set("chunk", .wrap(nargs.args.param.Single(.wrap(parse_time.Seconds), .{
+    }),
+    .chunk = .build(nargs.Params, .single(.wrap(parse_time.Seconds), .{
         .name = "divide",
         .description = "Total time to analyse per thread as either SECONDS or HH:MM:SS.",
         .display = "SECONDS",
-        .default = .fromStrings("01:00", null),
-    }))),
+    })),
 }));
 
 pub fn run(
@@ -74,7 +67,9 @@ pub fn run(
     const resource_start: std.Io.Timestamp = .now(io, .cpu_process);
     const minutes = @divExact(span.size, config.chunk);
     const futures = try gpa.alloc(std.Io.Future(RunError!RunReturn), minutes);
+    defer gpa.free(futures);
     const outputs = try gpa.alloc(lma.data.Points, minutes);
+    defer gpa.free(outputs);
     var statistics: ToaSolver.Statistics = .{};
     for (0..minutes) |idx| {
         futures[idx] = io.async(runChunk, .{ io, gpa, stations, signals, config, .init(@intCast(span.start + lma.cast.as(u32, idx) * config.chunk), config.chunk) });

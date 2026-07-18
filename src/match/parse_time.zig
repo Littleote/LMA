@@ -1,10 +1,14 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const nargs = @import("nargs");
+const Error = nargs.components.ValueError;
+const Value = nargs.Value;
 
 pub const Date = struct {
     const sep: u8 = '/';
+    const mixin = Value(Type).mixin;
 
-    pub fn init(_: anytype, buf: []const u8, diag: *nargs.Diagnostic) nargs.Value.Error!Type {
+    pub fn parse(_: Allocator, buf: []const u8, diag: *nargs.Diagnostic) Error!Type {
         return initInner(buf) catch |err| switch (err) {
             error.InvalidFormat => {
                 diag.startLogWithMessage(.invalid_value,
@@ -48,7 +52,9 @@ pub const Date = struct {
         return .init(string);
     }
 
-    pub fn deinit(_: anytype, _: *Type) void {}
+    pub const dupe = mixin.copyOnDupe;
+    pub const deinit = mixin.noDeinit;
+
     pub fn format(date: Type, w: *std.Io.Writer) std.Io.Writer.Error!void {
         try w.print("{d}/{d}/{d}", .{ date.year, date.month, date.day });
     }
@@ -75,8 +81,9 @@ pub const Date = struct {
 
 pub const Time = struct {
     const sep: u8 = ':';
+    const mixin = Value(Type).mixin;
 
-    pub fn init(_: anytype, buf: []const u8, diag: *nargs.Diagnostic) nargs.Value.Error!Type {
+    pub fn parse(_: Allocator, buf: []const u8, diag: *nargs.Diagnostic) Error!Type {
         return initInner(buf) catch |err| switch (err) {
             error.InvalidFormat => {
                 diag.startLogWithMessage(.invalid_value,
@@ -108,9 +115,11 @@ pub const Time = struct {
         return .init(string);
     }
 
-    pub fn deinit(_: anytype, _: *Type) void {}
+    pub const dupe = mixin.copyOnDupe;
+    pub const deinit = mixin.noDeinit;
+
     pub fn format(date: Type, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        try w.print("{d:0>2}:{d:0>2}:{d:0>2}", .{ date.year, date.month, date.day });
+        try w.print("{d:0>2}:{d:0>2}:{d:0>2}", .{ date.hour, date.minute, date.second });
     }
 
     pub const Type = struct {
@@ -138,8 +147,9 @@ pub const Time = struct {
 };
 pub const Seconds = struct {
     const sep: u8 = ':';
+    const mixin = Value(Type).mixin;
 
-    pub fn init(_: anytype, buf: []const u8, diag: *nargs.Diagnostic) nargs.Value.Error!Type {
+    pub fn parse(_: Allocator, buf: []const u8, diag: *nargs.Diagnostic) Error!Type {
         return initInner(buf) catch |err| switch (err) {
             error.InvalidTime => {
                 diag.startLogWithMessage(.invalid_value,
@@ -166,9 +176,11 @@ pub const Seconds = struct {
         return error.InvalidTime;
     }
 
-    pub fn deinit(_: anytype, _: *Type) void {}
-    pub fn format(date: Type, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        try w.print("{d}/{d}/{d}", .{ date.year, date.month, date.day });
+    pub const dupe = mixin.copyOnDupe;
+    pub const deinit = mixin.noDeinit;
+
+    pub fn format(seconds: Type, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        try w.print("{d:0>2}:{d:0>2}:{d:0>2}", .{ seconds / 3600, (seconds / 60) % 60, seconds % 60 });
     }
 
     pub const Type = u32;

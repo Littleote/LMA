@@ -76,7 +76,9 @@ pub const Date = struct {
     };
     pub const side_effects: nargs.Value.SideEffects = .none;
     pub const display: []const u8 = "DATE";
-    pub const help: ?[]const u8 = null;
+    pub const help: []const u8 =
+        \\Date specified as one of YYYYMMDD, YYMMDD or (YY)YY/(M)M/(D)D
+    ;
 };
 
 pub const Time = struct {
@@ -143,7 +145,9 @@ pub const Time = struct {
     };
     pub const side_effects: nargs.Value.SideEffects = .none;
     pub const display: []const u8 = "TIME";
-    pub const help: ?[]const u8 = null;
+    pub const help: []const u8 =
+        \\Time specified as either HHMMSS or HH:MM:SS
+    ;
 };
 pub const Seconds = struct {
     const sep: u8 = ':';
@@ -185,6 +189,8 @@ pub const Seconds = struct {
 
     pub const Type = u32;
     pub const side_effects: nargs.Value.SideEffects = .none;
-    pub const display: []const u8 = "DATE";
-    pub const help: ?[]const u8 = null;
+    pub const display: []const u8 = "SECONDS";
+    pub const help: ?[]const u8 =
+        \\Seconds specified as either SECONDS or (HH:)MM:SS
+    ;
 };

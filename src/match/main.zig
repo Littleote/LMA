@@ -24,13 +24,13 @@ const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "match" }, .{
     .time = .build(nargs.Groups, .any(.{ .name = "DATE" }, .{
         .date = .build(nargs.Params, .single(.wrap(parse_time.Date), .{
             .name = "date",
-            .description = "Date specified as either YYYYMMDD or YYMMDD. Accepts '/' as date separators.",
+            .description = "Date from input files",
             .display = "DATE",
             .short = .auto,
         })),
         .time = .build(nargs.Params, .single(.wrap(parse_time.Time), .{
             .name = "time",
-            .description = "Time specified as HHMMSS. Accepts ':' as time separators.",
+            .description = "Time from input files.",
             .display = "TIME",
             .short = .set('h'),
         })),
@@ -38,6 +38,7 @@ const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "match" }, .{
             .name = "analyse",
             .description = "Total time to analyse as either SECONDS or HH:MM:SS.",
             .display = "SECONDS",
+            .presets = &.{.alias("analyze")},
         })),
     })),
     .files = .build(nargs.Groups, .any(.{ .name = "FILES", .show = .compact }, .{
@@ -55,13 +56,13 @@ const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "match" }, .{
         })),
         .excluded = .build(nargs.Params, .variable(.string, .{}, .{
             .name = "exclude",
-            .description = "Input signal files to exclude by name. Exclusion has higher precedence than inclusion. Only the file name is necessary (with its extension).",
+            .description = "Input signal files to exclude by name. Only the file name is necessary (with its extension).",
             .display = "FILE",
             .default = .init(&.{}, "none"),
         })),
         .outputs = .build(nargs.Params, .variable(.string, .{ .max = 5 }, .{
             .name = "output",
-            .description = "Destination file to store the results. Defaults to \"CUSTOM_{YYMMDD}_{HHMMSS}_{SECONDS}.dat.gz\". Accepts \".csv\", \".dat\" and \".bin\" (with or without \".gz\").",
+            .description = "Destination file to store the results. Accepts \".csv\", \".dat\" and \".bin\" (with or without \".gz\").",
             .display = "FILE",
             .short = .auto,
             .default = .init(&.{}, "CUSTOM_{YYMMDD}_{HHMMSS}_{SSSS}.dat.gz"),
@@ -72,7 +73,12 @@ const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "match" }, .{
             .display = "PATH",
             .default = .init(null, "current working directory"),
         })),
-        .probe = .build(nargs.Params, .single(.optional(.string), .{ .name = "probe", .description = "Points to probe the method. Accepts \".dat\".", .display = "FILE" })),
+        .probe = .build(nargs.Params, .single(.optional(.string), .{
+            .name = "probe",
+            .description = "Points to probe the method. Accepts \".dat\".",
+            .display = "FILE",
+            .default = .init(null, "No probe"),
+        })),
     })),
     .config = runner.config_parser,
 }));
@@ -232,7 +238,7 @@ pub fn main(init: std.process.Init.Minimal) void {
                 if (std.mem.eql(u8, entry.basename, name)) continue;
             }
 
-            loadStation(io, entry.dir, entry.path, options.time.date.string[2..8].*, options.time.time.string, stations, full_signals) catch |err| {
+            loadStation(io, entry.dir, entry.basename, options.time.date.string[2..8].*, options.time.time.string, stations, full_signals) catch |err| {
                 switch (err) {
                     error.BadName => std.log.err(
                         \\File "{s}" doesn't conform to naming convention "{{CODE}}_{{NETWORK}}_{{STATION_NAME}}_{{YYMMDD}}_{{HHMMSS}}". (With YYMMDD = {s} and HHMMSS = {s})

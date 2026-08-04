@@ -306,7 +306,15 @@ pub fn main(init: std.process.Init.Minimal) void {
 }
 
 // TODO
-pub fn loadStation(io: std.Io, dir: std.Io.Dir, file: []const u8, date: [6]u8, time: [6]u8, stations: lma.data.Stations, signals: []lma.data.Signal) error{ Reported, BadName, UnknownStation }!void {
+pub fn loadStation(
+    io: std.Io,
+    dir: std.Io.Dir,
+    file: []const u8,
+    date: [6]u8,
+    time: [6]u8,
+    stations: lma.data.Stations,
+    signals: []lma.data.Signal,
+) error{ Reported, BadName, UnknownStation }!void {
     const basename = std.fs.path.basename(file);
     var buffer: [1024]u8 = undefined;
 

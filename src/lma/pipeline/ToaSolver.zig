@@ -17,12 +17,13 @@ const splat = math.vector.splat;
 
 const max_network = lma.constants.network.max_network;
 const early_exit = false;
+const preference: enum { max_stations, min_chi_sq } = .min_chi_sq;
 
 pub const Config = struct {
-    beam_search: ?match.BeamSearch.Options = null,
-    depth_first_search: ?match.DepthFirstSearch.Options = null,
+    beam_search: ?match.search.BeamSearch.Options = null,
+    depth_first_search: ?match.search.DepthFirstSearch.Options = null,
     probe: ?*match.probing.Probe = null,
-    max_distance: Float = 200_000,
+    max_distance: Float = 250_000,
 };
 
 pub fn init(stations: []const Vec, memory_buffer: []Source, search_buffer: []MatchFloat, config: Config) ToaSolver {
@@ -71,7 +72,7 @@ pub fn solve(self: *ToaSolver, reference: match.Candidate, candidates: []const m
     }
 
     if (self.config.beam_search) |*config| {
-        var iter: match.BeamSearch = .init(reference, candidates, self.search_buffer, options, config);
+        var iter: match.search.BeamSearch = .init(reference, candidates, self.search_buffer, options, config);
 
         while (iter.next()) |set| {
             if (self.solveSet(set, candidates)) |source|
@@ -85,7 +86,7 @@ pub fn solve(self: *ToaSolver, reference: match.Candidate, candidates: []const m
     }
 
     if (self.config.depth_first_search) |*config| {
-        var iter: match.DepthFirstSearch = .init(reference, candidates, self.search_buffer, options, config);
+        var iter: match.search.DepthFirstSearch = .init(reference, candidates, self.search_buffer, options, config);
 
         while (iter.next()) |set| {
             if (self.solveSet(set, candidates)) |source|
@@ -101,7 +102,8 @@ pub fn solveFromPoint(self: *ToaSolver, reference: match.Candidate, base_source:
     _ = self.buffer.append(&.{
         .point = math.vector.zero,
         .time = 0,
-        .index = reference.index,
+        // .index = reference.index,
+        .dBm = reference.dBm,
         .station = reference.station,
         .mask = reference.mask,
     });
@@ -169,28 +171,61 @@ fn initialSolution(self: *ToaSolver) ?Source {
 }
 
 fn refinedSolution(self: *ToaSolver, input: *const Source) ?Source {
+    var source: Source = undefined;
+    var chi_sq: Float = undefined;
+    var worst_station: u8 = undefined;
     while (self.buffer.len >= 5) {
 
         // Solve quadratic optimization with L-M
         self.statistics.counts.solve_quadratic += 1;
-        const source = solveLeastSquares(&self.buffer, input, .{ .termination = .{ .max_iterations = 100 } });
+        source = solveLeastSquares(&self.buffer, input, .{ .termination = .{ .max_iterations = 100 } });
 
         // Assert the solution is reasonable
         {
             if (length(source.point) > self.config.max_distance) return null;
             if (source.time > 0) return null;
-            const key_max = bufferError(&self.buffer, &source);
-            const chi_sq = source.chiSquared(&self.buffer);
+            worst_station = self.buffer.entries[bufferError(&self.buffer, &source)].station;
+            chi_sq = source.chiSquared(&self.buffer);
             if (chi_sq > max_chi_sq) {
-                self.buffer.remove(self.buffer.entries[key_max].station);
+                self.buffer.remove(worst_station);
                 continue;
-            }
+            } else break;
         }
+    } else return null;
 
-        self.statistics.counts.out_refined += 1;
-        return source;
+    switch (preference) {
+        .max_stations => {},
+        .min_chi_sq => {
+            while (self.buffer.len > 5) {
+
+                // Solve quadratic optimization with L-M
+                const new_source = blk: {
+                    self.buffer.swapLast(worst_station);
+                    self.buffer.len -= 1;
+                    defer self.buffer.len += 1;
+
+                    self.statistics.counts.solve_quadratic += 1;
+                    break :blk solveLeastSquares(&self.buffer, input, .{ .termination = .{ .max_iterations = 100 } });
+                };
+
+                // Assert the solution is reasonable
+                {
+                    if (length(new_source.point) > self.config.max_distance) break;
+                    if (new_source.time > 0) break;
+                    const new_worst_station = self.buffer.entries[bufferError(&self.buffer, &new_source)].station;
+                    const new_chi_sq = new_source.chiSquared(&self.buffer);
+                    if (chi_sq > new_chi_sq) {
+                        self.buffer.remove(worst_station);
+                        chi_sq = new_chi_sq;
+                        worst_station = new_worst_station;
+                        continue;
+                    } else break;
+                }
+            }
+        },
     }
-    return null;
+    self.statistics.counts.out_refined += 1;
+    return source;
 }
 
 /// Solve the TOA problem using a linear approximation and refines the solution with a quadratic optimization method
@@ -258,7 +293,7 @@ pub fn sourceToPoint(self: *ToaSolver, source: *const Source) ?lma.data.types.Po
         .altitude = gps.z(),
         .station_mask = mask,
         .measure_error = @floatCast(chi_squared),
-        .dBW = @floatCast(source.dBW(self.signals, &self.buffer)),
+        .dBW = @floatCast(source.dBW(&self.buffer)),
     };
 }
 
@@ -307,10 +342,10 @@ pub const Source = struct {
     time: Float,
 
     /// Compute the power as dBW at source from a given buffer.
-    pub fn dBW(self: *const Source, signals: []const []const Signal, buffer: *const Buffer) Float {
+    pub fn dBW(self: *const Source, buffer: *const Buffer) Float {
         var total: f32 = 0;
         for (buffer.entries[0..buffer.len]) |entry| {
-            const dbm: f32 = @floatCast(signals[entry.station][entry.index].dBm);
+            const dbm: f32 = @floatCast(entry.dBm);
             const area = math.vector.norm2Square(entry.point - self.point);
             const log_surface = 10.0 * @log10(4.0 * std.math.pi * area);
             total += dbm + lma.cast.as(f32, log_surface);
@@ -334,35 +369,6 @@ pub const Source = struct {
         const xyz_rms = (rms * c);
         const xyz_rms_squared = xyz_rms * xyz_rms;
         return toa.squareError(buffer.data[0..buffer.len], self.toVec()) / xyz_rms_squared / lma.cast.to(Float, buffer.len - 4);
-    }
-
-    pub fn toPoint(self: *const Source, solver: *const ToaSolver, buffer: *const Buffer) lma.data.types.Point {
-        const chi_squared = self.chiSquared(buffer);
-        const xyz = self.point + buffer.ref_point;
-        const t = (self.time + buffer.ref_time) / c;
-        const gps = lma.pipeline.transform.xyzToGPS(f64, .init(xyz)).cast(f32);
-        const nano = lma.nano.toNano(t);
-        if (nano == std.math.maxInt(u32)) {
-            std.debug.print("{any}\n", .{self});
-            for (buffer.entries[0..buffer.len]) |entry| {
-                std.debug.print("{any}\n", .{entry});
-            }
-            @panic("Bad time");
-        }
-        var mask: u32 = 0;
-        for (buffer.entries[0..buffer.len]) |entry| {
-            mask |= @as(u32, 1) << @intCast(entry.station);
-        }
-
-        return .{
-            .nanosecond = nano,
-            .latitude = gps.x(),
-            .longitude = gps.y(),
-            .altitude = gps.z(),
-            .station_mask = mask,
-            .measure_error = @floatCast(chi_squared),
-            .dBW = @floatCast(self.dBW(solver.signals, buffer)),
-        };
     }
 };
 
@@ -428,7 +434,8 @@ const Buffer = struct {
         point: Vec,
         time: Float,
         err: Float = std.math.inf(Float),
-        index: u16,
+        // index: u16,
+        dBm: f16,
         station: u8,
         mask: match.Candidate.MaskBit,
     };
@@ -472,6 +479,24 @@ const Buffer = struct {
         return key;
     }
 
+    pub fn swapLast(self: *Buffer, station: u8) void {
+        if (self.keys[station]) |key| {
+            const last_key = self.len - 1;
+            if (key == last_key) return;
+
+            const last_entry = self.entries[last_key];
+            self.entries[last_key] = self.entries[key];
+            self.entries[key] = last_entry;
+
+            const last_data = self.data[last_key];
+            self.data[last_key] = self.data[key];
+            self.data[key] = last_data;
+
+            self.keys[station] = last_key;
+            self.keys[last_entry.station] = key;
+        }
+    }
+
     pub fn remove(self: *Buffer, station: u8) void {
         if (self.keys[station]) |new_key| {
             self.keys[station] = null;
@@ -495,7 +520,8 @@ fn bufferFromSet(self: *ToaSolver, signals: []const match.Candidate) void {
         _ = self.buffer.append(&.{
             .point = self.stations[signal.station] - self.buffer.ref_point,
             .time = c * fromNano(signal.nanosecond) - self.buffer.ref_time,
-            .index = signal.index,
+            // .index = signal.index,
+            .dBm = signal.dBm,
             .station = signal.station,
             .mask = signal.mask,
         });
@@ -518,7 +544,8 @@ fn bufferFromSource(self: *ToaSolver, source: *const Source, candidates: []const
             .point = point,
             .time = time,
             .err = err,
-            .index = signal.index,
+            // .index = signal.index,
+            .dBm = signal.dBm,
             .station = signal.station,
             .mask = signal.mask,
         });

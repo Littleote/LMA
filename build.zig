@@ -204,14 +204,35 @@ fn matchExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
     // DEMO
     if (maybe_date_time) |date_time| {
         const probing = b.option(bool, "probe", "Pass a probe file to the matching algorithm.") orelse false;
+        const Values = enum {
+            @"station:csv",
+            @"station:gps",
+            @"input:bin",
+            @"input:dat",
+        };
+        const inputs = b.option([]const Values, "inputs", "Input sources (\"station\" and \"input\") format.") orelse &.{};
+
+        var station_files: enum { csv, gps } = .gps;
+        var input_files: enum { bin, dat } = .dat;
+
+        for (inputs) |input| switch (input) {
+            .@"station:csv" => station_files = .csv,
+            .@"station:gps" => station_files = .gps,
+            .@"input:bin" => input_files = .bin,
+            .@"input:dat" => input_files = .dat,
+        };
 
         const run_match = b.addRunArtifact(exe);
+        switch (station_files) {
+            .csv => run_match.addArgs(&.{"-s=data/stations/stations.csv"}),
+            .gps => run_match.addArgs(&.{ "--stations", "data/stations/upc.gps", "data/stations/mcat.gps" }),
+        }
+        switch (input_files) {
+            .bin => run_match.addArgs(&.{"-i=data/signals/" ++ date_time.date ++ "/bin/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".bin"}),
+            .dat => run_match.addArgs(&.{"-i=data/signals/" ++ date_time.date ++ "/sources/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".dat"}),
+        }
         run_match.addArgs(&.{
-            "-s=data/stations/stations_new.csv",
-            // "--stations",
-            // "data/stations/upc.gps",
-            // "data/stations/mcat.gps",
-            "-i=data/signals/" ++ date_time.date ++ "/bin/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".bin",
+            "-i=data/signals/" ++ date_time.date ++ "/sources/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".dat",
             "-o",
             // "data/points/" ++ date_time.date ++ "/bin/" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.bin",
             "data/points/" ++ date_time.date ++ "/csv/corr-" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.csv",

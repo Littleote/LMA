@@ -1,4 +1,5 @@
 const std = @import("std");
+const lma = @import("lma.zig");
 
 /// Nanoseconds fraction (modulus 1 second) is compressed with fixed point 30.2
 pub const nano = struct {
@@ -74,6 +75,7 @@ pub const index = struct {
         start: u32,
         size: u32,
 
+        /// Get end index
         pub fn end(self: SubSlice) u32 {
             return self.start + self.size;
         }
@@ -84,6 +86,17 @@ pub const index = struct {
 
         pub fn initRange(from: u32, to: u32) SubSlice {
             return .{ .start = from, .size = to - from };
+        }
+
+        /// Set start index keeping end index constant
+        pub fn setStart(self: *SubSlice, new_start: u32) void {
+            self.size = offset(u32, self.size, delta(u32, self.start, new_start));
+            self.start = new_start;
+        }
+
+        /// Set end index keeping start index constant
+        pub fn setEnd(self: *SubSlice, new_end: u32) void {
+            self.size = new_end - self.start;
         }
 
         pub fn get(self: SubSlice, slice: anytype) @TypeOf(slice) {

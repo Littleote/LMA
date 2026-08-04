@@ -1,13 +1,14 @@
 const std = @import("std");
-const lma = @import("../lma.zig");
+const lma = @import("../../lma.zig");
 const Candidate = lma.pipeline.match.Candidate;
+const Signal = lma.data.types.Signal;
 
 const force_probe = false;
 
 pub const Probe = struct {
     data: *ProbeData,
     current_epoch: u64 = 0,
-    signals: []const []const lma.data.types.Signal = &.{},
+    signals: []const []const Signal = &.{},
     out: [lma.constants.network.max_network]Candidate = undefined,
 
     pub fn has(self: *Probe, reference: Candidate) bool {
@@ -125,7 +126,7 @@ pub const ProbeData = struct {
 
 const Key = extern struct {
     epoch: u64,
-    subindex: u16,
+    subindex: u32,
     station: u8,
 };
 

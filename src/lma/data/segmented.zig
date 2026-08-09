@@ -226,24 +226,24 @@ pub fn Segmented(Elem: type) type {
 
             var reader: Reader = .fixed(writer.written());
             const csv_header = try reader.takeDelimiter('\n') orelse {
-                std.log.err("Missing CSV header in buffer\n{s}\n", .{writer.written()});
+                std.log.err("Missing CSV header in buffer\n{s}", .{writer.written()});
                 return error.InvalidHeader;
             };
             const columns_delimiters = Elem.csv.columns.len - 1;
             if (std.mem.countScalar(u8, csv_header, del) != columns_delimiters) {
-                std.log.err("Delimiter used in header\n{s}\n", .{csv_header});
+                std.log.err("Delimiter used in header\n{s}", .{csv_header});
                 return error.InvalidHeader;
             }
             var rows: usize = 0;
             while (try reader.takeDelimiter('\n')) |line| {
                 if (std.mem.countScalar(u8, line, del) != columns_delimiters) {
-                    std.log.err("Column number mismatch between header\n{s}\nAnd entry\n{s}\n", .{ csv_header, line });
+                    std.log.err("Column number mismatch between header\n{s}\nAnd entry\n{s}", .{ csv_header, line });
                     return error.InvalidValue;
                 }
                 rows += 1;
             }
             if (rows != 3 * 5) {
-                std.log.err("Row count mismatch\n{s}\n", .{writer.written()});
+                std.log.err("Row count mismatch\n{s}", .{writer.written()});
                 return error.InvalidValue;
             }
         }
@@ -263,14 +263,14 @@ pub fn Segmented(Elem: type) type {
             defer read_data.deinit();
             var reader: Reader = .fixed(writer.written());
             read_data.fromCsv(&reader, null) catch |err| {
-                std.log.err("Failed to parse\n{s}\n", .{writer.written()});
+                std.log.err("Failed to parse\n{s}", .{writer.written()});
                 return err;
             };
 
             try std.testing.expectEqualSlices(Header, data.headers.items, read_data.headers.items);
             for (data.array.items, read_data.array.items) |original, read| {
                 std.testing.expect(Elem.approxEql(original, read)) catch |err| {
-                    std.log.err("Entry\n{any}\nBecame\n{any}.\n", .{ original, read });
+                    std.log.err("Entry\n{any}\nBecame\n{any}.", .{ original, read });
                     return err;
                 };
             }
@@ -854,8 +854,8 @@ test "epochIterator" {
     try std.testing.expect(iter.next() == null);
 
     const test_values = struct {
-        pub const epochs = [_]u64{ 2, 4, 6, 8, 10, 11, 12, 13, 14, 15, 20 };
-        pub fn contains(number: u64) bool {
+        const epochs = [_]u64{ 2, 4, 6, 8, 10, 11, 12, 13, 14, 15, 20 };
+        fn contains(number: u64) bool {
             return std.mem.findScalar(u64, &epochs, number) != null;
         }
     };

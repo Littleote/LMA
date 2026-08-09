@@ -24,7 +24,7 @@ test toNative {
     const values = [_]u16{ 0x0001, 0x0010, 0x0100, 0x1000 };
     for (values, 0..) |value, idx| {
         std.testing.expect(value == toNative(bytes, idx)) catch |err| {
-            std.log.err("Failed to convert at index {d}. Expected {x}, but got {x}.\n", .{ idx, value, toNative(bytes, idx) });
+            std.log.err("Failed to convert at index {d}. Expected {x}, but got {x}.", .{ idx, value, toNative(bytes, idx) });
             return err;
         };
     }
@@ -46,7 +46,7 @@ test peekPreserve {
             return try w.splatByte(0, @intFromEnum(limit));
         }
 
-        pub const vtable: Reader.VTable = .{
+        const vtable: Reader.VTable = .{
             .stream = &@This().stream,
         };
     };
@@ -131,22 +131,22 @@ pub const signals = struct {
         return parser.parse(dat_headers.items, &reader, signal_data);
     }
 
-    pub const Header = struct {
+    const Header = struct {
         start: u32,
         epoch: u32,
         size: u16,
         count_correction: i16 = 0,
     };
 
-    pub const Parser = struct {
-        pub const latest_version = 13;
+    const Parser = struct {
+        const latest_version = 13;
         const supported_versions = [_]u16{12};
 
         version: u16,
         pattern: u16,
 
         /// Initialize the parser constants for the given file
-        pub fn init(r: *Reader) error{ ReadFailed, UnsupportedVersion }!Parser {
+        fn init(r: *Reader) error{ ReadFailed, UnsupportedVersion }!Parser {
             var lookahead: []u8 = undefined;
             const packet_start: u16 = while (true) {
                 lookahead = r.peek(4) catch return error.ReadFailed;
@@ -159,7 +159,7 @@ pub const signals = struct {
             const version: u16 = (packet_start >> 7) & 0x001F;
             const is_supported = std.mem.containsAtLeastScalar2(u16, &supported_versions, version, 1);
             if (!is_supported) {
-                std.log.err("Version {d} is not supported.\n", .{version});
+                std.log.err("Version {d} is not supported.", .{version});
                 return error.UnsupportedVersion;
             }
 
@@ -170,7 +170,7 @@ pub const signals = struct {
         }
 
         /// Advance the reader until the header of the next packet found
-        pub fn nextPacketHeader(self: Parser, r: *Reader, skip: usize) error{ReadFailed}!?usize {
+        fn nextPacketHeader(self: Parser, r: *Reader, skip: usize) error{ReadFailed}!?usize {
             return switch (self.version) {
                 10...13 => blk: {
                     const lookbehind: Offset = comptime .init(9);
@@ -244,7 +244,7 @@ pub const signals = struct {
         }
 
         /// Process an entire file saving the header metadata into an array list
-        pub fn parseAllHeaders(self: Parser, r: *Reader, gpa: Allocator) error{ ReadFailed, OutOfMemory }!std.ArrayList(Header) {
+        fn parseAllHeaders(self: Parser, r: *Reader, gpa: Allocator) error{ ReadFailed, OutOfMemory }!std.ArrayList(Header) {
             var headers: std.ArrayList(Header) = .empty;
             errdefer headers.deinit(gpa);
 
@@ -261,14 +261,13 @@ pub const signals = struct {
 
         /// Process an entire file given the header metadata
         /// saving the packet information into the data struct
-        pub fn parse(self: Parser, headers: []const Header, r: *Reader, signal_data: *data.Signal) error{ ReadFailed, OutOfMemory, BadFile }!void {
+        fn parse(self: Parser, headers: []const Header, r: *Reader, signal_data: *data.Signal) error{ ReadFailed, OutOfMemory, BadFile }!void {
             if (headers.len == 0) return;
             _ = try self.nextPacketHeader(r, 0) orelse unreachable;
 
-            const start = Offset.start(self).bytes;
-            const offset = start + Offset.end(self).bytes;
+            const header_block = Offset.header(self).bytes;
             const body = Offset.body(self).bytes;
-            r.discardAll(start) catch |err| {
+            r.discardAll(header_block) catch |err| {
                 switch (err) {
                     error.ReadFailed => |new_error| return new_error,
                     error.EndOfStream => unreachable,
@@ -284,14 +283,14 @@ pub const signals = struct {
                 if (epoch > header.epoch or header.epoch >= end_epoch) {
                     @branchHint(.cold);
                     if (epoch - 1 == header.epoch) {
-                        std.log.warn("Header {d} followed by header {d}. Truncating to latest appreance of the header.\n", .{ epoch - 1, header.epoch });
+                        std.log.warn("Header {d} followed by header {d}. Truncating to latest appreance of the header.", .{ epoch - 1, header.epoch });
                         signal_data.headers.items.len = header.epoch - signal_data.start_epoch;
                     } else {
                         @branchHint(.cold);
                         if (header.epoch >= end_epoch) {
-                            std.log.err("Header {d} outside expected range {{{d}, ..., {d}}}. Unable to keep parsing.\n", .{ header.epoch, signal_data.start_epoch, end_epoch - 1 });
+                            std.log.err("Header {d} outside expected range {{{d}, ..., {d}}}. Unable to keep parsing.", .{ header.epoch, signal_data.start_epoch, end_epoch - 1 });
                         } else {
-                            std.log.err("Header {d} followed by header {d}. Unable to keep parsing.\n", .{ epoch - 1, header.epoch });
+                            std.log.err("Header {d} followed by header {d}. Unable to keep parsing.", .{ epoch - 1, header.epoch });
                         }
                         return error.BadFile;
                     }
@@ -316,7 +315,7 @@ pub const signals = struct {
                     };
                     elem.* = self.parsePacket(bytes, header);
                 }
-                r.discardAll(offset) catch |err| {
+                r.discardAll(header_block) catch |err| {
                     switch (err) {
                         error.ReadFailed => |new_error| return new_error,
                         error.EndOfStream => unreachable,
@@ -327,12 +326,12 @@ pub const signals = struct {
 
         /// Computes the size of the block and parses the dat file header
         /// Leaves the reader position on the next header
-        pub fn parseHeader(self: Parser, r: *Reader, start: u32) error{ReadFailed}!?Header {
-            const start_offset = Offset.start(self).bytes;
+        fn parseHeader(self: Parser, r: *Reader, start: u32) error{ReadFailed}!?Header {
+            const header_size = Offset.header(self).bytes;
             const preserve_size = Offset.preserve(self).bytes;
 
-            const size = try self.nextPacketHeader(r, start_offset) orelse return null;
-            const header = peekPreserve(r, preserve_size, start_offset, false) catch |err| {
+            const size = try self.nextPacketHeader(r, header_size) orelse return null;
+            const header = peekPreserve(r, preserve_size, header_size, false) catch |err| {
                 switch (err) {
                     error.ReadFailed => |new_error| return new_error,
                     error.EndOfStream => return null,
@@ -342,16 +341,15 @@ pub const signals = struct {
             return parseHeaderInner(self, header, start, size);
         }
 
-        pub fn parseHeaderInner(self: Parser, header: []const u8, start: u32, size: usize) Header {
-            const start_offset = Offset.start(self).bytes;
-            const end_offset = Offset.end(self).bytes;
+        fn parseHeaderInner(self: Parser, header: []const u8, start: u32, size: usize) Header {
+            const header_size = Offset.header(self).bytes;
             const body_size = Offset.body(self).bytes;
 
             var header_reader: Reader = .fixed(header);
-            // xxxxxxxx_xxxxxxxx
-            // xxxxxxxx_xxxxxxxx
-            // ssmmmmmm_xxxxssss
-            // xxxxxxxx_xxhhhhhx
+            // xxxxxxxx_1xxxxxxx
+            // xxxxxxxx_1xxxxxxx
+            // ssmmmmmm_1xxxssss
+            // DDDDMMMM_1xhhhhhD
             var time: [4]u16 = undefined;
             header_reader.readSliceEndian(u16, &time, .little) catch unreachable;
 
@@ -363,7 +361,7 @@ pub const signals = struct {
             // Add hours
             epoch += @as(u32, (time[3] >> 9) & 0x001F) * std.time.s_per_hour;
 
-            const count = @divExact(size - start_offset - end_offset, body_size);
+            const count = @divExact(size - header_size, body_size);
             const correction = switch (self.version) {
                 6...9 => 0,
                 10...13 => blk: {
@@ -382,7 +380,7 @@ pub const signals = struct {
             };
         }
 
-        pub fn parsePacket(self: Parser, bytes: []const u8, header: Header) data.types.Signal {
+        fn parsePacket(self: Parser, bytes: []const u8, header: Header) data.types.Signal {
             return switch (self.version) {
                 10, 12 => blk: {
                     // nnnnnnnn_0aaaannn
@@ -429,8 +427,8 @@ pub const signals = struct {
                         out,
                         parsed,
                     ) catch |err| {
-                        std.log.err("Failed to parse metadata {d} in version {d}.\n", .{ idx, version });
-                        std.log.err("Expected {any} but found {any}.\n", .{ out, parsed });
+                        std.log.err("Failed to parse metadata {d} in version {d}.", .{ idx, version });
+                        std.log.err("Expected {any} but found {any}.", .{ out, parsed });
                         return err;
                     };
                 }
@@ -459,8 +457,8 @@ pub const signals = struct {
                         out,
                         parsed,
                     ) catch |err| {
-                        std.log.err("Failed to parse packet {d} in version {d}.\n", .{ idx, version });
-                        std.log.err("Expected {any} but found {any}.\n", .{ out, parsed });
+                        std.log.err("Failed to parse packet {d} in version {d}.", .{ idx, version });
+                        std.log.err("Expected {any} but found {any}.", .{ out, parsed });
                         return err;
                     };
                 }
@@ -474,26 +472,26 @@ pub const signals = struct {
                     parser.version = version;
                     var r: Reader = .fixed(&.{});
                     _ = parser.nextPacketHeader(&r, 0) catch unreachable;
-                    const header_buffer: [Offset.start(parser).bytes]u8 = @splat(0xAA);
-                    const header = parser.parseHeaderInner(&header_buffer, 0, Offset.end(parser).bytes + Offset.start(parser).bytes);
+                    const header_buffer: [Offset.header(parser).bytes]u8 = @splat(0xAA);
+                    const header = parser.parseHeaderInner(&header_buffer, 0, Offset.header(parser).bytes);
                     const packet_buffer: [Offset.body(parser).bytes]u8 = @splat(0xAA);
                     _ = parser.parsePacket(&packet_buffer, header);
                 }
             }
         }
 
-        pub const Offset = struct {
+        const Offset = struct {
             count: usize,
             bytes: usize,
 
-            pub fn init(count: usize) Offset {
+            fn init(count: usize) Offset {
                 return .{
                     .count = count,
                     .bytes = 2 * count,
                 };
             }
 
-            pub fn start(self: Parser) Offset {
+            fn header(self: Parser) Offset {
                 return .init(switch (self.version) {
                     6...7 => 4,
                     8...9 => 6,
@@ -502,21 +500,14 @@ pub const signals = struct {
                 });
             }
 
-            pub fn end(self: Parser) Offset {
-                return .init(switch (self.version) {
-                    6...13 => 0,
-                    else => unreachable,
-                });
-            }
-
-            pub fn body(self: Parser) Offset {
+            fn body(self: Parser) Offset {
                 return .init(switch (self.version) {
                     6...13 => 3,
                     else => unreachable,
                 });
             }
 
-            pub fn preserve(self: Parser) Offset {
+            fn preserve(self: Parser) Offset {
                 return .init(switch (self.version) {
                     6...13 => 9,
                     else => unreachable,
@@ -528,8 +519,7 @@ pub const signals = struct {
                     var parser: Parser = undefined;
                     for (supported_versions) |version| {
                         parser.version = version;
-                        _ = Offset.start(parser);
-                        _ = Offset.end(parser);
+                        _ = Offset.header(parser);
                         _ = Offset.body(parser);
                         _ = Offset.preserve(parser);
                     }

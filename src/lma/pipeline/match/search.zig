@@ -2,7 +2,7 @@ const std = @import("std");
 const lma = @import("../../lma.zig");
 const match = lma.pipeline.match;
 
-const Correlation = match.Matching.Correlation;
+const Correlation = match.Correlation;
 const Candidate = match.Candidate;
 const Float = match.Float;
 
@@ -12,21 +12,21 @@ pub fn updateLoglikelihood(
     reference: Candidate,
     candidates: []const Candidate,
     loglikelihoods: []Float,
-    options: *const Correlation,
+    correlation: *const Correlation,
 ) void {
     const bad = comptime -std.math.inf(Float);
     for (candidates, loglikelihoods[0..candidates.len]) |candidate, *total| {
         if (!std.math.isFinite(total.*)) continue;
         total.* += blk: {
             if (reference.station == candidate.station) break :blk bad;
-            const idx = options.shape.ravel(reference.station, candidate.station);
-            const max_time = options.time_matrix[idx];
+            const idx = correlation.shape.ravel(reference.station, candidate.station);
+            const max_time = correlation.time_matrix[idx];
 
             const delta: u32 = @max(reference.nanosecond, candidate.nanosecond) - @min(reference.nanosecond, candidate.nanosecond);
             if (delta > max_time) break :blk bad;
-            const sub_slice = options.matrix[idx];
+            const sub_slice = correlation.corr_matrix[idx];
             if (sub_slice.size == 0) break :blk bad;
-            const l = options.step.get(sub_slice.getConst(Float, options.correlation), reference.nanosecond, candidate.nanosecond);
+            const l = correlation.step.get(sub_slice.getConst(Float, correlation.corr_buffer), reference.nanosecond, candidate.nanosecond);
             break :blk l;
         };
     }

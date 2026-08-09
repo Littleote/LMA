@@ -60,7 +60,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !v
         const expected = [_][]const u8{ "tim", "lon", "lat", "alt", "pow", "fnr" };
         const fields = 1 + std.mem.countScalar(u8, header, delimiter);
         if (fields != expected.len) {
-            std.log.err("Expected:\n{1s}{0c}{2s}{0c}{3s}{0c}{4s}{0c}{5s}{0c}{6s}\n", .{
+            std.log.err("Expected:\n{1s}{0c}{2s}{0c}{3s}{0c}{4s}{0c}{5s}{0c}{6s}", .{
                 delimiter,
                 expected[0],
                 expected[1],
@@ -69,14 +69,14 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !v
                 expected[4],
                 expected[5],
             });
-            std.log.err("Found\n{s}\n", .{header});
+            std.log.err("Found\n{s}", .{header});
             return error.HeaderMismatch;
         }
         var tokens = std.mem.tokenizeScalar(u8, header, delimiter);
         for (expected) |name| {
             const token = tokens.next().?;
             if (!std.mem.eql(u8, token, name)) {
-                std.log.err("Expected:\n{1s}{0c}{2s}{0c}{3s}{0c}{4s}{0c}{5s}{0c}{6s}\n", .{
+                std.log.err("Expected:\n{1s}{0c}{2s}{0c}{3s}{0c}{4s}{0c}{5s}{0c}{6s}", .{
                     delimiter,
                     expected[0],
                     expected[1],
@@ -85,7 +85,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !v
                     expected[4],
                     expected[5],
                 });
-                std.log.err("Found\n{s}\n", .{header});
+                std.log.err("Found\n{s}", .{header});
                 return error.HeaderMismatch;
             }
         }
@@ -165,7 +165,7 @@ fn saveCsv(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.I
     const file = dir.createFile(io, name, .{}) catch |err| switch (err) {
         error.Canceled => return error.Canceled,
         else => {
-            std.log.err("Failed to create file {s}\n", .{name});
+            std.log.err("Failed to create file {s}", .{name});
             return;
         },
     };
@@ -173,7 +173,7 @@ fn saveCsv(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.I
     var file_writer = file.writer(io, &buffer);
 
     data.toCsv(&file_writer.interface, null) catch {
-        std.log.err("Failed to write file {s}\n", .{name});
+        std.log.err("Failed to write file {s}", .{name});
         return;
     };
 }
@@ -192,7 +192,7 @@ fn saveBin(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.I
     const file = dir.createFile(io, name, .{}) catch |err| switch (err) {
         error.Canceled => return error.Canceled,
         else => {
-            std.log.err("Failed to create file {s}\n", .{name});
+            std.log.err("Failed to create file {s}", .{name});
             return;
         },
     };
@@ -200,7 +200,7 @@ fn saveBin(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.I
     var file_writer = file.writer(io, &buffer);
 
     data.toBin(&file_writer.interface) catch {
-        std.log.err("Failed to write file {s}\n", .{name});
+        std.log.err("Failed to write file {s}", .{name});
         return;
     };
 }

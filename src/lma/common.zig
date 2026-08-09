@@ -277,7 +277,7 @@ pub const constants = struct {
         pub const max_network = getConstant(comptime_int, .max_network) orelse 32;
 
         /// Minimum number of stations required to accept a solution
-        pub const min_consensus = getConstant(comptime_int, .min_consensus) orelse 6;
+        pub const min_consensus = getConstant(comptime_int, .min_consensus) orelse 5;
 
         /// Upper bound on the number of stations required to accept a solution
         pub const max_consensus = getConstant(comptime_int, .max_consensus) orelse 8;

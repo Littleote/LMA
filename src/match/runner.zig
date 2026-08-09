@@ -63,16 +63,29 @@ pub fn run(
     config: Config,
     span: lma.index.SubSlice,
 ) RunError!RunReturn {
+    // Verbose timing start total and per process
     const timer_start: std.Io.Timestamp = .now(io, .real);
     const resource_start: std.Io.Timestamp = .now(io, .cpu_process);
-    const minutes = @divExact(span.size, config.chunk);
-    const futures = try gpa.alloc(std.Io.Future(RunError!RunReturn), minutes);
+
+    const workers: u32 = @max(1, @divFloor(span.size + config.chunk / 2, config.chunk));
+    // @divCielling
+    const work: u32 = @divTrunc(span.size + workers - 1, workers);
+
+    const futures = try gpa.alloc(std.Io.Future(RunError!RunReturn), workers);
     defer gpa.free(futures);
-    const outputs = try gpa.alloc(lma.data.Points, minutes);
+    const outputs = try gpa.alloc(lma.data.Points, workers);
     defer gpa.free(outputs);
     var statistics: ToaSolver.Statistics = .{};
-    for (0..minutes) |idx| {
-        futures[idx] = io.async(runChunk, .{ io, gpa, stations, signals, config, .init(@intCast(span.start + lma.cast.as(u32, idx) * config.chunk), config.chunk) });
+    for (0..workers) |worker| {
+        const work_start: u32 = span.start + lma.cast.as(u32, worker) * work;
+        futures[worker] = io.async(runChunk, .{
+            io,
+            gpa,
+            stations,
+            signals,
+            config,
+            .initRange(work_start, @min(work_start + work, span.end())),
+        });
     }
     defer for (futures) |*future| {
         var result = future.cancel(io) catch continue;
@@ -209,27 +222,25 @@ pub fn runChunk(
         memory_buffer,
         work_buffer,
         .{
-            .beam_search = if (config.beam_width == 0) null else .{ .loglikelihood = @log(config.probability), .width = config.beam_width, .consensus = network.min_consensus },
-            .depth_first_search = if (config.dfs_attempts == 0) null else .{ .loglikelihood = @log(config.probability), .attempts = .count(config.dfs_attempts), .consensus = network.min_consensus },
+            .beam_search = if (config.beam_width == 0) null else .{ .loglikelihood = @log(config.probability), .width = config.beam_width, .consensus = 6 },
+            .depth_first_search = if (config.dfs_attempts == 0) null else .{ .loglikelihood = @log(config.probability), .attempts = .count(config.dfs_attempts), .consensus = 6 },
             .probe = probe_ptr,
         },
     );
-    const match_config: match.Matching.Config = .{ .max_time_delta = time_matrix, .max_matches = root.max_matches, .network_size = @intCast(count) };
-    var matching: match.Matching = .{
-        .buffers = try .init(gpa, match_config),
-        .corr = .{
-            .matrix = corr_matrix,
-            .time_matrix = match_config.max_time_delta,
-            .step = step,
-            .shape = shape,
-            .correlation = corr_buffer,
-            .aux_buffer = &aux_corr_buffer,
-            .window_size = lma.nano.ratio / 5,
-            .refresh_rate = lma.nano.ratio / 10,
-        },
-        .config = match_config,
+
+    var match_buffers: match.Buffers = try .init(gpa, @intCast(count), root.max_matches);
+    defer match_buffers.deinit(gpa);
+    var match_corr: match.Correlation = .{
+        .step = step,
+        .shape = shape,
+        .corr_matrix = corr_matrix,
+        .time_matrix = time_matrix,
+        .corr_buffer = corr_buffer,
+        .aux_buffer = &aux_corr_buffer,
+        .window_size = lma.nano.ratio / 5,
+        .refresh_rate = lma.nano.ratio / 10,
     };
-    defer matching.buffers.deinit(gpa);
+
     for (span.start..span.end()) |time| {
         try io.checkCancel();
         var size: usize = 0;
@@ -250,7 +261,7 @@ pub fn runChunk(
             ptr.signals = signals;
         }
         for (solver.memory) |*mem| mem.time -= 1;
-        sources.items.len = matching.process(signals, weights, sources.allocatedSlice(), &solver);
+        sources.items.len = match.process(&match_buffers, &match_corr, signals, weights, sources.allocatedSlice(), &solver);
 
         try output.headers.append(gpa, .init(@intCast(output.array.items.len), @intCast(sources.items.len)));
         try output.array.appendSlice(gpa, sources.items);

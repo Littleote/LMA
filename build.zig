@@ -232,9 +232,7 @@ fn matchExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
             .dat => run_match.addArgs(&.{"-i=data/signals/" ++ date_time.date ++ "/sources/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".dat"}),
         }
         run_match.addArgs(&.{
-            "-i=data/signals/" ++ date_time.date ++ "/sources/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".dat",
             "-o",
-            // "data/points/" ++ date_time.date ++ "/bin/" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.bin",
             "data/points/" ++ date_time.date ++ "/csv/corr-" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.csv",
             "data/points/" ++ date_time.date ++ "/output/CUSTOM_" ++ date_time.date ++ "_" ++ date_time.time ++ "_0600.dat.gz",
             "--verbose",

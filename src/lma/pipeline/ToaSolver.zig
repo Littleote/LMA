@@ -16,6 +16,7 @@ const vec3 = math.vector.vec3;
 const splat = math.vector.splat;
 
 const max_network = lma.constants.network.max_network;
+const min_consensus = lma.constants.network.min_consensus;
 const early_exit = false;
 const preference: enum { max_stations, min_chi_sq } = .min_chi_sq;
 
@@ -57,7 +58,7 @@ const c = lma.constants.c / lma.constants.refractive_index.airRange(1_000, 8_000
 const rms = 0.000_000_070;
 const max_chi_sq = 1.5;
 
-pub fn solve(self: *ToaSolver, reference: match.Candidate, candidates: []const match.Candidate, masking: []match.Candidate.Mask, options: *const match.Matching.Correlation) ?lma.data.types.Point {
+pub fn solve(self: *ToaSolver, reference: match.Candidate, candidates: []const match.Candidate, masking: []match.Candidate.Mask, options: *const match.Correlation) ?lma.data.types.Point {
     self.masking = masking;
     self.buffer = .at(self.stations[reference.station], c * fromNano(reference.nanosecond));
 
@@ -111,7 +112,7 @@ pub fn solveFromPoint(self: *ToaSolver, reference: match.Candidate, base_source:
     const xyz = base_source.point - self.buffer.ref_point;
     self.statistics.counts.buffer_source += 1;
     self.bufferFromSource(&.{ .point = xyz, .time = -length(xyz) }, candidates, 500);
-    if (self.buffer.len < 5) return null;
+    if (self.buffer.len < min_consensus) return null;
 
     const initial: Source = .{ .point = xyz, .time = -length(xyz) };
     self.bufferFromSource(&initial, candidates, 2_000);
@@ -129,7 +130,7 @@ pub fn solveSet(self: *ToaSolver, matched: []const match.Candidate, candidates: 
 }
 
 fn initialSolution(self: *ToaSolver) ?Source {
-    if (self.buffer.len < 5) return null;
+    if (self.buffer.len < min_consensus) return null;
 
     self.statistics.counts.solve_linear += 1;
     var source = solveLinear(&self.buffer);
@@ -174,7 +175,7 @@ fn refinedSolution(self: *ToaSolver, input: *const Source) ?Source {
     var source: Source = undefined;
     var chi_sq: Float = undefined;
     var worst_station: u8 = undefined;
-    while (self.buffer.len >= 5) {
+    while (self.buffer.len >= min_consensus) {
 
         // Solve quadratic optimization with L-M
         self.statistics.counts.solve_quadratic += 1;
@@ -196,7 +197,7 @@ fn refinedSolution(self: *ToaSolver, input: *const Source) ?Source {
     switch (preference) {
         .max_stations => {},
         .min_chi_sq => {
-            while (self.buffer.len > 5) {
+            while (self.buffer.len > min_consensus) {
 
                 // Solve quadratic optimization with L-M
                 const new_source = blk: {
@@ -282,8 +283,7 @@ pub fn sourceToPoint(self: *ToaSolver, source: *const Source) ?lma.data.types.Po
     var mask: u32 = 0;
     for (self.buffer.entries[0..self.buffer.len]) |entry| {
         mask |= @as(u32, 1) << @intCast(entry.station);
-        if (entry.mask.is_set)
-            self.masking[entry.station] |= @as(match.Candidate.Mask, 1) << entry.mask.bit;
+        self.masking[entry.station] |= entry.mask.getMask();
     }
 
     return .{
@@ -437,7 +437,7 @@ const Buffer = struct {
         // index: u16,
         dBm: f16,
         station: u8,
-        mask: match.Candidate.MaskBit,
+        mask: match.Candidate.MaybeBit,
     };
 
     len: u8,
@@ -629,11 +629,12 @@ const toa = struct {
 pub const least_squares = struct {
     pub const Termination = struct {
         pub const Reason = enum {
-            unknown,
+            none,
             bad_input,
             max_iterations,
             min_gradient,
             min_improvement,
+            degenerated,
         };
 
         max_iterations: usize = 1_000,
@@ -657,7 +658,7 @@ pub const least_squares = struct {
         ///
         /// NOTE: Expects time to be transformed into spatial distance (multiplied by the speed of light constant)
         pub fn solve(data: []const Vec, initial_guess: Vec, opt: Options) Vec {
-            var termination: Termination.Reason = .unknown;
+            var termination: Termination.Reason = .none;
             defer opt.termination.setTermination(termination);
             var delta: Float = 1;
             var lambda: Float = 1;
@@ -734,7 +735,7 @@ pub const least_squares = struct {
                     err = new_err;
                 }
 
-                if (termination != .unknown) break;
+                if (termination != .none) break;
             } else termination = .max_iterations;
             return source;
         }
@@ -767,7 +768,7 @@ pub const least_squares = struct {
         ///
         /// NOTE: Expects time to be transformed into spatial distance (multiplied by the speed of light constant)
         pub fn solve(data: []const Vec, initial_guess: Vec, opt: Options) Vec {
-            var termination: Termination.Reason = .unknown;
+            var termination: Termination.Reason = .none;
             defer opt.termination.setTermination(termination);
             var source: Vec = initial_guess;
             var err = toa.squareError(data, initial_guess);
@@ -798,10 +799,16 @@ pub const least_squares = struct {
                 if (err * opt.termination.min_improvement >= err - new_err)
                     termination = .min_improvement;
 
+                // Do NOT update the results if the results are degenerate (±inf or NaN)
+                if (!std.math.isFinite(new_err)) {
+                    termination = .degenerated;
+                    break;
+                }
+
                 source += scaled_grad;
                 err = new_err;
 
-                if (termination != .unknown) break;
+                if (termination != .none) break;
             } else termination = .max_iterations;
             return source;
         }

@@ -155,6 +155,12 @@ pub const Seconds = struct {
 
     pub fn parse(_: Allocator, buf: []const u8, diag: *nargs.Diagnostic) Error!Type {
         return initInner(buf) catch |err| switch (err) {
+            error.InvalidFormat => {
+                diag.startLogWithMessage(.invalid_value,
+                    \\Expected time in format SECONDS or (HH:)MM:SS but found "{s}" instead.
+                , .{buf});
+                return error.InvalidValue;
+            },
             error.InvalidTime => {
                 diag.startLogWithMessage(.invalid_value,
                     \\"{s}" is not a valid time.
@@ -164,20 +170,26 @@ pub const Seconds = struct {
         };
     }
 
-    pub fn initInner(buf: []const u8) error{InvalidTime}!Type {
+    pub fn initInner(buf: []const u8) error{ InvalidTime, InvalidFormat }!Type {
         const sep_count = std.mem.countScalar(u8, buf, sep);
         if (sep_count == 0) {
-            return std.fmt.parseInt(u32, buf, 10) catch return error.InvalidTime;
+            return std.fmt.parseInt(u32, buf, 10) catch |err| return switch (err) {
+                error.Overflow => error.InvalidTime,
+                error.InvalidCharacter => error.InvalidFormat,
+            };
         } else if (sep_count <= 2) {
             var seconds: u32 = 0;
             var iter = std.mem.splitScalar(u8, buf, sep);
             while (iter.next()) |str| {
                 seconds *= 60;
-                seconds += std.fmt.parseInt(u32, str, 10) catch return error.InvalidTime;
+                seconds += std.fmt.parseInt(u32, str, 10) catch |err| return switch (err) {
+                    error.Overflow => error.InvalidTime,
+                    error.InvalidCharacter => error.InvalidFormat,
+                };
             }
             return seconds;
         }
-        return error.InvalidTime;
+        return error.InvalidFormat;
     }
 
     pub const dupe = mixin.copyOnDupe;

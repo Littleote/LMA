@@ -54,9 +54,9 @@ inline fn space_time(space: Vec, time: Float) Vec {
     return space + math.vector.vec4(0, 0, 0, time);
 }
 
-const c = lma.constants.c / lma.constants.refractive_index.airRange(1_000, 8_000);
-const rms = 0.000_000_070;
-const max_chi_sq = 1.5;
+pub const c = lma.constants.c / lma.constants.refractive_index.airRange(1_000, 8_000);
+pub const rms = 0.000_000_070;
+pub const max_chi_sq = 1.5;
 
 pub fn solve(self: *ToaSolver, reference: match.Candidate, candidates: []const match.Candidate, masking: []match.Candidate.Mask, options: *const match.Correlation) ?lma.data.types.Point {
     self.masking = masking;

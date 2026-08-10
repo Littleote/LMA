@@ -24,7 +24,7 @@ test toNative {
     const values = [_]u16{ 0x0001, 0x0010, 0x0100, 0x1000 };
     for (values, 0..) |value, idx| {
         std.testing.expect(value == toNative(bytes, idx)) catch |err| {
-            std.log.err("Failed to convert at index {d}. Expected {x}, but got {x}.", .{ idx, value, toNative(bytes, idx) });
+            std.debug.print("Failed to convert at index {d}. Expected {x}, but got {x}.\n", .{ idx, value, toNative(bytes, idx) });
             return err;
         };
     }
@@ -96,7 +96,10 @@ pub const signals = struct {
 
     /// Load a Time of Arrival '.dat' file from a seeking file reader
     pub fn fromFile(file_reader: *std.Io.File.Reader, signal_data: *data.Signal) ReadError!void {
-        const parser: Parser = try .init(&file_reader.interface);
+        const parser: Parser = Parser.init(&file_reader.interface) catch |err| return switch (err) {
+            error.EndOfStream => error.BadFile,
+            else => |new_err| new_err,
+        };
 
         file_reader.seekTo(0) catch unreachable;
         var dat_headers: std.ArrayList(Header) = try parser.parseAllHeaders(&file_reader.interface, signal_data.allocator);
@@ -121,7 +124,10 @@ pub const signals = struct {
     /// Load a Time of Arrival '.dat' file from a buffer
     pub fn fromBuffer(buffer: []const u8, signal_data: *data.Signal) ReadError!void {
         var reader: Reader = .fixed(buffer);
-        const parser: Parser = try .init(&reader);
+        const parser: Parser = Parser.init(&reader) catch |err| return switch (err) {
+            error.EndOfStream => error.BadFile,
+            else => |new_err| new_err,
+        };
 
         reader.seek = 0;
         var dat_headers: std.ArrayList(Header) = try parser.parseAllHeaders(&reader, signal_data.allocator);
@@ -146,10 +152,10 @@ pub const signals = struct {
         pattern: u16,
 
         /// Initialize the parser constants for the given file
-        fn init(r: *Reader) error{ ReadFailed, UnsupportedVersion }!Parser {
+        fn init(r: *Reader) error{ ReadFailed, EndOfStream, UnsupportedVersion }!Parser {
             var lookahead: []u8 = undefined;
             const packet_start: u16 = while (true) {
-                lookahead = r.peek(4) catch return error.ReadFailed;
+                lookahead = try r.peek(4);
                 if (lookahead[1] >> 7 == 1 and lookahead[3] >> 7 == 1) {
                     break toNative(lookahead, 0);
                 }
@@ -427,8 +433,8 @@ pub const signals = struct {
                         out,
                         parsed,
                     ) catch |err| {
-                        std.log.err("Failed to parse metadata {d} in version {d}.", .{ idx, version });
-                        std.log.err("Expected {any} but found {any}.", .{ out, parsed });
+                        std.debug.print("Failed to parse metadata {d} in version {d}.\n", .{ idx, version });
+                        std.debug.print("Expected {any} but found {any}.\n", .{ out, parsed });
                         return err;
                     };
                 }
@@ -457,8 +463,8 @@ pub const signals = struct {
                         out,
                         parsed,
                     ) catch |err| {
-                        std.log.err("Failed to parse packet {d} in version {d}.", .{ idx, version });
-                        std.log.err("Expected {any} but found {any}.", .{ out, parsed });
+                        std.debug.print("Failed to parse packet {d} in version {d}.\n", .{ idx, version });
+                        std.debug.print("Expected {any} but found {any}.\n", .{ out, parsed });
                         return err;
                     };
                 }
@@ -766,9 +772,7 @@ pub const output = struct {
                     station.name,
                     @as(u32, if (active) 80 else 0),
                     @as(u32, if (active) 12 else 0),
-                    // fixed rms constant
-                    // TODO: read constant from ToaSolver
-                    @as(u32, 40),
+                    lma.pipeline.ToaSolver.rms * std.time.ns_per_s,
                     info.solutions,
                     100 * lma.cast.to(f32, info.solutions) / lma.cast.to(f32, @max(1, stats.counts.out_solutions)),
                     @as(f32, if (active) 1.0 else 0.0),

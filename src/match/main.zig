@@ -169,14 +169,17 @@ pub fn main(init: std.process.Init.Minimal) void {
     var buffer: [1024]u8 = undefined;
 
     if (options.files.probe) |probe_file| probe: {
-        const file = std.Io.Dir.cwd().openFile(io, probe_file, .{}) catch break :probe;
+        const file = std.Io.Dir.cwd().openFile(io, probe_file, .{}) catch {
+            std.log.warn("Unable to open probe file.", .{});
+            break :probe;
+        };
         defer file.close(io);
         var file_reader = file.reader(io, &buffer);
         probe_data = .init(gpa);
         probe_data.?.fromDat(&file_reader.interface) catch {
             probe_data.?.deinit();
             probe_data = null;
-            std.log.err("TODO", .{});
+            std.log.warn("Unable to load probe.", .{});
             break :probe;
         };
     }
@@ -186,8 +189,8 @@ pub fn main(init: std.process.Init.Minimal) void {
     var stations: lma.data.Stations = .init(gpa);
     defer stations.deinit();
     for (options.files.stations) |network| {
-        const file = std.Io.Dir.cwd().openFile(io, network, .{}) catch {
-            std.log.err("TODO", .{});
+        const file = std.Io.Dir.cwd().openFile(io, network, .{}) catch |err| {
+            std.log.err("Unable to open station/network file \"{s}\" with error {s}.", .{ network, @errorName(err) });
             continue;
         };
         defer file.close(io);
@@ -195,7 +198,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         files.loadStations(&stations, network, &file_reader.interface) catch |err| switch (err) {
             error.Logged => continue,
             error.ReadFailed => {
-                std.log.err("TODO", .{});
+                std.log.err("Unable to load station/network file \"{s}\" with error {s}.", .{ network, @errorName(file_reader.err orelse error.Unknown) });
                 continue;
             },
         };
@@ -222,14 +225,15 @@ pub fn main(init: std.process.Init.Minimal) void {
         var glob: nargs.types.io.Glob.Iterator = pattern.iterator(io, null) catch |err| switch (err) {
             error.Canceled => unreachable,
             else => |new_err| {
-                std.log.err("Unable to load all files with error {}", .{new_err});
+                std.log.err("Unable to load any files matching \"{s}\" with error {}", .{ pattern.path, new_err });
                 continue;
             },
         };
+        defer glob.deinit();
         while (glob.next() catch |err| switch (err) {
             error.Canceled => unreachable,
             else => |new_err| blk: {
-                std.log.err("Unable to load all files with error {}", .{new_err});
+                std.log.err("Unable to load more files matching \"{s}\" with error {}", .{ pattern.path, new_err });
                 break :blk null;
             },
         }) |entry| {
@@ -240,11 +244,14 @@ pub fn main(init: std.process.Init.Minimal) void {
 
             loadStation(io, entry.dir, entry.basename, options.time.date.string[2..8].*, options.time.time.string, stations, full_signals) catch |err| {
                 switch (err) {
-                    error.BadName => std.log.err(
+                    error.BadName => std.log.warn(
                         \\File "{s}" doesn't conform to naming convention "{{CODE}}_{{NETWORK}}_{{STATION_NAME}}_{{YYMMDD}}_{{HHMMSS}}". (With YYMMDD = {s} and HHMMSS = {s})
                     , .{ entry.basename, options.time.date.string[2..8].*, options.time.time.string }),
-                    error.UnknownStation => std.log.err(
+                    error.UnknownStation => std.log.warn(
                         \\No station associated to "{s}".
+                    , .{entry.basename}),
+                    error.DuplicateStation => std.log.warn(
+                        \\Another file for the station associated to "{s}" has already been loaded.
                     , .{entry.basename}),
                     error.Reported => {},
                 }
@@ -254,10 +261,18 @@ pub fn main(init: std.process.Init.Minimal) void {
         }
     }
 
+    if (active_stations < lma.constants.network.min_consensus) {
+        std.log.err(
+            "Too few stations loaded ({d}/{d}). Minimum is {d}.",
+            .{ active_stations, count, lma.constants.network.min_consensus },
+        );
+        return;
+    }
+
     var out_dir: std.Io.Dir = if (options.files.out_dir) |dir| std.Io.Dir.cwd().openDir(io, dir, .{}) catch |err| switch (err) {
         error.Canceled => unreachable,
         else => |new_err| blk: {
-            std.log.err("TODO {} defaulting to cwd.", .{new_err});
+            std.log.warn("Failed to open \"{s}\" with error {s} defaulting to cwd.", .{ dir, @errorName(new_err) });
             break :blk .cwd();
         },
     } else .cwd();
@@ -305,7 +320,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     }
 }
 
-// TODO
+// Parse and validate name, match to a loaded station and load its contents
 pub fn loadStation(
     io: std.Io,
     dir: std.Io.Dir,
@@ -314,17 +329,27 @@ pub fn loadStation(
     time: [6]u8,
     stations: lma.data.Stations,
     signals: []lma.data.Signal,
-) error{ Reported, BadName, UnknownStation }!void {
+) error{ Reported, BadName, UnknownStation, DuplicateStation }!void {
+    const cancel = io.swapCancelProtection(.blocked);
+    defer _ = io.swapCancelProtection(cancel);
+
     const basename = std.fs.path.basename(file);
     var buffer: [1024]u8 = undefined;
 
-    // CODE_GROUP_FULL_NAME_DATE_TIME.dat
-    const stem, _ = std.mem.cutScalarLast(u8, basename, '.').?;
+    // CODE_GROUP_FULL_NAME_DATE_TIME.ext.ens.ion
+    const stem, _ = std.mem.cutScalar(u8, basename, '.') orelse .{ basename, "" };
     var split = std.mem.splitScalar(u8, stem, '_');
-    _, _ = .{ split.next().?, split.next().? };
+    _, _ = .{
+        split.next() orelse return error.BadName,
+        split.next() orelse return error.BadName,
+    };
 
     var back_split = std.mem.splitBackwardsScalar(u8, split.rest(), '_');
-    const file_time, const file_date, const name = .{ back_split.next().?, back_split.next().?, back_split.rest() };
+    const file_time, const file_date, const name = .{
+        back_split.next() orelse return error.BadName,
+        back_split.next() orelse return error.BadName,
+        back_split.rest(),
+    };
 
     if (file_date.len != 6 or file_time.len != 6) return error.BadName;
     if (!std.mem.eql(u8, &date, file_date) or !std.mem.eql(u8, &time, file_time)) return error.BadName;
@@ -340,12 +365,17 @@ pub fn loadStation(
 
     for (stations.stations.items, 0..) |info, idx| {
         if (std.mem.eql(u8, info.name, name)) {
-            std.debug.assert(signals[idx].empty());
+            if (!signals[idx].empty()) return error.DuplicateStation;
             const delay: u32 = lma.index.offset(u32, global_shift, info.delay);
             files.loadSignals(&signals[idx], basename, &file_reader.interface) catch |err| {
-                std.log.err(
-                    \\Unable to load file "{s}" due to error {}.
-                , .{ basename, err });
+                switch (err) {
+                    error.Logged => {},
+                    error.ReadFailed => {
+                        std.log.err(
+                            \\Unable to load file "{s}" due to error {s}.
+                        , .{ basename, @errorName(file_reader.err orelse error.Unknown) });
+                    },
+                }
                 return error.Reported;
             };
             for (signals[idx].array.items) |*signal| {

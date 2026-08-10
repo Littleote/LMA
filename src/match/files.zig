@@ -28,7 +28,7 @@ pub fn load(
             @panic("OOM");
         },
         else => |new_err| {
-            std.log.err("Unable to read file {s} {s}.", .{ file_name, switch (new_err) {
+            std.log.err("Unable to read file \"{s}\" {s}.", .{ file_name, switch (new_err) {
                 error.InvalidHeader => "because of an invalid header",
                 error.InvalidValue => "because of an invalid value",
                 error.BadFile => "because the file is malformed",
@@ -129,10 +129,6 @@ pub fn loadSignals(signals: *lma.data.Signal, file_name: []const u8, reader: *Re
 
         pub fn fromDat(data: *lma.data.Signal, r: *Reader) ParseError!void {
             try lma.data.dat_file.signals.fromReader(r, data);
-        }
-
-        pub fn unimplemented(_: *lma.data.Signal, _: *Reader) ParseError!void {
-            @panic("Not yet implemented");
         }
     };
 

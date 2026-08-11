@@ -66,7 +66,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !v
                         &points,
                         null,
                         @min(86400, upper_bound),
-                        upper_bound,
+                        @intCast(upper_bound),
                     ) catch continue;
                     if (!points.empty()) break :blk points.start_epoch;
                     break :blk null;

@@ -269,7 +269,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         return;
     }
 
-    var out_dir: std.Io.Dir = if (options.files.out_dir) |dir| std.Io.Dir.cwd().openDir(io, dir, .{}) catch |err| switch (err) {
+    var out_dir: std.Io.Dir = if (options.files.out_dir) |dir| std.Io.Dir.cwd().createDirPathOpen(io, dir, .{}) catch |err| switch (err) {
         error.Canceled => unreachable,
         else => |new_err| blk: {
             std.log.warn("Failed to open \"{s}\" with error {s} defaulting to cwd.", .{ dir, @errorName(new_err) });

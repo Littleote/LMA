@@ -95,8 +95,8 @@ const Data = union(Args.Stage) {
 
 format: Args.Format,
 data: Data,
-epoch: usize = 0,
-end: usize = 86400,
+epoch: u64 = 0,
+end: u64 = 86400,
 current_file: usize = 0,
 path: []const u8,
 files: std.ArrayList([]const u8),

@@ -284,13 +284,13 @@ pub const signals = struct {
             const end_epoch = headers[headers.len - 1].epoch + 1;
             var epoch: u64 = signal_data.start_epoch;
 
-            try signal_data.headers.ensureTotalCapacityPrecise(signal_data.allocator, end_epoch - signal_data.start_epoch);
+            try signal_data.headers.ensureTotalCapacityPrecise(signal_data.allocator, @intCast(end_epoch - signal_data.start_epoch));
             for (headers) |header| {
                 if (epoch > header.epoch or header.epoch >= end_epoch) {
                     @branchHint(.cold);
                     if (epoch - 1 == header.epoch) {
                         std.log.warn("Header {d} followed by header {d}. Truncating to latest appreance of the header.", .{ epoch - 1, header.epoch });
-                        signal_data.headers.items.len = header.epoch - signal_data.start_epoch;
+                        signal_data.headers.items.len = @intCast(header.epoch - signal_data.start_epoch);
                     } else {
                         @branchHint(.cold);
                         if (header.epoch >= end_epoch) {
@@ -304,7 +304,7 @@ pub const signals = struct {
                     signal_data.headers.appendNTimesAssumeCapacity(.{
                         .start = @intCast(header.start),
                         .size = 0,
-                    }, header.epoch - epoch);
+                    }, @intCast(header.epoch - epoch));
                 }
                 signal_data.headers.appendAssumeCapacity(.{
                     .start = @intCast(header.start),
@@ -670,7 +670,7 @@ pub const output = struct {
                     @branchHint(.cold);
                     return error.BadFile;
                 }
-                points.headers.appendNTimesAssumeCapacity(.{ .start = array_size, .size = 0 }, target_epoch - current_epoch);
+                points.headers.appendNTimesAssumeCapacity(.{ .start = array_size, .size = 0 }, @intCast(target_epoch - current_epoch));
                 last_header = &points.headers.items[points.headers.items.len - 1];
             }
             const current_value = points.array.addOneAssumeCapacity();

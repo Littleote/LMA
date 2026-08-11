@@ -94,7 +94,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !v
     while (try file_reader.interface.takeDelimiter('\n')) |line| {
         var iterator = std.mem.tokenizeScalar(u8, line, delimiter);
         const time = std.math.modf(try std.fmt.parseFloat(f64, iterator.next().?));
-        const second: usize = @intFromFloat(time.ipart);
+        const second: u64 = @intFromFloat(time.ipart);
 
         if (second != last_second) {
             @branchHint(.unlikely);
@@ -114,7 +114,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !v
                 try data.headers.ensureTotalCapacity(gpa, size.headers);
                 try data.array.ensureTotalCapacity(gpa, size.array);
             }
-            const delta = second - (data.start_epoch + data.headers.items.len) + 1;
+            const delta: usize = @intCast(second - (data.start_epoch + data.headers.items.len) + 1);
             try data.headers.appendNTimes(gpa, .{ .start = @intCast(data.array.items.len), .size = 0 }, delta);
             last_header = &data.headers.items[data.headers.items.len - 1];
         }
@@ -142,7 +142,7 @@ const SaveInfo = struct {
     var bin_dir: ?std.Io.Dir = null;
 };
 
-fn saveFiles(io: std.Io, data: Clusters, save_time: ?usize) std.Io.Cancelable!void {
+fn saveFiles(io: std.Io, data: Clusters, save_time: ?u64) std.Io.Cancelable!void {
     var mutable_data = data;
     defer mutable_data.deinit();
     if (SaveInfo.bin_dir) |dir|
@@ -151,7 +151,7 @@ fn saveFiles(io: std.Io, data: Clusters, save_time: ?usize) std.Io.Cancelable!vo
         try saveCsv(io, data, save_time, dir);
 }
 
-fn saveCsv(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.Io.Cancelable!void {
+fn saveCsv(io: std.Io, data: Clusters, save_time: ?u64, dir: std.Io.Dir) std.Io.Cancelable!void {
     const time = utils.saveTime(
         save_time,
         data.start_epoch,
@@ -178,7 +178,7 @@ fn saveCsv(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.I
     };
 }
 
-fn saveBin(io: std.Io, data: Clusters, save_time: ?usize, dir: std.Io.Dir) std.Io.Cancelable!void {
+fn saveBin(io: std.Io, data: Clusters, save_time: ?u64, dir: std.Io.Dir) std.Io.Cancelable!void {
     const time = utils.saveTime(
         save_time,
         data.start_epoch,

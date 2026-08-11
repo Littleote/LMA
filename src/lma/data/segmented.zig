@@ -28,10 +28,10 @@ pub const Shift = struct {
 pub const IteratorMode = union(enum) {
     /// Iterate until the last epoch in the data
     all: void,
-    until_epoch: usize,
+    until_epoch: u64,
 
     /// Iterate until the specified epoch
-    pub fn until(epoch: usize) IteratorMode {
+    pub fn until(epoch: u64) IteratorMode {
         return .{ .until_epoch = epoch };
     }
 };
@@ -148,7 +148,8 @@ pub fn Segmented(Elem: type) type {
                 try w.writeAll(column);
                 try w.writeByte(if (idx == Elem.csv.columns.len) '\n' else del);
             }
-            for (self.headers.items, self.start_epoch..) |header, epoch| {
+            for (self.headers.items, 0..) |header, epoch_delta| {
+                const epoch: u64 = self.start_epoch + epoch_delta;
                 for (self.array.items[header.start..][0..header.size]) |value| {
                     try value.toCsv(w, epoch, del);
                 }
@@ -203,7 +204,8 @@ pub fn Segmented(Elem: type) type {
                     // Finish current and start next header info
                     const last_len: u32 = @intCast(self.array.items.len - 1);
                     header.size = last_len - header.start;
-                    try self.headers.appendNTimes(self.allocator, .{ .start = last_len, .size = 0 }, current_epoch - last_epoch);
+                    const epoch_delta: usize = @intCast(current_epoch - last_epoch);
+                    try self.headers.appendNTimes(self.allocator, .{ .start = last_len, .size = 0 }, epoch_delta);
                     last_epoch = current_epoch;
                     header = &self.headers.items[self.headers.items.len - 1];
                 }
@@ -298,7 +300,7 @@ pub fn Segmented(Elem: type) type {
                     return error.OverlappingHeader;
                 }
             }
-            const headers = segments[segments.len - 1].end_epoch() - segments[0].start_epoch;
+            const headers: usize = @intCast(segments[segments.len - 1].end_epoch() - segments[0].start_epoch);
 
             var new_data: Self = .init(gpa);
             errdefer new_data.deinit();
@@ -310,7 +312,8 @@ pub fn Segmented(Elem: type) type {
             new_data.array.appendSliceAssumeCapacity(segments[0].array.items);
             for (1..segments.len) |idx| {
                 const start: u32 = @intCast(new_data.array.items.len);
-                new_data.headers.appendNTimesAssumeCapacity(.{ .start = start, .size = 0 }, segments[idx].start_epoch - segments[idx - 1].end_epoch());
+                const in_between: usize = @intCast(segments[idx].start_epoch - segments[idx - 1].end_epoch());
+                new_data.headers.appendNTimesAssumeCapacity(.{ .start = start, .size = 0 }, in_between);
                 const slice = new_data.headers.addManyAsSliceAssumeCapacity(segments[idx].headers.items.len);
                 @memcpy(slice, segments[idx].headers.items);
                 for (slice) |*header| header.start += start;
@@ -435,7 +438,7 @@ pub fn Segmented(Elem: type) type {
 
         /// Iterate through all epochs from start to the given limit
         /// Epochs that are empty or have no header for it, will yield an empty slice
-        pub fn epochIterator(self: *const Self, start: ?usize, mode: IteratorMode) Iterator {
+        pub fn epochIterator(self: *const Self, start: ?u64, mode: IteratorMode) Iterator {
             if (self.headers.items.len == 0 and start == null) return .init(self, 0, 0);
             return .init(
                 self,
@@ -576,7 +579,7 @@ fn randomSegments(Elem: type, data: *Segmented(Elem), epochs: []const u64, size:
     data.start_epoch = epochs[0];
     const last_epoch = epochs[epochs.len - 1] + 1;
     const epoch_count = last_epoch - data.start_epoch;
-    try data.headers.ensureTotalCapacity(data.allocator, epoch_count);
+    try data.headers.ensureTotalCapacity(data.allocator, @intCast(epoch_count));
     try data.array.ensureTotalCapacity(data.allocator, epochs.len * size);
     var epoch = data.start_epoch;
     for (epochs, 0..) |target_epoch, i| {
@@ -783,7 +786,7 @@ test "epochIndex" {
     try std.testing.expect(data.epochIndex(1, .exact) == null);
     try std.testing.expect(data.epochIndex(1, .at_least) == null);
 
-    const epochs = [_]usize{ 2, 4, 6, 8, 10, 11, 12, 13, 14, 15, 20 };
+    const epochs = [_]u64{ 2, 4, 6, 8, 10, 11, 12, 13, 14, 15, 20 };
     try randomSegments(Dummy, &data, &epochs, 0);
 
     // Below range

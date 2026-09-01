@@ -88,5 +88,4 @@ You can view the full list of options for the command line by running `holes --h
 
 Transform `.dat` files into both, a human readable `.csv` and an in memory representation of the file `.bin`.
 
-
-You can view the full list of options for the command line by running `holes --help`.
+You can view the full list of options for the command line by running `parser --help`.

@@ -137,9 +137,10 @@ pub fn runChunk(
     const shape: lma.grid.Shape = .init(count, count);
 
     // Calculate distance and time matrix
-    var distance_matrix_buffer: [network.max_network * network.max_network]Float = undefined;
+    const matrix_size: u16 = @as(u16, network.max_network) * @as(u16, network.max_network);
+    var distance_matrix_buffer: [matrix_size]Float = undefined;
     const distance_matrix: []Float = distance_matrix_buffer[0..shape.size];
-    var time_matrix_buffer: [network.max_network * network.max_network]u32 = undefined;
+    var time_matrix_buffer: [matrix_size]u32 = undefined;
     const time_matrix: []u32 = time_matrix_buffer[0..shape.size];
     for (stations, 0..) |station1, row| {
         for (stations, 0..) |station2, col| {
@@ -175,7 +176,7 @@ pub fn runChunk(
     }
 
     var aux_corr_buffer: [root.correlation_size(root.max_distance, step)]Float = undefined;
-    var corr_matrix_buffer: [network.max_network * network.max_network]lma.index.SubSlice = @splat(.init(0, 0));
+    var corr_matrix_buffer: [matrix_size]lma.index.SubSlice = @splat(.init(0, 0));
     const corr_matrix: []lma.index.SubSlice = corr_matrix_buffer[0..shape.size];
     const corr_buffer = try gpa.alloc(Float, corr_size);
     defer gpa.free(corr_buffer);

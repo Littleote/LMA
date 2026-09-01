@@ -17,16 +17,21 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !v
     defer dir.close(io);
 
     // Output CSV directory
-    var csv_dir = try utils.forceOpen(io, dir, "../csv", .{});
+    var csv_dir = try dir.createDirPathOpen(io, "../csv", .{});
     defer csv_dir.close(io);
 
     // Output BIN directory
-    var bin_dir = try utils.forceOpen(io, dir, "../bin", .{});
+    var bin_dir = try dir.createDirPathOpen(io, "../bin", .{});
     defer bin_dir.close(io);
 
     // Iterate for all test source files
     var iterator = dir.iterate();
     while (try iterator.next(io)) |entry| {
+        if (!std.mem.endsWith(u8, entry.name, "dat")) {
+            std.log.err("Unrecognized file type \"{s}\"", .{entry.name});
+            continue;
+        }
+
         var buffer: [1024]u8 = undefined;
         var data: Signal = .init(gpa);
         defer data.deinit();
@@ -41,7 +46,6 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !v
             var file_reader = file.reader(io, &buffer);
             try lma.data.dat_file.signals.fromFile(&file_reader, &data);
         }
-        defer data.deinit();
 
         {
             // Save as CSV

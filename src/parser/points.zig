@@ -17,18 +17,18 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !v
     defer dir.close(io);
 
     // Output CSV directory
-    var csv_dir = try utils.forceOpen(io, dir, "../csv", .{});
+    var csv_dir = try dir.createDirPathOpen(io, "../csv", .{});
     defer csv_dir.close(io);
 
     // Output BIN directory
-    var bin_dir = try utils.forceOpen(io, dir, "../bin", .{});
+    var bin_dir = try dir.createDirPathOpen(io, "../bin", .{});
     defer bin_dir.close(io);
 
     // Output Station directory
 
     var station: ?std.Io.Dir = null;
     if (args.station) |station_path| {
-        station = utils.forceOpen(io, std.Io.Dir.cwd(), station_path, .{}) catch null;
+        station = std.Io.Dir.cwd().createDirPathOpen(io, station_path, .{}) catch null;
     }
     defer if (station) |*station_dir| station_dir.close(io);
 

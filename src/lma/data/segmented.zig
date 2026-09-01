@@ -66,10 +66,13 @@ pub fn Segmented(Elem: type) type {
 
         pub const ParseError = error{ ReadFailed, OutOfMemory, InvalidHeader, InvalidValue, BadFile, UnsupportedVersion };
 
+        // const bin_header_tag = std.fmt.comptimePrint("LMA-{[tag]s}-{[hash]x:0>16}\n", .{ .tag = Elem.bin.tag, .hash = typeHash(Elem) });
+        const bin_header = std.fmt.comptimePrint("LMA-{[tag]s}-{[hash]x:0>16}\n", .{ .tag = Elem.bin.tag, .hash = typeHash(Elem) });
+
         /// Write segments to custom binary format
         pub fn toBin(self: *const Self, w: *Writer) Writer.Error!void {
             // File Header
-            try w.print("LMA-{s}-{d:0>3}\n", .{ Elem.bin.tag, Elem.bin.version });
+            try w.writeAll(bin_header);
             try w.writeInt(u64, self.start_epoch, .little);
             try w.writeInt(u32, @intCast(self.headers.items.len), .little);
             try w.writeInt(u32, @intCast(self.array.items.len), .little);
@@ -84,20 +87,18 @@ pub fn Segmented(Elem: type) type {
             try w.flush();
         }
 
-        fn fromBinHeader(r: *Reader) Self.ParseError!u8 {
-            const header_len = comptime 3 + 1 + Elem.bin.tag.len + 1 + 3 + 1;
-            const header = r.take(header_len) catch |err| return switch (err) {
-                error.ReadFailed => |new_err| new_err,
+        fn fromBinHeader(r: *Reader) Self.ParseError!void {
+            const header = r.take(bin_header.len) catch |e| return switch (e) {
+                error.ReadFailed => |err| err,
                 error.EndOfStream => error.InvalidHeader,
             };
-            var header_match: bool = true;
-            header_match &= std.mem.eql(u8, header[0..4], "LMA-");
-            header_match &= std.mem.eql(u8, header[4..][0..Elem.bin.tag.len], Elem.bin.tag);
-            header_match &= header[4 + Elem.bin.tag.len] == '-';
-            const version_string = header[5 + Elem.bin.tag.len ..][0..3];
-            header_match &= header[header.len - 1] == '\n';
-            if (!header_match) return error.InvalidHeader;
-            return std.fmt.parseInt(u8, version_string, 10) catch return error.InvalidHeader;
+
+            if (std.mem.eql(u8, bin_header, header)) return;
+            return if (std.mem.eql(
+                u8,
+                bin_header[0..bin_header.len -| 18],
+                header[0..header.len -| 18],
+            )) error.UnsupportedVersion else error.InvalidHeader;
         }
 
         /// Read segments from custom binary format
@@ -109,7 +110,18 @@ pub fn Segmented(Elem: type) type {
         }
 
         pub fn innerFromBin(self: *Self, r: *Reader) (error{EndOfStream} || Self.ParseError)!void {
-            const version: u8 = try Self.fromBinHeader(r);
+            const file_header = r.take(bin_header.len) catch |e| return switch (e) {
+                error.ReadFailed => |err| err,
+                error.EndOfStream => error.InvalidHeader,
+            };
+
+            if (!std.mem.eql(u8, bin_header, file_header)) {
+                return if (std.mem.eql(
+                    u8,
+                    bin_header[0..bin_header.len -| 18],
+                    file_header[0..file_header.len -| 18],
+                )) error.UnsupportedVersion else error.InvalidHeader;
+            }
 
             self.start_epoch = try r.takeInt(u64, .little);
             const headers = try r.takeInt(u32, .little);
@@ -118,24 +130,11 @@ pub fn Segmented(Elem: type) type {
             errdefer self.headers.deinit(self.allocator);
             try self.array.ensureTotalCapacityPrecise(self.allocator, elements);
             errdefer self.array.deinit(self.allocator);
-            switch (version) {
-                inline 0...Elem.bin.version => |comptime_version| {
-                    for (0..headers) |_| {
-                        self.headers.appendAssumeCapacity(try r.takeStruct(Header, .little));
-                        const header = self.headers.getLast();
-                        const slice = self.array.addManyAsSliceAssumeCapacity(header.size);
-                        if (comptime_version == Elem.bin.version)
-                            try r.readSliceEndian(Elem, slice, .little)
-                        else {
-                            for (slice) |*element| {
-                                const Layout = Elem.bin.Layout[comptime_version];
-                                const layout: Layout = try r.takeStruct(Layout, .little);
-                                element.* = Elem.bin.update(comptime_version, layout);
-                            }
-                        }
-                    }
-                },
-                else => return error.UnsupportedVersion,
+            for (0..headers) |_| {
+                self.headers.appendAssumeCapacity(try r.takeStruct(Header, .little));
+                const header = self.headers.getLast();
+                const slice = self.array.addManyAsSliceAssumeCapacity(header.size);
+                try r.readSliceEndian(Elem, slice, .little);
             }
         }
 
@@ -493,6 +492,56 @@ pub fn Segmented(Elem: type) type {
     };
 }
 
+fn typeHash(Type: type) u64 {
+    var hash = std.hash.Wyhash.init(0);
+    hash.update(typeRepr(Type));
+    return hash.final();
+}
+
+fn typeRepr(Type: type) []const u8 {
+    switch (@typeInfo(Type)) {
+        .int => |info| return std.fmt.comptimePrint("{c}{d}", .{ switch (info.signedness) {
+            .signed => 'i',
+            .unsigned => 'u',
+        }, info.bits }),
+        .float => |info| return std.fmt.comptimePrint("f{d}", .{info.bits}),
+        .@"enum" => |info| {
+            var text: []const u8 = std.fmt.comptimePrint("enum({s})", .{typeRepr(info.tag_type)});
+            var first = true;
+            for (info.fields) |field| {
+                text = text ++ std.fmt.comptimePrint("{c} {s} = {d}", .{
+                    if (first) '{' else ',',
+                    field.name,
+                    field.value,
+                });
+                first = false;
+            }
+            return text ++ " }";
+        },
+        .@"struct" => |info| {
+            var text: []const u8 = @as(?[]const u8, switch (info.layout) {
+                .auto => null,
+                .@"extern" => "extern struct",
+                .@"packed" => if (info.backing_integer) |int|
+                    std.fmt.comptimePrint("bitpacked({s})", .{typeRepr(int)})
+                else
+                    null,
+            }) orelse @compileError("Invalid struct type.");
+            var first = true;
+            for (info.fields) |field| {
+                text = text ++ std.fmt.comptimePrint("{c} {s}: {s}", .{
+                    if (first) '{' else ',',
+                    field.name,
+                    typeRepr(field.type),
+                });
+                first = false;
+            }
+            return text ++ " }";
+        },
+        else => |_, tag| @compileError(std.fmt.comptimePrint("Unable to represent {s}.", .{@tagName(tag)})),
+    }
+}
+
 const Dummy = extern struct {
     value: u32,
 
@@ -532,40 +581,6 @@ const Dummy = extern struct {
 
     pub const bin = struct {
         pub const tag = "dummy";
-        pub const version = 2;
-        pub const Layout: [version + 1]type = .{
-            extern struct {
-                value: u16,
-                pub fn dummyValue(rand: std.Random) @This() {
-                    return .{ .value = rand.int(u16) };
-                }
-                pub const bin = struct {
-                    pub const tag = "dummy";
-                    pub const version = 0;
-                };
-                pub fn update(self: @This()) Layout[1] {
-                    return .{ .value = self.value };
-                }
-            },
-            extern struct {
-                value: u16,
-                padding: u16 = 0,
-                pub fn update(self: @This()) Layout[2] {
-                    return .{ .value = self.value };
-                }
-            },
-            Dummy,
-        };
-
-        pub fn updateInner(comptime from: u8, comptime to: u8, elem: Layout[from]) Layout[to] {
-            if (from == to) return elem;
-            return updateInner(from + 1, to, elem.update());
-        }
-
-        pub fn update(comptime initial_version: u8, elem: Layout[initial_version]) Dummy {
-            if (initial_version == version) @compileError("Update code called when already on the latest version.");
-            return updateInner(initial_version, version, elem);
-        }
     };
 };
 
@@ -615,29 +630,6 @@ test "bin format round trip" {
     try std.testing.expectEqualSlices(Header, data.headers.items, read_data.headers.items);
     for (data.array.items, read_data.array.items) |original, read| {
         try std.testing.expect(Dummy.eql(original, read));
-    }
-}
-
-test "bin format update" {
-    const DummyOld = Dummy.bin.Layout[0];
-    var data: Segmented(DummyOld) = .init(std.testing.allocator);
-    defer data.deinit();
-    try randomSegments(DummyOld, &data, &.{ 2, 5, 9, 12, 13, 14, 15, 16, 18, 24 }, 5);
-
-    // Write to a buffer and read from it with a new Segmented instance
-    var writer: Writer.Allocating = .init(data.allocator);
-    defer writer.deinit();
-    try data.toBin(&writer.writer);
-
-    var read_data: Segmented(Dummy) = .init(std.testing.allocator);
-    defer read_data.deinit();
-    var reader: Reader = .fixed(writer.written());
-    try read_data.fromBin(&reader);
-
-    try std.testing.expect(data.start_epoch == read_data.start_epoch);
-    try std.testing.expectEqualSlices(Header, data.headers.items, read_data.headers.items);
-    for (data.array.items, read_data.array.items) |original, read| {
-        try std.testing.expect(original.value == read.value);
     }
 }
 

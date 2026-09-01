@@ -213,6 +213,8 @@ pub const index = struct {
 
 /// Constant definitions
 pub const constants = struct {
+    const root = @import("root");
+
     /// Speed of light in a vacuum.
     pub const c = 299_792_458.0;
 
@@ -263,24 +265,17 @@ pub const constants = struct {
     };
 
     /// LMA network
-    pub const network = struct {
-        const root = @import("root");
+    pub const network: Network = if (@hasDecl(root, "network")) root.network else Network.default;
 
-        fn getConstant(comptime Type: type, comptime constant: @EnumLiteral()) ?Type {
-            return if (@hasDecl(root, "network") and @hasDecl(root.network, @tagName(constant)))
-                @field(root.network, @tagName(constant))
-            else
-                null;
-        }
+    pub const Network = struct {
+        pub const default: Network = .{ .max_network = 32, .min_consensus = 5, .max_consensus = 8 };
 
         /// Upper bound on the number of stations in the LMA network
-        pub const max_network = getConstant(comptime_int, .max_network) orelse 32;
-
+        max_network: u8,
         /// Minimum number of stations required to accept a solution
-        pub const min_consensus = getConstant(comptime_int, .min_consensus) orelse 5;
-
+        min_consensus: u8,
         /// Upper bound on the number of stations required to accept a solution
-        pub const max_consensus = getConstant(comptime_int, .max_consensus) orelse 8;
+        max_consensus: u8,
     };
 
     comptime {

@@ -7,7 +7,6 @@ const lma = @import("lma");
 pub const Float = lma.pipeline.holes.Float;
 
 const Args = @import("Args.zig");
-const utils = @import("utils.zig");
 
 const math = lma.math(Float);
 
@@ -55,11 +54,11 @@ pub fn run(gpa: Allocator, io: std.Io, parsed: Args) !void {
     defer input.close(io);
 
     // Output directories
-    var output = try utils.forceOpen(io, std.Io.Dir.cwd(), parsed.output, .{});
+    var output = try std.Io.Dir.cwd().createDirPathOpen(io, parsed.output, .{});
     defer output.close(io);
 
     // Output directories
-    var image_output = try utils.forceOpen(io, output, "img", .{});
+    var image_output = try output.createDirPathOpen(io, "img", .{});
     defer image_output.close(io);
 
     var gen = try parsed.generator(gpa, io);

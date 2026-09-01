@@ -36,11 +36,11 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !v
     defer dir.close(io);
 
     // Output CSV directory
-    SaveInfo.csv_dir = try utils.forceOpen(io, dir, "csv", .{});
+    SaveInfo.csv_dir = try dir.createDirPathOpen(io, "csv", .{});
     defer SaveInfo.csv_dir.?.close(io);
 
     // Output BIN directory
-    SaveInfo.bin_dir = try utils.forceOpen(io, dir, "bin", .{});
+    SaveInfo.bin_dir = try dir.createDirPathOpen(io, "bin", .{});
     defer SaveInfo.bin_dir.?.close(io);
 
     var data: Clusters = .init(gpa);

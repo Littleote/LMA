@@ -78,7 +78,6 @@ pub const Signal = extern struct {
 
     pub const bin = struct {
         pub const tag = "toa";
-        pub const version = 0;
     };
 };
 
@@ -197,7 +196,6 @@ pub const Point = extern struct {
 
     pub const bin = struct {
         pub const tag = "point";
-        pub const version = 0;
     };
 };
 
@@ -320,6 +318,5 @@ pub const Clustered = extern struct {
 
     pub const bin = struct {
         pub const tag = "cluster";
-        pub const version = 0;
     };
 };

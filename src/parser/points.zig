@@ -2,12 +2,13 @@ const std = @import("std");
 
 const data = @import("lma").data;
 const nargs = @import("nargs");
+const opt = nargs.options;
 
 const utils = @import("utils.zig");
 
 pub const Cli = struct { station: ?[]const u8 };
-pub const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "points" }, .{
-    .station = .build(nargs.Params, .single(.optional(.string), .{ .name = "station", .description = "Directory where to store station data.", .short = .auto })),
+pub const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "points" }, .{
+    .station = .build(opt.Named, .single(.optional(.string), .{ .name = "station", .description = "Directory where to store station data.", .short = .auto })),
 }));
 
 pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !void {

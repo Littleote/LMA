@@ -5,6 +5,7 @@ const lma = @import("lma");
 const transform = lma.pipeline.transform;
 const Detail = lma.grid.Bounds.Detail;
 const nargs = @import("nargs");
+const opt = nargs.options;
 
 pub const Float = @import("main.zig").Float;
 pub const Generator = @import("Generator.zig");
@@ -125,11 +126,11 @@ const coord_parsers = .{
     .latitude = nargs.types.Floating(Float, .{ .min = .closed(-90), .max = .closed(90) }),
     .longitude = nargs.types.Floating(Float, .{ .min = .closed(-180), .max = .closed(180) }),
 };
-// fn coord(name: []const u8, options: nargs.Mixed(struct{Float, Float}).Options) nargs.Node(struct{Float, Float}) {
-//     return params.mixed(name, coord_parsers, options);
+// fn coord(name: []const u8, config: opt.Mixed(struct{Float, Float}).Config) nargs.Node(struct{Float, Float}) {
+//     return .build(opt.Mixed, ...);
 // }
-fn coord(options: nargs.Params([2]Float).Options) nargs.Node([2]Float) {
-    return .build(nargs.Params, .array(.floating(.{ .min = .closed(-180), .max = .closed(180) }), options));
+fn coord(config: opt.Named([2]Float).Config) nargs.Node([2]Float) {
+    return .build(opt.Named, .array(.floating(.{ .min = .closed(-180), .max = .closed(180) }), config));
 }
 
 const Cli = struct {
@@ -160,43 +161,43 @@ const Cli = struct {
     luminosity: Float = 1.0,
 };
 
-const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "holes" }, .{
-    .input = .build(nargs.Params, .single(.string, .{ .name = "input", .description = "Input file with the flash sources", .short = .auto })),
-    .info = .build(nargs.Groups, .any(.{ .name = "FILE INFO" }, .{
-        .format = .build(nargs.Params, .single(.options, .{ .name = "Fformat", .description = "File format" })),
-        .stage = .build(nargs.Params, .single(.options, .{ .name = "Fstage", .description = "Pipeline stage of the file" })),
+const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "holes" }, .{
+    .input = .build(opt.Named, .single(.string, .{ .name = "input", .description = "Input file with the flash sources", .short = .auto })),
+    .info = .build(opt.Groups, .any(.{ .name = "FILE_INFO", .show = .usage }, .{
+        .format = .build(opt.Named, .single(.choice, .{ .name = "Fformat", .description = "File format" })),
+        .stage = .build(opt.Named, .single(.choice, .{ .name = "Fstage", .description = "Pipeline stage of the file" })),
     })),
-    .output = .build(nargs.Params, .single(.string, .{ .name = "output", .description = "Output folder for the generated images", .short = .auto, .default = .init("img/demo/holes", null) })),
-    .map = .build(nargs.Params, .single(.string, .{
+    .output = .build(opt.Named, .single(.string, .{ .name = "output", .description = "Output folder for the generated images", .short = .auto, .default = .init("img/demo/holes", null) })),
+    .map = .build(opt.Named, .single(.string, .{
         .name = "map",
         .description = "Background map th display in the images as a geographical reference",
         .short = .auto,
         .default = .init("", "None"),
-        .presets = &.{
-            .init("cat-map", "data/map/comarques-compressed.geojson", "Catalonia map"),
-            .init("val-map", "data/map/comarques-cv.geojson", "Valencia map"),
+        .alternatives = &.{
+            .shortcut("cat-map", "data/map/comarques-compressed.geojson", "Catalonia map"),
+            .shortcut("val-map", "data/map/comarques-cv.geojson", "Valencia map"),
         },
     })),
-    .ffmpeg = nargs.flags.Flag(.{ .name = "ffmpeg", .description = "Generate a video from all the images using ffmpeg" }),
+    .ffmpeg = opt.flags.Flag(.{ .name = "ffmpeg", .description = "Generate a video from all the images using ffmpeg" }),
 
-    .region = .build(nargs.Groups, .exclusive(.{ .name = "REGION" }, .preset, .{
-        .center_scale = .build(nargs.Groups, .incremental(.{ .name = "CENTER & SCALE" }, .{
+    .region = .build(opt.Groups, .exclusive(.{ .name = "REGION", .show = .usage }, .preset, .{
+        .center_scale = .build(opt.Groups, .incremental(.{ .name = "CENTER_&_SCALE", .show = .usage }, .{
             .center = coord(.{ .name = "center", .description = "Center of the area", .shape = .{ .payload = ',' } }),
-            .scale = .build(nargs.Params, .array(.floating(.{}), .{ .name = "scale", .description = "Area size", .shape = .{ .payload = ',' }, .default = .init(.{ 512, 512 }, null) })),
+            .scale = .build(opt.Named, .array(.floating(.{}), .{ .name = "scale", .description = "Area size", .shape = .{ .payload = ',' }, .default = .init(.{ 512, 512 }, null) })),
         })),
-        .end_points = .build(nargs.Groups, .incremental(.{ .name = "END POINTS" }, .{
+        .end_points = .build(opt.Groups, .incremental(.{ .name = "END_POINTS", .show = .usage }, .{
             .from = coord(.{ .name = "from", .description = "Top left", .shape = .{ .payload = ',' } }),
             .to = coord(.{ .name = "to", .description = "Bottom right", .shape = .{ .payload = ',' } }),
         })),
-        .preset = .build(nargs.Params, .single(.options, .{ .name = "region", .description = "Auto adjust to the given region area", .default = .init(.catalunya, "Catalunya") })),
+        .preset = .build(opt.Named, .single(.choice, .{ .name = "region", .description = "Auto adjust to the given region area", .default = .init(.catalunya, "Catalunya") })),
     })),
-    .detail = .build(nargs.Groups, .exclusive(.{ .name = "DETAIL" }, .resolution, .{
-        .fixed_size = .build(nargs.Params, .array(.integer(.{}), .{ .name = "fixed-size", .description = "Resolution of the full image", .shape = .{ .payload = ',' } })),
-        .resolution = .build(nargs.Params, .single(.options, .{ .name = "resolution", .description = "Resolution per km²", .short = .auto, .default = .init(.medium, null) })),
+    .detail = .build(opt.Groups, .exclusive(.{ .name = "DETAIL", .show = .usage }, .resolution, .{
+        .fixed_size = .build(opt.Named, .array(.integer(.{}), .{ .name = "fixed-size", .description = "Resolution of the full image", .shape = .{ .payload = ',' } })),
+        .resolution = .build(opt.Named, .single(.choice, .{ .name = "resolution", .description = "Resolution per km²", .short = .auto, .default = .init(.medium, null) })),
     })),
 
-    .half_life = .build(nargs.Params, .single(.floating(.{}), .{ .name = "half-life", .description = "Half-life for flash source persistence", .short = .auto })),
-    .luminosity = .build(nargs.Params, .single(.floating(.{}), .{ .name = "luminosity", .description = "Scaling of image scale", .short = .auto })),
+    .half_life = .build(opt.Named, .single(.floating(.{}), .{ .name = "half-life", .description = "Half-life for flash source persistence", .short = .auto })),
+    .luminosity = .build(opt.Named, .single(.floating(.{}), .{ .name = "luminosity", .description = "Scaling of image scale", .short = .auto })),
 }));
 
 pub fn parseNargs(gpa: Allocator, io: std.Io, cli: std.process.Args) !Args {
@@ -204,39 +205,26 @@ pub fn parseNargs(gpa: Allocator, io: std.Io, cli: std.process.Args) !Args {
     {
         var tokenizer: nargs.Tokenizer = try .initFromArgs(gpa, cli);
         defer tokenizer.deinit();
-        var diag: nargs.Diagnostic = .init(gpa, .{});
+        var diag: nargs.Diagnostic = .init(gpa, .default);
         defer {
-            for (diag.error_list.items) |info| {
-                std.log.err("{s}: {s}", .{ @tagName(info.err), info.message });
-            }
+            for (diag.error_list.items) |info|
+                std.log.err("{f}", .{info});
             diag.deinit();
         }
 
         var mem = root.initMemory().*;
-        var help = false;
         while (tokenizer.peek()) |token| {
             if (root.parse(&mem, &tokenizer, &diag) == .no_match) {
                 tokenizer.discardAssumeToken();
-                switch (token) {
-                    .short => |short| if (short.name == 'h') {
-                        help = true;
-                        continue;
-                    },
-                    .long => |long| if (std.mem.eql(u8, "help", long.name)) {
-                        help = true;
-                        continue;
-                    },
-                    else => {},
-                }
-                diag.log(.unused_argument, "{f}", .{token});
+                diag.log(.unused_token, "", token);
             }
         }
 
-        if (help) {
+        if (diag.special_flags.get(.help)) {
             var help_buf: [128]u8 = undefined;
             var stdout = std.Io.File.stdout().writer(io, &help_buf);
-            try root.buildHelp(&stdout.interface);
-            try stdout.flush();
+            nargs.Help.print(.{ .info = root.info }, .fancy, &stdout.interface) catch {};
+            stdout.flush() catch {};
             return error.Help;
         }
 

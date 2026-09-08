@@ -6,74 +6,105 @@ const lma = @import("lma");
 const match = lma.pipeline.match;
 const ToaSolver = lma.pipeline.ToaSolver;
 const nargs = @import("nargs");
+const opt = nargs.options;
+
 const files = @import("files.zig");
 const runner = @import("runner.zig");
 const parse_time = @import("parse_time.zig");
 
-const CliTime = struct { date: parse_time.Date.Type, time: parse_time.Time.Type, seconds: parse_time.Seconds.Type };
-const CliFiles = struct { stations: []const []const u8, inputs: []nargs.types.io.Glob.Pattern, excluded: []const []const u8, outputs: []const []const u8, out_dir: ?[]const u8, probe: ?[]const u8 };
+const CliTime = struct {
+    date: parse_time.Date.Type,
+    hour: parse_time.Time.Type,
+    start: ?parse_time.Time.Type,
+    ending: union(enum) {
+        end: parse_time.Time.Type,
+        total: parse_time.Seconds.Type,
+    },
+};
+const CliFiles = struct {
+    stations: []const []const u8,
+    inputs: []nargs.params.io.Glob.Pattern,
+    excluded: []const []const u8,
+    outputs: []const []const u8,
+    out_dir: ?[]const u8,
+    probe: ?[]const u8,
+};
 const Cli = struct { threads: usize, time: CliTime, files: CliFiles, config: runner.Config };
-const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "match" }, .{
-    .threads = .build(nargs.Params, .single(.integer(.{ .min = 1, .max_str = "unlimited" }), .{
+const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "match" }, .{
+    .threads = .build(opt.Named, .single(.integer(.{ .min = 1, .max_str = "unlimited" }), .{
         .name = "threads",
         .description = "Number of threads to use for execution.",
         .display = "COUNT",
         .default = .init(@intFromEnum(std.Io.Limit.unlimited), "auto"),
         .short = .auto,
     })),
-    .time = .build(nargs.Groups, .any(.{ .name = "DATE" }, .{
-        .date = .build(nargs.Params, .single(.wrap(parse_time.Date), .{
+    .time = .build(opt.Groups, .any(.{ .name = "DATE" }, .{
+        .date = .build(opt.Named, .single(.wrap(parse_time.Date), .{
             .name = "date",
             .description = "Date from input files",
             .display = "DATE",
             .short = .auto,
         })),
-        .time = .build(nargs.Params, .single(.wrap(parse_time.Time), .{
+        .hour = .build(opt.Named, .single(.wrap(parse_time.Time), .{
             .name = "time",
             .description = "Time from input files.",
             .display = "TIME",
             .short = .set('h'),
         })),
-        .seconds = .build(nargs.Params, .single(.wrap(parse_time.Seconds), .{
-            .name = "analyse",
-            .description = "Total time to analyse as either SECONDS or HH:MM:SS.",
-            .display = "SECONDS",
-            .presets = &.{.alias("analyze")},
+        .start = .optional(.{ .default = "File start time" }, .build(opt.Named, .single(.wrap(parse_time.Time), .{
+            .name = "analyse-start",
+            .description = "Analysis start time.",
+            .display = "TIME",
+            .alternatives = &.{.alias("analyze-start")},
+        }))),
+        .ending = .build(opt.Groups, .exclusive(.{ .name = "DATE", .show = .hidden }, .total, .{
+            .end = .build(opt.Named, .single(.wrap(parse_time.Time), .{
+                .name = "analyse-end",
+                .description = "Analysis end time.",
+                .display = "TIME",
+                .alternatives = &.{.alias("analyze-end")},
+            })),
+            .total = .build(opt.Named, .single(.wrap(parse_time.Seconds), .{
+                .name = "analyse",
+                .description = "Total time to analyse as either SECONDS or HH:MM:SS.",
+                .display = "SECONDS",
+                .alternatives = &.{.alias("analyze")},
+            })),
         })),
     })),
-    .files = .build(nargs.Groups, .any(.{ .name = "FILES", .show = .compact }, .{
-        .stations = .build(nargs.Params, .variable(.string, .{ .min = 1 }, .{
+    .files = .build(opt.Groups, .any(.{ .name = "FILES", .show = .usage }, .{
+        .stations = .build(opt.Named, .variable(.string, .{ .min = 1 }, .{
             .name = "stations",
             .description = "File with station data. Accepts \".csv\", \".gps\" and \".loc\".",
             .display = "FILE",
             .short = .auto,
         })),
-        .inputs = .build(nargs.Params, .variable(.wrap(nargs.types.io.Glob), .{ .min = 1 }, .{
+        .inputs = .build(opt.Named, .variable(.wrap(nargs.params.io.Glob), .{ .min = 1 }, .{
             .name = "input",
             .description = "Glob pattern for all signal input files. Accepts \".csv\", \".dat\" and \".bin\" (with or without \".gz\").",
             .display = "GLOB",
             .short = .auto,
         })),
-        .excluded = .build(nargs.Params, .variable(.string, .{}, .{
+        .excluded = .build(opt.Named, .variable(.string, .{}, .{
             .name = "exclude",
-            .description = "Input signal files to exclude by name. Only the file name is necessary (with its extension).",
-            .display = "FILE",
+            .description = "Stations to exclude by name. Only the station name is necessary.",
+            .display = "NAME",
             .default = .init(&.{}, "none"),
         })),
-        .outputs = .build(nargs.Params, .variable(.string, .{ .max = 5 }, .{
+        .outputs = .build(opt.Named, .variable(.string, .{ .max = 5 }, .{
             .name = "output",
             .description = "Destination file to store the results. Accepts \".csv\", \".dat\" and \".bin\" (with or without \".gz\").",
             .display = "FILE",
             .short = .auto,
             .default = .init(&.{}, "CUSTOM_{YYMMDD}_{HHMMSS}_{SSSS}.dat.gz"),
         })),
-        .out_dir = .build(nargs.Params, .single(.optional(.string), .{
+        .out_dir = .build(opt.Named, .single(.optional(.string), .{
             .name = "output-path",
             .description = "Destination path were to create the generated files.",
             .display = "PATH",
             .default = .init(null, "current working directory"),
         })),
-        .probe = .build(nargs.Params, .single(.optional(.string), .{
+        .probe = .build(opt.Named, .single(.optional(.string), .{
             .name = "probe",
             .description = "Points to probe the method. Accepts \".dat\".",
             .display = "FILE",
@@ -113,38 +144,25 @@ pub fn main(init: std.process.Init.Minimal) void {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
         var tokenizer: nargs.Tokenizer = .initFromStatic((init.args.toSlice(arena.allocator()) catch @panic("OOM"))[1..]);
-        var diag: nargs.Diagnostic = .init(gpa, .{});
+        var diag: nargs.Diagnostic = .init(gpa, .default);
         defer {
-            for (diag.error_list.items) |info| {
-                std.log.err("{s}: {s}", .{ @tagName(info.err), info.message });
-            }
+            for (diag.error_list.items) |info|
+                std.log.err("{f}", .{info});
             diag.deinit();
         }
 
         var mem = root.initMemory().*;
-        var help = false;
         while (tokenizer.peek()) |token| {
             if (root.parse(&mem, &tokenizer, &diag) == .no_match) {
                 tokenizer.discardAssumeToken();
-                switch (token) {
-                    .short => |short| if (short.name == 'h') {
-                        help = true;
-                        continue;
-                    },
-                    .long => |long| if (std.mem.eql(u8, "help", long.name)) {
-                        help = true;
-                        continue;
-                    },
-                    else => {},
-                }
-                diag.log(.unused_argument, "{f}", .{token});
+                diag.log(.unused_token, "", token);
             }
         }
 
-        if (help) {
+        if (diag.special_flags.get(.help)) {
             var help_buf: [128]u8 = undefined;
             var stdout = std.Io.File.stdout().writer(io, &help_buf);
-            root.buildHelp(&stdout.interface) catch {};
+            nargs.Help.print(.{ .info = root.info }, .{ .name_width = 15, .tree_art = .ascii_arrow, .spacing = true }, &stdout.interface) catch {};
             stdout.flush() catch {};
             return;
         }
@@ -152,16 +170,6 @@ pub fn main(init: std.process.Init.Minimal) void {
         root.init(&mem, &diag, gpa, &options) catch return;
     }
     defer root.deinit(gpa, &options);
-
-    const config: runner.Config = .{
-        .beam_width = options.config.beam_width,
-        .dfs_attempts = options.config.dfs_attempts,
-        .memory = options.config.memory,
-        .probability = options.config.probability,
-        .verbose = options.config.verbose,
-        .weights = options.config.weights,
-        .chunk = options.config.chunk,
-    };
 
     threaded.async_limit = @enumFromInt(options.threads - 1);
     threaded.concurrent_limit = @enumFromInt(options.threads - 1);
@@ -222,7 +230,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     defer for (full_signals) |*signal| signal.deinit();
 
     for (options.files.inputs) |*pattern| {
-        var glob: nargs.types.io.Glob.Iterator = pattern.iterator(io, null) catch |err| switch (err) {
+        var glob: nargs.params.io.Glob.Iterator = pattern.iterator(io, null) catch |err| switch (err) {
             error.Canceled => unreachable,
             else => |new_err| {
                 std.log.err("Unable to load any files matching \"{s}\" with error {}", .{ pattern.path, new_err });
@@ -239,14 +247,19 @@ pub fn main(init: std.process.Init.Minimal) void {
         }) |entry| {
             for (options.files.excluded) |exclude| {
                 const name = std.fs.path.basename(exclude);
-                if (std.mem.eql(u8, entry.basename, name)) continue;
+                if (std.mem.find(u8, entry.basename, name)) |_| {
+                    std.log.info(
+                        \\Excluded "{s}" because it matched "{s}".
+                    , .{ entry.basename, exclude });
+                    continue;
+                }
             }
 
-            loadStation(io, entry.dir, entry.basename, options.time.date.string[2..8].*, options.time.time.string, stations, full_signals) catch |err| {
+            loadStation(io, entry.dir, entry.basename, options.time.date.string[2..8].*, options.time.hour.string, stations, full_signals) catch |err| {
                 switch (err) {
                     error.BadName => std.log.warn(
                         \\File "{s}" doesn't conform to naming convention "{{CODE}}_{{NETWORK}}_{{STATION_NAME}}_{{YYMMDD}}_{{HHMMSS}}". (With YYMMDD = {s} and HHMMSS = {s})
-                    , .{ entry.basename, options.time.date.string[2..8].*, options.time.time.string }),
+                    , .{ entry.basename, options.time.date.string[2..8].*, options.time.hour.string }),
                     error.UnknownStation => std.log.warn(
                         \\No station associated to "{s}".
                     , .{entry.basename}),
@@ -277,9 +290,14 @@ pub fn main(init: std.process.Init.Minimal) void {
         },
     } else .cwd();
 
-    const start_time = options.time.time.toSeconds();
+    const start_time = (options.time.start orelse options.time.hour).toSeconds();
+    const end_time = switch (options.time.ending) {
+        .end => |end| end.toSeconds(),
+        .total => |total| start_time + total,
+    };
+    const analysed = end_time - start_time;
 
-    const result = runner.run(io, gpa, points, full_signals, config, .init(start_time, options.time.seconds)) catch |err| switch (err) {
+    const result = runner.run(io, gpa, points, full_signals, options.config, .init(start_time, analysed)) catch |err| switch (err) {
         error.Canceled => unreachable,
         error.OutOfMemory => @panic("OOM"),
     };
@@ -290,7 +308,11 @@ pub fn main(init: std.process.Init.Minimal) void {
     var default_file_buffer = "CUSTOM_YYMMDD_HHMMSS_SSSS.dat.gz"[0..].*;
 
     const out_files: []const []const u8 = if (options.files.outputs.len == 0) &.{
-        std.fmt.bufPrint(&default_file_buffer, "CUSTOM_{s}_{s}_{d:0>4}.dat.gz", .{ options.time.date.string[2..8].*, options.time.time.string, options.time.seconds }) catch unreachable,
+        std.fmt.bufPrint(
+            &default_file_buffer,
+            "CUSTOM_{s}_{s}_{d:0>4}.dat.gz",
+            .{ options.time.date.string[2..8].*, (options.time.start orelse options.time.hour).string, analysed },
+        ) catch unreachable,
     } else options.files.outputs;
     for (out_files) |out| {
         const err: anyerror = skip: {
@@ -307,7 +329,7 @@ pub fn main(init: std.process.Init.Minimal) void {
 
     std.debug.print("Total points: {d}\n", .{output.array.items.len});
 
-    if (config.verbose) {
+    if (options.config.verbose) {
         for (stations.stations.items, 0..) |*station, i| {
             const correction = lma.nano.toFixed(i32, result.stats.stations[i].calibration());
             station.delay -= correction;

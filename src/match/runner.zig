@@ -4,6 +4,7 @@ const root = @import("main.zig");
 const parse_time = @import("parse_time.zig");
 
 const nargs = @import("nargs");
+const opt = nargs.options;
 
 const lma = @import("lma");
 const ToaSolver = lma.pipeline.ToaSolver;
@@ -19,36 +20,36 @@ pub const Config = struct {
     memory: u32 = 5,
     probability: f32 = 0.90,
     chunk: u32 = if (@import("builtin").single_threaded) 24 * 60 * 60 else 60,
-    verbose: bool = false,
+    verbose: bool,
 };
 
-pub const config_parser: nargs.Node(Config) = .build(nargs.Groups, .any(.{ .name = "CONFIG", .show = .{ .description = "LMA solver configuration" } }, .{
-    .memory = .build(nargs.Params, .single(.integer(.{ .max = 20 }), .{
+pub const config_parser: nargs.Node(Config) = .build(opt.Groups, .any(.{ .name = "CONFIG", .show = .{ .description = "LMA solver configuration" } }, .{
+    .memory = .build(opt.Named, .single(.integer(.{ .max = 20 }), .{
         .name = "memory",
         .description = "Number of solutions saved to check for new nearby solutions.",
     })),
-    .beam_width = .build(nargs.Params, .single(.integer(.{ .max = 50 }), .{
+    .beam_width = .build(opt.Named, .single(.integer(.{ .max = 50 }), .{
         .name = "beam-width",
         .description = "Beam search width: Maximum number of solutions tested with this method.",
     })),
-    .dfs_attempts = .build(nargs.Params, .single(.integer(.{ .max = 50 }), .{
+    .dfs_attempts = .build(opt.Named, .single(.integer(.{ .max = 50 }), .{
         .name = "depth-tries",
         .description = "Depth first search attempts: Number of tries to find promising combinations at each depth.",
     })),
-    .probability = .build(nargs.Params, .single(.floating(.{ .min = .open(0), .max = .closed(1) }), .{
+    .probability = .build(opt.Named, .single(.floating(.{ .min = .open(0), .max = .closed(1) }), .{
         .name = "threshold",
         .description = "Average probability of the station combination.",
     })),
-    .weights = .build(nargs.Params, .single(.options, .{
+    .weights = .build(opt.Named, .single(.choice, .{
         .name = "corr-weight",
         .description = "Value to use to compute the correlation input weights",
         .display = "WEIGHT",
     })),
-    .verbose = nargs.flags.Flag(.{
+    .verbose = opt.flags.Flag(.{
         .name = "verbose",
         .description = "Show run statistics",
     }),
-    .chunk = .build(nargs.Params, .single(.wrap(parse_time.Seconds), .{
+    .chunk = .build(opt.Named, .single(.wrap(parse_time.Seconds), .{
         .name = "divide",
         .description = "Total time to analyse per thread as either SECONDS or HH:MM:SS.",
         .display = "SECONDS",

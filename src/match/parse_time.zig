@@ -11,13 +11,13 @@ pub const Date = struct {
     pub fn parse(_: Allocator, buf: []const u8, diag: *nargs.Diagnostic) Error!Type {
         return initInner(buf) catch |err| switch (err) {
             error.InvalidFormat => {
-                diag.startLogWithMessage(.invalid_value,
+                diag.log(.invalid_value_reason,
                     \\Expected a date in format YYYYMMDD, YYMMDD or (YY)YY/(M)M/(D)D but found "{s}" instead.
                 , .{buf});
                 return error.InvalidValue;
             },
             error.InvalidDate => {
-                diag.startLogWithMessage(.invalid_value,
+                diag.log(.invalid_value_reason,
                     \\"{s}" is not a valid date.
                 , .{buf});
                 return error.InvalidValue;
@@ -88,13 +88,13 @@ pub const Time = struct {
     pub fn parse(_: Allocator, buf: []const u8, diag: *nargs.Diagnostic) Error!Type {
         return initInner(buf) catch |err| switch (err) {
             error.InvalidFormat => {
-                diag.startLogWithMessage(.invalid_value,
+                diag.log(.invalid_value_reason,
                     \\Expected time in format HHMMSS or HH:MM:SS but found "{s}" instead.
                 , .{buf});
                 return error.InvalidValue;
             },
             error.InvalidTime => {
-                diag.startLogWithMessage(.invalid_value,
+                diag.log(.invalid_value_reason,
                     \\"{s}" is not a valid time.
                 , .{buf});
                 return error.InvalidValue;
@@ -156,13 +156,13 @@ pub const Seconds = struct {
     pub fn parse(_: Allocator, buf: []const u8, diag: *nargs.Diagnostic) Error!Type {
         return initInner(buf) catch |err| switch (err) {
             error.InvalidFormat => {
-                diag.startLogWithMessage(.invalid_value,
+                diag.log(.invalid_value_reason,
                     \\Expected time in format SECONDS or (HH:)MM:SS but found "{s}" instead.
                 , .{buf});
                 return error.InvalidValue;
             },
             error.InvalidTime => {
-                diag.startLogWithMessage(.invalid_value,
+                diag.log(.invalid_value_reason,
                     \\"{s}" is not a valid time.
                 , .{buf});
                 return error.InvalidValue;

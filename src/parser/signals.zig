@@ -3,11 +3,12 @@ const std = @import("std");
 const lma = @import("lma");
 const Signal = lma.data.Signal;
 const nargs = @import("nargs");
+const opt = nargs.options;
 
 const utils = @import("utils.zig");
 
 pub const Cli = struct {};
-pub const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "signals" }, .{}));
+pub const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "signals" }, .{}));
 
 pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !void {
     _ = args;

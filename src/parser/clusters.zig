@@ -3,6 +3,7 @@ const std = @import("std");
 const lma = @import("lma");
 const Clusters = lma.data.Clusters;
 const nargs = @import("nargs");
+const opt = nargs.options;
 
 const utils = @import("utils.zig");
 
@@ -17,8 +18,8 @@ const Delimiter = enum(u8) {
 };
 
 pub const Cli = struct { delimiter: Delimiter };
-pub const root: nargs.Node(Cli) = .build(nargs.Groups, .any(.{ .name = "clusters" }, .{
-    .delimiter = .build(nargs.Params, .single(.options, .{ .name = "delimiter", .description = "CSV file delimiter.", .default = .init(.space, null) })),
+pub const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "clusters" }, .{
+    .delimiter = .build(opt.Named, .single(.choice, .{ .name = "delimiter", .description = "CSV file delimiter.", .default = .init(.space, null) })),
 }));
 
 pub fn parse(io: std.Io, gpa: std.mem.Allocator, path: []const u8, args: Cli) !void {

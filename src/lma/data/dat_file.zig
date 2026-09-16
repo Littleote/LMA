@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Reader = std.Io.Reader;
@@ -102,11 +103,11 @@ pub const signals = struct {
         };
 
         file_reader.seekTo(0) catch unreachable;
-        var dat_headers: std.ArrayList(Header) = try parser.parseAllHeaders(&file_reader.interface, signal_data.allocator);
-        defer dat_headers.deinit(signal_data.allocator);
+        var sections: std.ArrayList(Section) = try parser.parseAllHeaders(&file_reader.interface, signal_data.allocator);
+        defer sections.deinit(signal_data.allocator);
 
         file_reader.seekTo(0) catch unreachable;
-        return parser.parse(dat_headers.items, &file_reader.interface, signal_data);
+        return parser.parse(sections.items, &file_reader.interface, signal_data);
     }
 
     /// Load a Time of Arrival '.dat' file from a reader
@@ -130,14 +131,14 @@ pub const signals = struct {
         };
 
         reader.seek = 0;
-        var dat_headers: std.ArrayList(Header) = try parser.parseAllHeaders(&reader, signal_data.allocator);
-        defer dat_headers.deinit(signal_data.allocator);
+        var sections: std.ArrayList(Section) = try parser.parseAllHeaders(&reader, signal_data.allocator);
+        defer sections.deinit(signal_data.allocator);
 
         reader.seek = 0;
-        return parser.parse(dat_headers.items, &reader, signal_data);
+        return parser.parse(sections.items, &reader, signal_data);
     }
 
-    const Header = struct {
+    const Section = struct {
         start: u32,
         epoch: u32,
         size: u16,
@@ -163,7 +164,7 @@ pub const signals = struct {
             };
 
             const version: u16 = (packet_start >> 7) & 0x001F;
-            const is_supported = std.mem.containsAtLeastScalar2(u16, &supported_versions, version, 1);
+            const is_supported = std.mem.findScalar(u16, &supported_versions, version) != null;
             if (!is_supported) {
                 std.log.err("Version {d} is not supported.", .{version});
                 return error.UnsupportedVersion;
@@ -177,151 +178,119 @@ pub const signals = struct {
 
         /// Advance the reader until the header of the next packet found
         fn nextPacketHeader(self: Parser, r: *Reader, skip: usize) error{ReadFailed}!?usize {
-            return switch (self.version) {
-                10...13 => blk: {
-                    const lookbehind: Offset = comptime .init(9);
-                    const lookahead: Offset = comptime .init(8);
-                    const preserved: Offset = comptime .init(lookbehind.count + lookahead.count);
-                    std.debug.assert(lookbehind.count == (Offset.preserve(self)).count);
+            switch (self.version) {
+                inline 12 => |version| {
+                    const Header = Headers[version];
 
-                    const even = ~@as(usize, 1);
-                    const start = @max(lookahead.bytes, skip);
-
-                    _ = peekPreserve(r, preserved.bytes, start, false) catch |err| switch (err) {
+                    _ = r.take(skip) catch |err| switch (err) {
                         error.ReadFailed => return error.ReadFailed,
                         error.EndOfStream => return null,
                     };
-                    var consumed: usize = start;
-                    r.toss(start);
 
-                    loop: while (true) {
-                        while (true) {
-                            const buffer = peekPreserve(r, preserved.bytes, 2, true) catch |err| switch (err) {
-                                error.ReadFailed => return error.ReadFailed,
-                                error.EndOfStream => return null,
-                            };
-                            const maybe_idx = std.mem.indexOf(
-                                u8,
-                                buffer,
-                                "\x55\xAA",
-                            );
-                            if (maybe_idx) |idx| {
+                    const even = ~@as(usize, 1);
+                    var consumed: usize = skip;
+
+                    while (true) {
+                        // Search until marker sequence is found
+                        while (r.peekGreedy(@sizeOf(Header))) |buffer| {
+                            const maybe_idx = std.mem.indexOfPos(u8, buffer, Header.marker_offset, "\x55\xAA");
+                            const discarded = if (maybe_idx) |idx|
                                 if (idx % 2 == 0) {
-                                    consumed += idx;
-                                    r.toss(idx);
-                                    break;
-                                } else {
-                                    // Keep u16 alignment and ignore bad match
-                                    const discarded = 2 + (idx & even);
+                                    const discarded = idx - Header.marker_offset;
                                     consumed += discarded;
                                     r.toss(discarded);
-                                }
-                            } else {
+                                    break;
+                                } else
+                                // Keep u16 alignment and ignore missaligned match
+                                (idx & even) + 2 - Header.marker_offset
+                            else
                                 // Keep u16 alignment
-                                const discarded = r.bufferedLen() & even;
-                                consumed += discarded;
-                                r.toss(discarded);
-                            }
+                                (buffer.len & even) - Header.marker_offset;
+
+                            consumed += discarded;
+                            r.toss(discarded);
+                        } else |err| switch (err) {
+                            error.ReadFailed => return error.ReadFailed,
+                            error.EndOfStream => return null,
                         }
 
-                        var found = false;
-                        const frozen_seek = r.seek;
-                        defer if (!found) {
-                            r.seek = frozen_seek + 2;
-                            consumed += 2;
-                        };
-
-                        r.seek -= lookahead.bytes;
-                        found = true;
-                        if (r.seek < lookbehind.bytes) break :loop;
-                        var packet_header: [lookbehind.count]u16 = undefined;
-                        r.seek -= lookbehind.bytes;
-                        r.readSliceEndian(u16, &packet_header, .little) catch unreachable;
-                        const pattern = packet_header[lookbehind.count - 9] & masks.pattern;
-                        const alternate_pattern = packet_header[lookbehind.count - 1] & masks.alternate;
-                        if (alternate_pattern == 0 or pattern == self.pattern) break :loop;
-                        // Only execute if no code path exited
-                        found = false;
+                        // Search already read the full Header
+                        const header = r.peekStruct(Header, .little) catch unreachable;
+                        if (header.valid()) return consumed else r.toss(2);
                     }
-                    break :blk consumed - lookahead.bytes;
                 },
                 else => unreachable,
-            };
+            }
         }
 
         /// Process an entire file saving the header metadata into an array list
-        fn parseAllHeaders(self: Parser, r: *Reader, gpa: Allocator) error{ ReadFailed, OutOfMemory }!std.ArrayList(Header) {
-            var headers: std.ArrayList(Header) = .empty;
-            errdefer headers.deinit(gpa);
+        fn parseAllHeaders(self: Parser, r: *Reader, gpa: Allocator) error{ ReadFailed, OutOfMemory }!std.ArrayList(Section) {
+            var sections: std.ArrayList(Section) = .empty;
+            errdefer sections.deinit(gpa);
 
-            if (try self.nextPacketHeader(r, 0) == null) return headers;
+            if (try self.nextPacketHeader(r, 0) == null) return sections;
 
             var start: u32 = 0;
             while (try self.parseHeader(r, start)) |header| {
                 start += header.size;
-                try headers.append(gpa, header);
+                try sections.append(gpa, header);
             }
 
-            return headers;
+            return sections;
         }
 
         /// Process an entire file given the header metadata
         /// saving the packet information into the data struct
-        fn parse(self: Parser, headers: []const Header, r: *Reader, signal_data: *data.Signal) error{ ReadFailed, OutOfMemory, BadFile }!void {
-            if (headers.len == 0) return;
+        fn parse(self: Parser, sections: []const Section, r: *Reader, signal_data: *data.Signal) error{ ReadFailed, OutOfMemory, BadFile }!void {
+            if (sections.len == 0) return;
             _ = try self.nextPacketHeader(r, 0) orelse unreachable;
 
-            const header_block = Offset.header(self).bytes;
-            const body = Offset.body(self).bytes;
-            r.discardAll(header_block) catch |err| {
+            r.discardAll(self.header_size()) catch |err| {
                 switch (err) {
                     error.ReadFailed => |new_error| return new_error,
                     error.EndOfStream => unreachable,
                 }
             };
 
-            signal_data.start_epoch = headers[0].epoch;
-            const end_epoch = headers[headers.len - 1].epoch + 1;
+            signal_data.start_epoch = sections[0].epoch;
+            const end_epoch = sections[sections.len - 1].epoch + 1;
             var epoch: u64 = signal_data.start_epoch;
+            var buffer_index: u32 = 0;
 
             try signal_data.headers.ensureTotalCapacityPrecise(signal_data.allocator, @intCast(end_epoch - signal_data.start_epoch));
-            for (headers) |header| {
-                if (epoch > header.epoch or header.epoch >= end_epoch) {
+            for (sections) |section| {
+                if (epoch > section.epoch or section.epoch >= end_epoch) {
                     @branchHint(.cold);
-                    if (epoch - 1 == header.epoch) {
-                        std.log.warn("Header {d} followed by header {d}. Truncating to latest appreance of the header.", .{ epoch - 1, header.epoch });
-                        signal_data.headers.items.len = @intCast(header.epoch - signal_data.start_epoch);
-                    } else {
-                        @branchHint(.cold);
-                        if (header.epoch >= end_epoch) {
-                            std.log.err("Header {d} outside expected range {{{d}, ..., {d}}}. Unable to keep parsing.", .{ header.epoch, signal_data.start_epoch, end_epoch - 1 });
-                        } else {
-                            std.log.err("Header {d} followed by header {d}. Unable to keep parsing.", .{ epoch - 1, header.epoch });
-                        }
-                        return error.BadFile;
-                    }
-                } else {
-                    signal_data.headers.appendNTimesAssumeCapacity(.{
-                        .start = @intCast(header.start),
-                        .size = 0,
-                    }, @intCast(header.epoch - epoch));
-                }
-                signal_data.headers.appendAssumeCapacity(.{
-                    .start = @intCast(header.start),
-                    .size = @intCast(header.size),
-                });
-                epoch = header.epoch + 1;
-                const elems = try signal_data.array.addManyAsSlice(signal_data.allocator, header.size);
-                for (elems) |*elem| {
-                    const bytes = r.take(body) catch |err| {
+                    std.log.warn("Header {d} followed by header {d}. Ignoring latest section with header {d}.", .{ epoch - 1, section.epoch, section.epoch });
+                    r.discardAll(section.size * self.packet_size()) catch |err| {
                         switch (err) {
                             error.ReadFailed => |new_error| return new_error,
                             error.EndOfStream => unreachable,
                         }
                     };
-                    elem.* = self.parsePacket(bytes, header);
+                } else {
+                    signal_data.headers.appendNTimesAssumeCapacity(.{
+                        .start = buffer_index,
+                        .size = 0,
+                    }, @intCast(section.epoch - epoch));
+
+                    const elems = try signal_data.array.addManyAsSlice(signal_data.allocator, section.size);
+                    const buffer_size = self.parsePackets(section, r, elems) catch |err| switch (err) {
+                        error.ReadFailed => |new_error| return new_error,
+                        error.EndOfStream => unreachable,
+                    };
+
+                    signal_data.headers.appendAssumeCapacity(.{
+                        .start = buffer_index,
+                        .size = buffer_size,
+                    });
+                    buffer_index += buffer_size;
+                    epoch = section.epoch + 1;
+
+                    signal_data.array.items.len = buffer_index;
                 }
-                r.discardAll(header_block) catch |err| {
+
+                r.discardAll(self.header_size()) catch |err| {
                     switch (err) {
                         error.ReadFailed => |new_error| return new_error,
                         error.EndOfStream => unreachable,
@@ -330,207 +299,338 @@ pub const signals = struct {
             }
         }
 
-        /// Computes the size of the block and parses the dat file header
-        /// Leaves the reader position on the next header
-        fn parseHeader(self: Parser, r: *Reader, start: u32) error{ReadFailed}!?Header {
-            const header_size = Offset.header(self).bytes;
-            const preserve_size = Offset.preserve(self).bytes;
+        /// Computes the size of the block and parses the dat file header.
+        ///
+        /// Leaves the reader position at the start of the next header.
+        fn parseHeader(self: Parser, r: *Reader, start: u32) error{ReadFailed}!?Section {
+            switch (self.version) {
+                inline 12 => |version| {
+                    const size = try self.nextPacketHeader(r, @sizeOf(Headers[version])) orelse return null;
+                    const header = r.peekStruct(Headers[version], .little) catch |err| {
+                        switch (err) {
+                            error.ReadFailed => |new_error| return new_error,
+                            error.EndOfStream => return null,
+                        }
+                    };
 
-            const size = try self.nextPacketHeader(r, header_size) orelse return null;
-            const header = peekPreserve(r, preserve_size, header_size, false) catch |err| {
-                switch (err) {
-                    error.ReadFailed => |new_error| return new_error,
-                    error.EndOfStream => return null,
-                }
-            };
-
-            return parseHeaderInner(self, header, start, size);
-        }
-
-        fn parseHeaderInner(self: Parser, header: []const u8, start: u32, size: usize) Header {
-            const header_size = Offset.header(self).bytes;
-            const body_size = Offset.body(self).bytes;
-
-            var header_reader: Reader = .fixed(header);
-            // xxxxxxxx_1xxxxxxx
-            // xxxxxxxx_1xxxxxxx
-            // ssmmmmmm_1xxxssss
-            // DDDDMMMM_1xhhhhhD
-            var time: [4]u16 = undefined;
-            header_reader.readSliceEndian(u16, &time, .little) catch unreachable;
-
-            var epoch: u32 = 0;
-            // Add seconds
-            epoch += @as(u32, time[2] >> 6) & 0x003F;
-            // Add minutes
-            epoch += @as(u32, time[2] & 0x003F) * std.time.s_per_min;
-            // Add hours
-            epoch += @as(u32, (time[3] >> 9) & 0x001F) * std.time.s_per_hour;
-
-            const count = @divExact(size - header_size, body_size);
-            const correction = switch (self.version) {
-                6...9 => 0,
-                10...13 => blk: {
-                    const absolute_value: i16 = @intCast(toNative(header, 6) & 0x7FFF);
-                    const sign: i16 = if ((toNative(header, 1) & 0x4000) == 0) -1 else 1;
-                    break :blk sign * absolute_value;
+                    return header.parseHeader(start, size);
                 },
                 else => unreachable,
-            };
-
-            return .{
-                .start = start,
-                .size = @intCast(count),
-                .epoch = @intCast(epoch),
-                .count_correction = correction,
-            };
+            }
         }
 
-        fn parsePacket(self: Parser, bytes: []const u8, header: Header) data.types.Signal {
-            return switch (self.version) {
-                10, 12 => blk: {
-                    // nnnnnnnn_0aaaannn
-                    // mmmmmmmm_11mmmmmm
-                    // XXXXXXXX_0aaaaaaa
-                    const micro: u28 = toNative(bytes, 1) & 0x3FFF;
-                    const nano: u16 = toNative(bytes, 0) & 0x07FF;
-                    const above_high: u12 = @intCast((toNative(bytes, 2) >> 4) & 0x07F0);
-                    const above_low: u12 = @intCast((toNative(bytes, 0) >> 11) & 0x000F);
-                    const packet = .{
-                        .nano_x40 = 2000 * micro + nano,
-                        .max = bytes[4],
-                        .above = above_high + above_low,
-                    };
-                    const factor: f64 = std.time.ns_per_s / (std.time.ns_per_s / 40.0 + cast.to(f64, header.count_correction));
-                    break :blk .{
-                        .nanosecond = @intFromFloat(@round(4 * cast.to(f64, packet.nano_x40) * factor)),
-                        .dBm = 0.488 * cast.to(f16, packet.max) - 111.0,
-                        .padding = packet.above,
-                    };
+        fn parsePackets(self: Parser, section: Section, r: *Reader, out: []data.types.Signal) Reader.Error!u32 {
+            std.debug.assert(out.len < std.math.maxInt(u32));
+            switch (self.version) {
+                10, 12 => {
+                    const factor: f64 = std.time.ns_per_s / (std.time.ns_per_s / 40.0 + cast.to(f64, section.count_correction));
+
+                    var filled: u32 = 0;
+                    for (0..out.len) |_| {
+                        const packet = try r.takeStruct(PacketV12, .little);
+                        out[filled] = packet.buildSignal(factor) catch |err| switch (err) {
+                            error.NextSecond => {
+                                std.log.warn("Invalid time in packet {f}, discarding packet.", .{packet});
+                                continue;
+                            },
+                        };
+                        filled += 1;
+                    }
+                    return filled;
                 },
                 else => unreachable,
-            };
+            }
         }
 
-        test parseHeaderInner {
-            var parser: Parser = undefined;
+        test parseHeader {
             var bytes: [latest_version]?[]const []const u8 = @splat(null);
-            var header: [latest_version]?[]const Header = @splat(null);
+            var sections: [latest_version]?[]const Section = @splat(null);
             bytes[12] = &.{
                 "0-\x00\x40\x59\x0B\x00\x064-5-\x39\x307-8-9-",
                 "0-\xFF\xBF\x64\xA4\x71\x2B4-5-\x39\x307-8-9-",
             };
-            header[12] = &.{
+            sections[12] = &.{
                 .{ .count_correction = 12345, .start = 123, .size = (2520 - 18) / 6, .epoch = 12345 },
                 .{ .count_correction = -12345, .start = 123, .size = (2520 - 18) / 6, .epoch = 77777 },
             };
 
-            for (supported_versions) |version| {
-                parser.version = version;
-                for (bytes[version].?, header[version].?, 1..) |in, out, idx| {
-                    const parsed = parser.parseHeaderInner(in, 123, 2520);
-                    std.testing.expectEqual(
-                        out,
-                        parsed,
-                    ) catch |err| {
-                        std.debug.print("Failed to parse metadata {d} in version {d}.\n", .{ idx, version });
-                        std.debug.print("Expected {any} but found {any}.\n", .{ out, parsed });
-                        return err;
-                    };
+            inline for (supported_versions) |version| {
+                const HeaderVersion = Headers[version];
+                for (bytes[version].?, sections[version].?, 1..) |in, out, idx| {
+                    errdefer std.debug.print("For version {d}, example {d}.\n", .{ version, idx });
+
+                    var r: Reader = .fixed(in);
+                    const header = r.takeStruct(HeaderVersion, .little) catch unreachable;
+                    const parsed = header.parseHeader(123, 2520);
+                    errdefer std.debug.print("Expected {any} but found {any}.\n", .{ out, parsed });
+
+                    try std.testing.expectEqual(out, parsed);
                 }
             }
         }
 
-        test parsePacket {
+        test parsePackets {
             var parser: Parser = undefined;
             var bytes: [latest_version]?[]const []const u8 = @splat(null);
-            var header: [latest_version]?[]const Header = @splat(null);
+            var sections: [latest_version]?[]const Section = @splat(null);
             var signal: [latest_version]?[]const data.types.Signal = @splat(null);
 
-            bytes[12] = &.{"\x8E\x16\x1C\x18\x7B\x4D"};
-            header[12] = &.{.{ .start = 0, .size = 1, .epoch = 0, .count_correction = 0 }};
-            signal[12] = &.{.{
-                .nanosecond = 4 * 40 * 12345678,
-                .dBm = 0.488 * 123.0 - 111.0,
-                .padding = 1234,
-            }};
+            bytes[12] = &.{
+                "\x8E\x16\x1C\x18\x7B\x4D",
+                &PacketV12.initRaw(&.{
+                    0b1_1010_01100101010,
+                    0b1_1_01010111011000,
+                    0b1_0101010_10101010,
+                }).asBytes(),
+            };
+            sections[12] = &.{
+                .{ .start = 0, .size = 1, .epoch = 0, .count_correction = 0 },
+                .{ .start = 0, .size = 1, .epoch = 0, .count_correction = 0 },
+            };
+            signal[12] = &.{
+                .{ .nanosecond = 4 * 40 * 12345678, .dBm = 0.488 * 123.0 - 111.0, .padding = 1234 },
+                .{ .nanosecond = 4 * 40 * 0xAAAAAA, .dBm = 0.488 * 0xAA.0 - 111.0, .padding = 0x2AA },
+            };
 
             for (supported_versions) |version| {
                 parser.version = version;
-                for (bytes[version].?, header[version].?, signal[version].?, 1..) |in, extra, out, idx| {
-                    const parsed = parser.parsePacket(in, extra);
-                    std.testing.expectEqual(
-                        out,
-                        parsed,
-                    ) catch |err| {
-                        std.debug.print("Failed to parse packet {d} in version {d}.\n", .{ idx, version });
-                        std.debug.print("Expected {any} but found {any}.\n", .{ out, parsed });
-                        return err;
-                    };
+                for (bytes[version].?, sections[version].?, signal[version].?, 1..) |in, extra, out, idx| {
+                    errdefer std.debug.print("For version {d}, example {d}.\n", .{ version, idx });
+
+                    var r: Reader = .fixed(in);
+                    var parsed: data.types.Signal = undefined;
+                    try std.testing.expect(parser.parsePackets(extra, &r, (&parsed)[0..1]) catch unreachable == 1);
+                    errdefer std.debug.print("Expected {any} but found {any}.\n", .{ out, parsed });
+
+                    try std.testing.expectEqual(out, parsed);
                 }
             }
+        }
+
+        fn header_size(self: Parser) usize {
+            return switch (self.version) {
+                inline 12 => |version| @sizeOf(Headers[version]),
+                else => unreachable,
+            };
+        }
+
+        fn packet_size(self: Parser) usize {
+            return switch (self.version) {
+                inline 12 => |version| @sizeOf(Packets[version]),
+                else => unreachable,
+            };
         }
 
         test "supported_versions" {
             comptime {
-                var parser: Parser = .{ .pattern = 0, .version = undefined };
                 for (supported_versions) |version| {
-                    parser.version = version;
-                    var r: Reader = .fixed(&.{});
-                    _ = parser.nextPacketHeader(&r, 0) catch unreachable;
-                    const header_buffer: [Offset.header(parser).bytes]u8 = @splat(0xAA);
-                    const header = parser.parseHeaderInner(&header_buffer, 0, Offset.header(parser).bytes);
-                    const packet_buffer: [Offset.body(parser).bytes]u8 = @splat(0xAA);
-                    _ = parser.parsePacket(&packet_buffer, header);
+                    var parser: Parser = .{ .pattern = 0, .version = version };
+                    const Header = Headers[version];
+                    const Packet = Packets[version];
+
+                    var reader: Reader = .fixed(&.{});
+                    _ = parser.nextPacketHeader(&reader, 0) catch unreachable;
+
+                    const header: *const Header = &.initRaw(&@splat(0xAAAA));
+                    const segment = header.parseHeader(0, @sizeOf(Header));
+
+                    var packets_reader: Reader = .fixed(&Packet.initRaw(&@splat(0xAAAA)).asBytes());
+                    var signals_buffer: [1]lma.data.types.Signal = @splat(undefined);
+                    _ = parser.parsePackets(segment, &packets_reader, &signals_buffer) catch unreachable;
                 }
             }
         }
 
-        const Offset = struct {
-            count: usize,
-            bytes: usize,
+        fn Mixin(T: type) type {
+            return struct {
+                const u8_size = @sizeOf(T);
+                const u16_size = @divExact(@sizeOf(T), 2);
 
-            fn init(count: usize) Offset {
+                inline fn fromBytes(bytes: *const [u8_size]u8) T {
+                    var out = @as(*align(1) const T, @ptrCast(bytes)).*;
+                    if (builtin.target.cpu.arch.endian() != .little) {
+                        std.mem.byteSwapAllElements(u16, @ptrCast(&out));
+                    }
+                    return out;
+                }
+
+                inline fn fromBytesW(bytes: *const [u16_size]u16) T {
+                    return @as(*const T, @ptrCast(bytes)).*;
+                }
+
+                inline fn asBytes(ptr: *const T) [u8_size]u8 {
+                    var out: [u8_size]u8 align(2) = @as(*const [u8_size]u8, @ptrCast(ptr)).*;
+                    if (builtin.target.cpu.arch.endian() != .little) {
+                        std.mem.byteSwapAllElements(u16, @ptrCast(&out));
+                    }
+                    return out;
+                }
+
+                inline fn asBytesW(ptr: *const T) *const [u16_size]u16 {
+                    return @ptrCast(ptr);
+                }
+
+                fn headerEpoch(value: T) u32 {
+                    return @as(u32, value._2.second) +
+                        @as(u32, value._2.minute) * std.time.s_per_min +
+                        @as(u32, value._3.hour) * std.time.s_per_hour;
+                }
+
+                fn format(value: T, w: *Writer) Writer.Error!void {
+                    var separator = true;
+                    inline for (@typeInfo(T).@"struct".fields) |field| {
+                        const fmt = comptime blk: {
+                            var fmt: []const u8 = "";
+                            var underscore = true;
+                            for (@typeInfo(field.type).@"struct".fields) |subfield| {
+                                if (underscore) underscore = false else fmt = "_" ++ fmt;
+                                fmt = std.fmt.comptimePrint(
+                                    "{{[{s}]b:0>{d}}}",
+                                    .{ subfield.name, @typeInfo(subfield.type).int.bits },
+                                ) ++ fmt;
+                            }
+                            break :blk fmt[0..].*;
+                        };
+                        if (separator) separator = false else try w.writeByte('/');
+                        try w.print(&fmt, @field(value, field.name));
+                    }
+                }
+
+                fn matches(value: T, mask: T, expected: T) bool {
+                    for (asBytesW(&value), asBytesW(&mask), asBytesW(&expected)) |v, m, e|
+                        if ((v & m) != e) return false;
+                    return true;
+                }
+            };
+        }
+
+        const Headers = blk: {
+            var versions: [latest_version]type = @splat(undefined);
+            versions[12] = HeaderV12;
+            break :blk versions;
+        };
+
+        const HeaderBasic = extern struct {
+            _0: packed struct(u16) { _unknown_1: u7, version: u5, _unknown_2: u3, _one: u1 = 0b1 },
+            _1: packed struct(u16) { _unknown: u15, _one: u1 = 0b1 },
+
+            fn valid(self: @This()) bool {
+                const mask: @This() = .initRaw(
+                    &.{ 0x8000, 0x8000 },
+                );
+                const expected: @This() = .initRaw(
+                    &.{ 0x8000, 0x8000 },
+                );
+
+                return mixin.matches(self, mask, expected);
+            }
+
+            const mixin = Mixin(@This());
+
+            pub const format = mixin.format;
+            const initRaw = mixin.fromBytesW;
+            const asBytes = mixin.asBytes;
+        };
+
+        const HeaderV12 = extern struct {
+            // vYYYYYYY_1xxxvvvv
+            _0: packed struct(u16) { year: u7, version: u5, _unknown: u3, _one: u1 = 0b1 },
+            // xxxxxxxx_1Cxxxxxx
+            _1: packed struct(u16) { _unknown: u14, correction_sign: u1, _one: u1 = 0b1 },
+            // ssmmmmmm_1xxxssss
+            _2: packed struct(u16) { minute: u6, second: u6, _unknown: u3, _one: u1 = 0b1 },
+            // DDDDMMMM_1xhhhhhD
+            _3: packed struct(u16) { month: u4, day: u5, hour: u5, _unknown: u1, _one: u1 = 0b1 },
+            // eeeeeeee_1eeeeeee
+            _4: packed struct(u16) { events: u15, _one: u1 = 0b1 },
+            // NNNNNNNN_1SSSSSSS
+            _5: packed struct(u16) { network_id: u8, station_id: u7, _one: u1 = 0b1 },
+            // cccccccc_1ccccccc
+            _6: packed struct(u16) { correction_abs: u15, _one: u1 = 0b1 },
+            // xxxxxxxx_1xxxxxxx
+            _7: packed struct(u16) { _unknown: u15, _one: u1 = 0b1 },
+            // 01010101_10101010
+            _8: packed struct(u16) { marker: u16 = 0xAA55 },
+
+            fn parseHeader(self: HeaderV12, start: u32, size: usize) Section {
                 return .{
-                    .count = count,
-                    .bytes = 2 * count,
+                    .start = start,
+                    .size = @intCast(@divExact(size - @sizeOf(HeaderV12), @sizeOf(PacketV12))),
+                    .epoch = self.epoch(),
+                    .count_correction = self.correction(),
                 };
             }
 
-            fn header(self: Parser) Offset {
-                return .init(switch (self.version) {
-                    6...7 => 4,
-                    8...9 => 6,
-                    10...13 => 9,
-                    else => unreachable,
-                });
+            fn correction(self: HeaderV12) i16 {
+                return @as(i16, self._6.correction_abs) *
+                    @as(i16, if (self._1.correction_sign == 0) -1 else 1);
             }
 
-            fn body(self: Parser) Offset {
-                return .init(switch (self.version) {
-                    6...13 => 3,
-                    else => unreachable,
-                });
+            fn valid(self: HeaderV12) bool {
+                const mask: HeaderV12 = .initRaw(
+                    &.{ 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0xFFFF },
+                );
+                const expected: HeaderV12 = .initRaw(
+                    &.{ 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0x8000, 0xAA55 },
+                );
+
+                return mixin.matches(self, mask, expected);
             }
 
-            fn preserve(self: Parser) Offset {
-                return .init(switch (self.version) {
-                    6...13 => 9,
-                    else => unreachable,
-                });
+            const marker_offset = @offsetOf(HeaderV12, "_8");
+
+            const mixin = Mixin(@This());
+
+            pub const format = mixin.format;
+            const initRaw = mixin.fromBytesW;
+            const asBytes = mixin.asBytes;
+            const epoch = mixin.headerEpoch;
+        };
+
+        const Packets = blk: {
+            var versions: [latest_version]type = @splat(undefined);
+            versions[12] = PacketV12;
+            break :blk versions;
+        };
+
+        const PacketV12 = extern struct {
+            const Above = packed struct(u16) { low: u4, high: u7, _pad: u5 = 0 };
+
+            // nnnnnnnn_0aaaannn
+            _0: packed struct(u16) { nano: u11, above_low: u4, _zero: u1 = 0b0 },
+            // mmmmmmmm_11mmmmmm
+            _1: packed struct(u16) { micro: u14, _one: u2 = 0b11 },
+            // XXXXXXXX_0aaaaaaa
+            _2: packed struct(u16) { max_power: u8, above_high: u7, _zero: u1 = 0b0 },
+
+            fn nano_x40(packet: @This()) u32 {
+                const scale: u32 = 2000;
+                return scale * packet._1.micro + packet._0.nano;
             }
 
-            test "supported_versions" {
-                comptime {
-                    var parser: Parser = undefined;
-                    for (supported_versions) |version| {
-                        parser.version = version;
-                        _ = Offset.header(parser);
-                        _ = Offset.body(parser);
-                        _ = Offset.preserve(parser);
-                    }
-                }
+            fn nanosecond(self: PacketV12, factor: f64) error{NextSecond}!lma.nano.Nano {
+                const nano_float = @round(4 * cast.to(f64, self.nano_x40()) * factor);
+                if (nano_float > 4_000_000_000) return error.NextSecond;
+                return @intFromFloat(nano_float);
             }
+
+            fn above(self: PacketV12) u16 {
+                return @bitCast(Above{ .low = self._0.above_low, .high = self._2.above_high });
+            }
+
+            fn buildSignal(self: PacketV12, factor: f64) error{NextSecond}!lma.data.types.Signal {
+                return .{
+                    .nanosecond = try self.nanosecond(factor),
+                    .dBm = @floatCast(0.488 * cast.to(f32, self._2.max_power) - 111.0),
+                    .padding = self.above(),
+                };
+            }
+
+            const mixin = Mixin(@This());
+
+            pub const format = mixin.format;
+            const initRaw = mixin.fromBytesW;
+            const asBytes = mixin.asBytes;
         };
     };
 };

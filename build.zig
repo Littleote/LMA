@@ -161,17 +161,17 @@ fn parserExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
     if (maybe_date_time) |date_time| {
         if (stage.signals) {
             const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "-i=data/signals/" ++ date_time.date ++ "/sources", "signals" });
+            run.addArgs(&.{ "signals", "-i=data/signals/" ++ date_time.date ++ "/sources" });
             step.dependOn(&run.step);
         }
         if (stage.points) {
             const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "-i=data/points/" ++ date_time.date ++ "/output", "points", "-s=data/stations" });
+            run.addArgs(&.{ "points", "-i=data/points/" ++ date_time.date ++ "/output", "-s=data/stations" });
             step.dependOn(&run.step);
         }
         if (stage.clusters) {
             const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "-i=data/lightnings/" ++ date_time.date ++ "/XCALMA_" ++ date_time.date ++ ".csv", "clusters" });
+            run.addArgs(&.{ "clusters", "-i=data/lightnings/" ++ date_time.date ++ "/XCALMA_" ++ date_time.date ++ ".csv" });
             step.dependOn(&run.step);
         }
     }

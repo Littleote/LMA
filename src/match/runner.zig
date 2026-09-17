@@ -98,8 +98,8 @@ pub fn run(
             out.* = results.points;
             statistics.add(&results.stats);
         }
-        break :join lma.data.Points.concatenate(outputs, gpa) catch |err| switch (err) {
-            error.OutOfMemory => |new_err| return new_err,
+        break :join lma.data.Points.concatenate(outputs, gpa) catch |e| switch (e) {
+            error.OutOfMemory => |err| return err,
             error.OverlappingHeader => unreachable,
         };
     };

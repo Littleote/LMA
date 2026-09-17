@@ -86,8 +86,8 @@ pub const ProbeData = struct {
     pub const ParseError = error{ ReadFailed, OutOfMemory, InvalidHeader, InvalidValue, BadFile, UnsupportedVersion };
 
     pub fn fromDat(self: *ProbeData, r: *std.Io.Reader) ParseError!void {
-        self.innerFromDat(r) catch |err| return switch (err) {
-            else => |new_err| new_err,
+        self.innerFromDat(r) catch |e| return switch (e) {
+            else => |err| err,
             error.StreamTooLong => error.BadFile,
         };
     }

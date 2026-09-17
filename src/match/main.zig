@@ -230,18 +230,18 @@ pub fn main(init: std.process.Init.Minimal) void {
     defer for (full_signals) |*signal| signal.deinit();
 
     for (options.files.inputs) |*pattern| {
-        var glob: nargs.params.io.Glob.Iterator = pattern.iterator(io, null) catch |err| switch (err) {
+        var glob: nargs.params.io.Glob.Iterator = pattern.iterator(io, null) catch |e| switch (e) {
             error.Canceled => unreachable,
-            else => |new_err| {
-                std.log.err("Unable to load any files matching \"{s}\" with error {}", .{ pattern.path, new_err });
+            else => |err| {
+                std.log.err("Unable to load any files matching \"{s}\" with error {}", .{ pattern.path, err });
                 continue;
             },
         };
         defer glob.deinit();
-        while (glob.next() catch |err| switch (err) {
+        while (glob.next() catch |e| switch (e) {
             error.Canceled => unreachable,
-            else => |new_err| blk: {
-                std.log.err("Unable to load more files matching \"{s}\" with error {}", .{ pattern.path, new_err });
+            else => |err| blk: {
+                std.log.err("Unable to load more files matching \"{s}\" with error {}", .{ pattern.path, err });
                 break :blk null;
             },
         }) |entry| {
@@ -282,10 +282,10 @@ pub fn main(init: std.process.Init.Minimal) void {
         return;
     }
 
-    var out_dir: std.Io.Dir = if (options.files.out_dir) |dir| std.Io.Dir.cwd().createDirPathOpen(io, dir, .{}) catch |err| switch (err) {
+    var out_dir: std.Io.Dir = if (options.files.out_dir) |dir| std.Io.Dir.cwd().createDirPathOpen(io, dir, .{}) catch |e| switch (e) {
         error.Canceled => unreachable,
-        else => |new_err| blk: {
-            std.log.warn("Failed to open \"{s}\" with error {s} defaulting to cwd.", .{ dir, @errorName(new_err) });
+        else => |err| blk: {
+            std.log.warn("Failed to open \"{s}\" with error {s} defaulting to cwd.", .{ dir, @errorName(err) });
             break :blk .cwd();
         },
     } else .cwd();

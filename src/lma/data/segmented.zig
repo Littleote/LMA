@@ -103,8 +103,8 @@ pub fn Segmented(Elem: type) type {
 
         /// Read segments from custom binary format
         pub fn fromBin(self: *Self, r: *Reader) Self.ParseError!void {
-            self.innerFromBin(r) catch |err| return switch (err) {
-                else => |new_err| new_err,
+            self.innerFromBin(r) catch |e| return switch (e) {
+                else => |err| err,
                 error.EndOfStream => error.BadFile,
             };
         }
@@ -161,8 +161,8 @@ pub fn Segmented(Elem: type) type {
         pub fn fromCsv(self: *Self, r: *Reader, delimiter: ?u8) Self.ParseError!void {
             if (!@hasDecl(Elem, "csv")) @compileError("Type " ++ @typeName(Elem) ++ " doesn't support writting/reading to CSV.");
 
-            self.innerFromCsv(r, delimiter) catch |err| return switch (err) {
-                else => |new_err| new_err,
+            self.innerFromCsv(r, delimiter) catch |e| return switch (e) {
+                else => |err| err,
                 error.StreamTooLong => error.BadFile,
             };
         }
@@ -180,9 +180,9 @@ pub fn Segmented(Elem: type) type {
             };
 
             // Short-circuit for empty csv
-            const first_line = r.peekDelimiterExclusive('\n') catch |err| switch (err) {
+            const first_line = r.peekDelimiterExclusive('\n') catch |e| switch (e) {
                 error.EndOfStream => return,
-                else => |new_err| return new_err,
+                else => |err| return err,
             };
             var first_value: Elem = undefined;
             self.start_epoch = try first_value.fromCsv(first_line, del);

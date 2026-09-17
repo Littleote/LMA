@@ -21,14 +21,14 @@ pub fn load(
     comptime allow_compression: bool,
 ) error{ ReadFailed, Logged }!void {
     const basename = std.fs.path.basename(file_name);
-    return innerLoad(Type, data, Format, functions, basename, r, allow_compression) catch |err| switch (err) {
-        error.ReadFailed => |new_err| return new_err,
+    return innerLoad(Type, data, Format, functions, basename, r, allow_compression) catch |e| switch (e) {
+        error.ReadFailed => |err| return err,
         error.OutOfMemory => {
             std.log.err("Ran out of memory while reading file {s}.", .{file_name});
             @panic("OOM");
         },
-        else => |new_err| {
-            std.log.err("Unable to read file \"{s}\" {s}.", .{ file_name, switch (new_err) {
+        else => |err| {
+            std.log.err("Unable to read file \"{s}\" {s}.", .{ file_name, switch (err) {
                 error.InvalidHeader => "because of an invalid header",
                 error.InvalidValue => "because of an invalid value",
                 error.BadFile => "because the file is malformed",
@@ -62,12 +62,12 @@ pub fn innerLoad(
             .gz, .GZ, .gzip, .GZIP => {
                 var flate_buffer: [std.compress.flate.max_window_len]u8 = undefined;
                 var flate: std.compress.flate.Decompress = .init(r, .gzip, &flate_buffer);
-                return innerLoad(Type, data, Format, functions, stem, &flate.reader, false) catch |err| switch (err) {
+                return innerLoad(Type, data, Format, functions, stem, &flate.reader, false) catch |e| switch (e) {
                     error.ReadFailed => {
                         if (flate.err == null or flate.err.? == error.ReadFailed) return error.ReadFailed;
                         return error.BadFile;
                     },
-                    else => |new_err| return new_err,
+                    else => |err| return err,
                 };
             },
         };
@@ -128,7 +128,12 @@ pub fn loadSignals(signals: *lma.data.Signal, file_name: []const u8, reader: *Re
         }
 
         pub fn fromDat(data: *lma.data.Signal, r: *Reader) ParseError!void {
-            try lma.data.dat_file.signals.fromReader(r, data);
+            try lma.data.dat_file.SignalParser.fromReader(r, data, .{
+                .log_level = @enumFromInt(@min(
+                    @intFromEnum(std.log.Level.warn),
+                    @intFromEnum(std.options.log_level),
+                )),
+            });
         }
     };
 

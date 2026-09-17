@@ -7,9 +7,13 @@ const signals = @import("signals.zig");
 const points = @import("points.zig");
 const clusters = @import("clusters.zig");
 
-const Cli = struct { path: []const u8, command: union(enum) { signals: signals.Cli, points: points.Cli, clusters: clusters.Cli } };
+const Cli = struct { command: union(enum) {
+    signals: signals.Cli,
+    points: points.Cli,
+    clusters: clusters.Cli,
+} };
+
 const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "parser" }, .{
-    .path = .build(opt.Named, .single(.string, .{ .name = "input", .description = "Input file to transform.", .short = .auto })),
     .command = .build(opt.Groups, .subcommand(.{ .name = "STAGE", .greedy = false }, .{
         .signals = signals.root,
         .points = points.root,
@@ -24,8 +28,7 @@ pub fn main(init: std.process.Init) !void {
         defer tokenizer.deinit();
         var diag: nargs.Diagnostic = .init(init.gpa, .default);
         defer {
-            for (diag.error_list.items) |info|
-                std.log.err("{f}", .{info});
+            for (diag.error_list.items) |info| std.log.err("{f}", .{info});
             diag.deinit();
         }
 
@@ -50,8 +53,8 @@ pub fn main(init: std.process.Init) !void {
     defer root.deinit(init.gpa, &options);
 
     switch (options.command) {
-        .signals => |specific| try signals.parse(init.io, init.gpa, options.path, specific),
-        .points => |specific| try points.parse(init.io, init.gpa, options.path, specific),
-        .clusters => |specific| try clusters.parse(init.io, init.gpa, options.path, specific),
+        .signals => |args| try signals.parse(init.io, init.gpa, args),
+        .points => |args| try points.parse(init.io, init.gpa, args),
+        .clusters => |args| try clusters.parse(init.io, init.gpa, args),
     }
 }

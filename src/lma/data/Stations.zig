@@ -70,8 +70,8 @@ inline fn getInt(Int: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Int {
 /// Read Stations from a CSV file
 /// When delimiter is null, use a comma (`,`)
 pub fn fromCsv(self: *Data, r: *Reader, delimiter: ?u8) ParseError!void {
-    self.innerFromCsv(r, delimiter) catch |err| return switch (err) {
-        else => |new_err| new_err,
+    self.innerFromCsv(r, delimiter) catch |e| return switch (e) {
+        else => |err| err,
         error.StreamTooLong => error.BadFile,
     };
 }
@@ -224,8 +224,8 @@ fn testCsvCleanup(gpa: Allocator) !void {
 /// Read Stations from a GPS file
 /// When delimiter is null, use a comma (`,`)
 pub fn fromGps(self: *Data, r: *Reader) ParseError!void {
-    self.innerFromGps(r) catch |err| return switch (err) {
-        else => |new_err| new_err,
+    self.innerFromGps(r) catch |e| return switch (e) {
+        else => |err| err,
         error.StreamTooLong => error.BadFile,
     };
 }
@@ -236,8 +236,8 @@ fn innerFromGps(self: *Data, r: *Reader) (error{StreamTooLong} || ParseError)!vo
         if (line[0] == '#') continue;
         const version_header = "version";
         if (std.mem.startsWith(u8, line, version_header)) {
-            break getInt(usize, line[version_header.len..]) catch |err| switch (err) {
-                error.BadFile => |new_err| return new_err,
+            break getInt(usize, line[version_header.len..]) catch |e| switch (e) {
+                error.BadFile => |err| return err,
                 error.InvalidValue => return error.InvalidHeader,
             };
         } else return error.InvalidHeader;
@@ -322,8 +322,8 @@ test fromGps {
 /// Read Stations from a LOC file
 /// When delimiter is null, use a comma (`,`)
 pub fn fromLoc(self: *Data, r: *Reader) ParseError!void {
-    self.innerFromLoc(r) catch |err| return switch (err) {
-        else => |new_err| new_err,
+    self.innerFromLoc(r) catch |e| return switch (e) {
+        else => |err| err,
         error.StreamTooLong => error.BadFile,
     };
 }

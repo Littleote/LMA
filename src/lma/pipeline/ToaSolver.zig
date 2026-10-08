@@ -1,7 +1,8 @@
 const std = @import("std");
 
 const lma = @import("../lma.zig");
-const Signal = lma.data.types.Signal;
+const Signal = lma.data.Signal;
+const Point = lma.data.Point;
 const match = lma.pipeline.match;
 
 pub const Float = f64;
@@ -58,7 +59,7 @@ pub const c = lma.constants.c / lma.constants.refractive_index.airRange(1_000, 8
 pub const rms = 0.000_000_070;
 pub const max_chi_sq = 1.5;
 
-pub fn solve(self: *ToaSolver, reference: match.Candidate, candidates: []const match.Candidate, masking: []match.Candidate.Mask, options: *const match.Correlation) ?lma.data.types.Point {
+pub fn solve(self: *ToaSolver, reference: match.Candidate, candidates: []const match.Candidate, masking: []match.Candidate.Mask, options: *const match.Correlation) ?Point {
     self.masking = masking;
     self.buffer = .at(self.stations[reference.station], c * fromNano(reference.nanosecond));
 
@@ -266,7 +267,7 @@ fn solveLeastSquares(buffer: *Buffer, input: *const Source, options: ls.Options)
     };
 }
 
-pub fn sourceToPoint(self: *ToaSolver, source: *const Source) ?lma.data.types.Point {
+pub fn sourceToPoint(self: *ToaSolver, source: *const Source) ?Point {
     const chi_squared = source.chiSquared(&self.buffer);
     if (chi_squared > max_chi_sq) return null;
     const t = (source.time + self.buffer.ref_time) / c;

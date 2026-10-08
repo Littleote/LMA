@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const lma = @import("lma");
-const Clusters = lma.data.Clusters;
+const Clustered = lma.data.Clustered;
 const nargs = @import("nargs");
 const opt = nargs.options;
 
@@ -49,7 +49,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
     SaveInfo.bin_dir = try dir.createDirPathOpen(io, "bin", .{});
     defer SaveInfo.bin_dir.?.close(io);
 
-    var data: Clusters = .init(gpa);
+    var data: Clustered.List = .init(gpa);
     errdefer data.deinit();
     var last_header = try data.headers.addOne(gpa);
     var last_second: u64 = 0;
@@ -139,7 +139,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
     data.headers.items.len = 0;
     data.array.items.len = 0;
     while (@divFloor(60 * 60 * 24, save_frequency) != last_save) : (last_save += 1) {
-        group.async(io, saveFiles, .{ io, Clusters.init(gpa), last_save });
+        group.async(io, saveFiles, .{ io, .init(gpa), last_save });
     }
 }
 
@@ -148,7 +148,7 @@ const SaveInfo = struct {
     var bin_dir: ?std.Io.Dir = null;
 };
 
-fn saveFiles(io: std.Io, data: Clusters, save_time: ?u64) std.Io.Cancelable!void {
+fn saveFiles(io: std.Io, data: Clustered.List, save_time: ?u64) std.Io.Cancelable!void {
     var mutable_data = data;
     defer mutable_data.deinit();
     if (SaveInfo.bin_dir) |dir|
@@ -157,7 +157,7 @@ fn saveFiles(io: std.Io, data: Clusters, save_time: ?u64) std.Io.Cancelable!void
         try saveCsv(io, data, save_time, dir);
 }
 
-fn saveCsv(io: std.Io, data: Clusters, save_time: ?u64, dir: std.Io.Dir) std.Io.Cancelable!void {
+fn saveCsv(io: std.Io, data: Clustered.List, save_time: ?u64, dir: std.Io.Dir) std.Io.Cancelable!void {
     const time = utils.saveTime(
         save_time,
         data.start_epoch,
@@ -178,13 +178,13 @@ fn saveCsv(io: std.Io, data: Clusters, save_time: ?u64, dir: std.Io.Dir) std.Io.
     defer file.close(io);
     var file_writer = file.writer(io, &buffer);
 
-    data.toCsv(&file_writer.interface, null) catch {
+    Clustered.csv.write(&data, &file_writer.interface, null) catch {
         std.log.err("Failed to write file {s}", .{name});
         return;
     };
 }
 
-fn saveBin(io: std.Io, data: Clusters, save_time: ?u64, dir: std.Io.Dir) std.Io.Cancelable!void {
+fn saveBin(io: std.Io, data: Clustered.List, save_time: ?u64, dir: std.Io.Dir) std.Io.Cancelable!void {
     const time = utils.saveTime(
         save_time,
         data.start_epoch,
@@ -205,7 +205,7 @@ fn saveBin(io: std.Io, data: Clusters, save_time: ?u64, dir: std.Io.Dir) std.Io.
     defer file.close(io);
     var file_writer = file.writer(io, &buffer);
 
-    data.toBin(&file_writer.interface) catch {
+    Clustered.bin.write(&data, &file_writer.interface) catch {
         std.log.err("Failed to write file {s}", .{name});
         return;
     };

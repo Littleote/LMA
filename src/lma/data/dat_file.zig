@@ -42,20 +42,13 @@ test parseEpoch {
 }
 
 pub const SignalParser = struct {
-    const Signal = data.types.Signal;
-    const Signals = data.Signal;
+    const Signal = data.Signal;
+    const Signals = Signal.List;
+    const log = std.log.scoped(lma.log.hierarchy.signal_file);
 
     pub const Error = error{ OutOfMemory, BadFile, UnsupportedVersion };
 
-    pub const Config = struct {
-        log_level: std.log.Level = std.options.log_level,
-
-        fn log(self: Config, comptime level: std.log.Level, comptime format: []const u8, args: anytype) void {
-            if (@intFromEnum(level) <= @intFromEnum(self.log_level)) {
-                std.options.logFn(level, .signal_parsing, format, args);
-            }
-        }
-    };
+    pub const Config = struct {};
 
     const Section = struct {
         start: usize,
@@ -108,7 +101,7 @@ pub const SignalParser = struct {
                         .config = config,
                     };
                 } else {
-                    config.log(.err, "Version {d} is not supported.", .{version});
+                    log.err("Version {d} is not supported.", .{version});
                     return error.UnsupportedVersion;
                 }
             }
@@ -139,8 +132,7 @@ pub const SignalParser = struct {
         for (sections) |section| {
             if (section.epoch < epoch or end_epoch <= section.epoch) {
                 @branchHint(.cold);
-                self.config.log(
-                    .warn,
+                log.warn(
                     "Header {d} followed by header {d}. Ignoring latest section with header {d}.",
                     .{ epoch - 1, section.epoch, section.epoch },
                 );
@@ -218,20 +210,19 @@ pub const SignalParser = struct {
                 ) catch |err| switch (err) {
                     error.DivisionByZero => unreachable,
                     error.UnexpectedRemainder => {
-                        self.config.log(
-                            .warn,
+                        log.warn(
                             "Header {f} missaligned. Discarding its corresponding section {d}.",
                             .{ header, header.epoch() },
                         );
                         return null;
                     },
                 };
-                if (packets != header.reportedPackets())
-                    self.config.log(
-                        .info,
+                if (packets != header.reportedPackets()) {
+                    log.info(
                         "Expecting {d} duplicate packets in section {d}",
                         .{ packets -| header.reportedPackets(), header.epoch() },
                     );
+                }
                 return header.parseHeader(block_start, packets);
             },
             else => unreachable,
@@ -253,8 +244,7 @@ pub const SignalParser = struct {
                 for (packets, out, 0..) |packet, *signal, idx| {
                     signal.* = packet.buildSignal(factor) catch |err| switch (err) {
                         error.NextSecond => {
-                            self.config.log(
-                                .warn,
+                            log.warn(
                                 "Invalid time in packet {f}, discarding the {d} remaining packets of section {d}.",
                                 .{ packet, out.len - idx, section.epoch },
                             );
@@ -595,8 +585,8 @@ pub const output = struct {
 
     pub fn parse(
         r: *Reader,
-        maybe_points: ?*data.Points,
-        maybe_stations: ?*data.Stations,
+        maybe_points: ?*data.Point.List,
+        maybe_stations: ?*data.Station.List,
     ) ParseError!void {
         innerParse(r, maybe_points, maybe_stations) catch |err| return switch (err) {
             else => |new_err| new_err,
@@ -606,8 +596,8 @@ pub const output = struct {
 
     fn innerParse(
         r: *Reader,
-        maybe_points: ?*data.Points,
-        maybe_stations: ?*data.Stations,
+        maybe_points: ?*data.Point.List,
+        maybe_stations: ?*data.Station.List,
     ) (error{StreamTooLong} || ParseError)!void {
         var start_time: ?u64 = null;
         var header_count: ?usize = null;
@@ -644,8 +634,8 @@ pub const output = struct {
                 const current_station = stations.stations.addOneAssumeCapacity();
                 current_station.* = .{
                     // Tokenizer ensures that non null entries are not empty
-                    .letter = (iter.next() orelse return error.BadFile)[0],
-                    .id = 0, // Unset
+                    .station_id = data.Station.letterToId((iter.next() orelse return error.BadFile)[0]),
+                    .network_id = @enumFromInt(0), // Unset
                     .name = try stations.arena.allocator().dupe(u8, iter.next() orelse return error.BadFile),
                     .latitude = try getFloat(f64, iter.next()),
                     .longitude = try getFloat(f64, iter.next()),
@@ -683,7 +673,7 @@ pub const output = struct {
 
     pub fn parsePoints(
         r: *Reader,
-        points: *data.Points,
+        points: *data.Point.List,
         start_epoch: ?u64,
         headers: usize,
         entries: usize,
@@ -696,7 +686,7 @@ pub const output = struct {
 
     fn innerParsePoints(
         r: *Reader,
-        points: *data.Points,
+        points: *data.Point.List,
         start_epoch: ?u64,
         headers: usize,
         entries: usize,
@@ -776,8 +766,8 @@ pub const output = struct {
 
     pub fn print(
         w: *Writer,
-        points: *const data.Points,
-        stations: *const data.Stations,
+        points: *const data.Point.List,
+        stations: *const data.Station.List,
         statistics: []const lma.pipeline.ToaSolver.Statistics,
     ) Writer.Error!void {
         // Data start time: YY/MM/DD HH:MM:SS
@@ -824,7 +814,7 @@ pub const output = struct {
         for (statistics) |stats| {
             try w.writeByte(' ');
             for (stats.stations, 0..) |station, idx| {
-                if (station.solutions != 0) try w.writeByte(stations.stations.items[idx].letter);
+                if (station.solutions != 0) try w.writeByte(stations.stations.items[idx].stationLetter());
             }
         }
         try w.writeByte('\n');
@@ -840,7 +830,7 @@ pub const output = struct {
         );
         for (stations.stations.items) |station| {
             try w.print("Sta_info: {c}  {s: <16}  {d: >11.7}  {d: >11.7}  {d: >7.2}  {d: >3.0} {d: >1} {d: >2}\n", .{
-                station.letter,
+                station.stationLetter(),
                 station.name,
                 station.latitude,
                 station.longitude,
@@ -859,7 +849,7 @@ pub const output = struct {
                 const info = stats.stations[idx];
                 const active = info.solutions != 0;
                 try w.print("Sta_data: {c}  {s: <16}  {d: >4}  {d: >4}  {d: >3}  {d: >7}  {d: >4.1}  {d: >4.2}  {s: >2}\n", .{
-                    station.letter,
+                    station.stationLetter(),
                     station.name,
                     @as(u32, if (active) 80 else 0),
                     @as(u32, if (active) 12 else 0),
@@ -876,7 +866,7 @@ pub const output = struct {
         try w.writeAll("Station mask order: ");
         var station_iter = std.mem.reverseIterator(stations.stations.items);
         while (station_iter.next()) |station| {
-            try w.writeByte(station.letter);
+            try w.writeByte(station.stationLetter());
         }
         try w.writeByte('\n');
         // Data: time (UT sec of day), lat, lon, alt(m), reduced chi^2, P(dBW), mask
@@ -889,7 +879,7 @@ pub const output = struct {
         try w.print("Number of events: {d}\n", .{solutions});
 
         try w.writeAll("*** data ***\n");
-        var it = points.epochIterator(null, .all);
+        var it = points.epochIterator(null, null);
         while (it.nextEpoch()) |info| {
             for (info.values) |entry| {
                 // Data format: 15.9f 12.8f 13.8f 9.2f 6.2f 5.1f 10x

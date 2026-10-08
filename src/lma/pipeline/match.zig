@@ -1,8 +1,8 @@
 const std = @import("std");
 
 const lma = @import("../lma.zig");
-const Signal = lma.data.types.Signal;
-const Point = lma.data.types.Point;
+const Signal = lma.data.Signal;
+const Point = lma.data.Point;
 const SubSlice = lma.index.SubSlice;
 
 pub const probing = @import("match/probing.zig");

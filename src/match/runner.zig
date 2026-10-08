@@ -7,10 +7,13 @@ const nargs = @import("nargs");
 const opt = nargs.options;
 
 const lma = @import("lma");
-const ToaSolver = lma.pipeline.ToaSolver;
-const match = lma.pipeline.match;
 const math = lma.math(ToaSolver.Float);
+const match = lma.pipeline.match;
 const network = lma.constants.network;
+const ToaSolver = lma.pipeline.ToaSolver;
+
+const Signal = lma.data.Signal;
+const Point = lma.data.Point;
 const Float = match.Float;
 
 pub const Config = struct {
@@ -20,6 +23,7 @@ pub const Config = struct {
     memory: u32 = 5,
     probability: f32 = 0.90,
     chunk: u32 = if (@import("builtin").single_threaded) 24 * 60 * 60 else 60,
+    corr_window: f32 = 0.1,
     verbose: bool,
 };
 
@@ -54,13 +58,17 @@ pub const config_parser: nargs.Node(Config) = .build(opt.Groups, .any(.{ .name =
         .description = "Total time to analyse per thread as either SECONDS or HH:MM:SS.",
         .display = "SECONDS",
     })),
+    .corr_window = .build(opt.Named, .single(.floating(.{ .min = .closed(0.001), .max = .closed(1) }), .{
+        .name = "correlation-window",
+        .description = "Refresh rate of the correlation window, with the size being double this value.",
+    })),
 }));
 
 pub fn run(
     io: std.Io,
     gpa: std.mem.Allocator,
     stations: []math.Vec,
-    signals: []const lma.data.Signal,
+    signals: []const Signal.List,
     config: Config,
     span: lma.index.SubSlice,
 ) RunError!RunReturn {
@@ -74,7 +82,7 @@ pub fn run(
 
     const futures = try gpa.alloc(std.Io.Future(RunError!RunReturn), workers);
     defer gpa.free(futures);
-    const outputs = try gpa.alloc(lma.data.Points, workers);
+    const outputs = try gpa.alloc(Point.List, workers);
     defer gpa.free(outputs);
     var statistics: ToaSolver.Statistics = .{};
     for (0..workers) |worker| {
@@ -92,13 +100,13 @@ pub fn run(
         var result = future.cancel(io) catch continue;
         result.points.deinit();
     };
-    var output: lma.data.Points = join: {
+    var output: Point.List = join: {
         for (futures, outputs) |*in, *out| {
             const results = try in.await(io);
             out.* = results.points;
             statistics.add(&results.stats);
         }
-        break :join lma.data.Points.concatenate(outputs, gpa) catch |e| switch (e) {
+        break :join Point.List.concatenate(outputs, gpa) catch |e| switch (e) {
             error.OutOfMemory => |err| return err,
             error.OverlappingHeader => unreachable,
         };
@@ -122,7 +130,7 @@ pub fn run(
 
 const RunError = error{ Canceled, OutOfMemory };
 const RunReturn = struct {
-    points: lma.data.Points,
+    points: Point.List,
     stats: ToaSolver.Statistics,
 };
 
@@ -130,7 +138,7 @@ pub fn runChunk(
     io: std.Io,
     gpa: std.mem.Allocator,
     stations: []math.Vec,
-    full_signals: []const lma.data.Signal,
+    full_signals: []const Signal.List,
     config: Config,
     span: lma.index.SubSlice,
 ) RunError!RunReturn {
@@ -151,13 +159,13 @@ pub fn runChunk(
     }
 
     // Prepare output signal
-    var output: lma.data.Points = .init(gpa);
+    var output: Point.List = .init(gpa);
     output.start_epoch = span.start;
     errdefer output.deinit();
 
     // Stack allocate buffer for all signals data
-    var signal_buffer: [network.max_network][]const lma.data.types.Signal = @splat(&.{});
-    const signals: [][]const lma.data.types.Signal = signal_buffer[0..count];
+    var signal_buffer: [network.max_network][]const Signal = @splat(&.{});
+    const signals: [][]const Signal = signal_buffer[0..count];
 
     var weight_arrays: [network.max_network]std.ArrayList(Float) = @splat(.empty);
     defer for (&weight_arrays) |*weight_array| weight_array.deinit(gpa);
@@ -196,7 +204,7 @@ pub fn runChunk(
         }
     }
 
-    var sources: std.ArrayList(lma.data.types.Point) = .empty;
+    var sources: std.ArrayList(Point) = .empty;
     defer sources.deinit(gpa);
 
     const work_buffer = try gpa.alloc(
@@ -239,8 +247,8 @@ pub fn runChunk(
         .time_matrix = time_matrix,
         .corr_buffer = corr_buffer,
         .aux_buffer = &aux_corr_buffer,
-        .window_size = lma.nano.ratio / 5,
-        .refresh_rate = lma.nano.ratio / 10,
+        .window_size = lma.nano.toNano(@min(1, 2 * config.corr_window)),
+        .refresh_rate = lma.nano.toNano(config.corr_window),
     };
 
     for (span.start..span.end()) |time| {
@@ -273,19 +281,19 @@ pub fn runChunk(
     return .{ .points = output, .stats = solver.statistics };
 }
 
-fn cutoffTime(time: u32, point: lma.data.types.Point) bool {
+fn cutoffTime(time: u32, point: Point) bool {
     return time > point.nanosecond;
 }
 
-fn sortSegment(_: void, _: u64, slice: []lma.data.types.Point) lma.data.segmented.Shift {
+fn sortSegment(_: void, _: u64, slice: []Point) lma.data.segmented.Shift {
     // Both seem to show roughly the same performance
-    // std.sort.block(lma.data.types.Point, slice, {}, lma.data.types.Point.earlier);
-    std.sort.insertion(lma.data.types.Point, slice, {}, lma.data.types.Point.earlier);
+    // std.sort.block(Point, slice, {}, Point.earlier);
+    std.sort.insertion(Point, slice, {}, Point.earlier);
     return .{};
 }
 
-fn shiftBack(_: void, _: u64, slice: []lma.data.types.Point) lma.data.segmented.Shift {
-    const split: u32 = @intCast(std.sort.partitionPoint(lma.data.types.Point, slice, root.global_shift, cutoffTime));
+fn shiftBack(_: void, _: u64, slice: []Point) lma.data.segmented.Shift {
+    const split: u32 = @intCast(std.sort.partitionPoint(Point, slice, root.global_shift, cutoffTime));
     var idx: u32 = 0;
     while (idx < split) : (idx += 1) {
         slice[idx].nanosecond += lma.nano.ratio - root.global_shift;

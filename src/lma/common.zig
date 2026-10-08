@@ -4,14 +4,18 @@ const lma = @import("lma.zig");
 /// Nanoseconds fraction (modulus 1 second) is compressed with fixed point 30.2
 pub const nano = struct {
     pub const Nano = u32;
-    pub const NanoOffset = i32;
+    pub const Delta = i32;
 
     /// Ratio between a fixed point 30.2ns value and a floating point 1s value
     pub const ratio = 4 * 1_000_000_000;
 
-    pub inline fn toFixed(Int: type, second: anytype) Int {
+    inline fn toFixed(Int: type, second: anytype) Int {
         std.debug.assert(std.math.isFinite(second));
         return @intFromFloat(@round(second * ratio));
+    }
+
+    pub inline fn toDelta(second: anytype) Delta {
+        return toFixed(Delta, second);
     }
 
     pub inline fn toNano(second: anytype) Nano {

@@ -1,7 +1,7 @@
 const std = @import("std");
 const lma = @import("../../lma.zig");
 const Candidate = lma.pipeline.match.Candidate;
-const Signal = lma.data.types.Signal;
+const Signal = lma.data.Signal;
 
 const force_probe = false;
 

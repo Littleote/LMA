@@ -3,6 +3,8 @@ const Allocator = std.mem.Allocator;
 const Reader = std.Io.Reader;
 
 const lma = @import("lma");
+const Clustered = lma.data.Clustered;
+const Point = lma.data.Point;
 
 const Args = @import("Args.zig");
 const Float = @import("main.zig").Float;
@@ -19,8 +21,8 @@ fn DataInstance(T: type) type {
 }
 
 const Data = union(Args.Stage) {
-    clusters: DataInstance(lma.data.Clusters),
-    points: DataInstance(lma.data.Points),
+    clusters: DataInstance(Clustered.List),
+    points: DataInstance(Point.List),
 
     pub fn next(self: *Data, rotation: *const math.Mat) !?[]math.Vec {
         const generator: *Generator = @fieldParentPtr("data", self);
@@ -53,7 +55,7 @@ const Data = union(Args.Stage) {
 
     pub fn load(self: *Data, r: *Reader) !void {
         const generator: *Generator = @fieldParentPtr("data", self);
-        const until: lma.data.segmented.IteratorMode = if (generator.current_file >= generator.files.items.len) .until(generator.end) else .all;
+        const until: ?u64 = if (generator.current_file >= generator.files.items.len) generator.end else null;
         switch (generator.format.stage) {
             .clusters => {
                 self.* = .{ .clusters = undefined };
@@ -61,10 +63,10 @@ const Data = union(Args.Stage) {
                 errdefer self.clusters.data.deinit();
                 switch (generator.format.file) {
                     .bin => {
-                        try self.clusters.data.fromBin(r);
+                        try Clustered.bin.read(&self.clusters.data, r);
                     },
                     .csv => {
-                        try self.clusters.data.fromCsv(r, null);
+                        try Clustered.csv.read(&self.clusters.data, r, null);
                     },
                     .dat => {
                         @panic("Unsupported");
@@ -78,10 +80,10 @@ const Data = union(Args.Stage) {
                 errdefer self.points.data.deinit();
                 switch (generator.format.file) {
                     .bin => {
-                        try self.points.data.fromBin(r);
+                        try Point.bin.read(&self.points.data, r);
                     },
                     .csv => {
-                        try self.points.data.fromCsv(r, null);
+                        try Point.csv.read(&self.points.data, r, null);
                     },
                     .dat => {
                         _ = try lma.data.dat_file.output.parse(r, &self.points.data, null);

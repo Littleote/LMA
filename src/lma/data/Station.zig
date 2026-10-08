@@ -1,0 +1,487 @@
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const Reader = std.Io.Reader;
+const Writer = std.Io.Writer;
+
+const lma = @import("../lma.zig");
+const dat_file = @import("dat_file.zig");
+
+const Id = enum(u8) { _ };
+const Station = @This();
+
+const log = std.log.scoped(lma.log.hierarchy.station_file);
+
+station_id: Id,
+network_id: Id,
+name: []const u8,
+latitude: f64,
+longitude: f64,
+altitude: f32,
+delay: i32,
+revision: u8,
+channel: u8,
+
+pub fn stationLetter(self: *const Station) u8 {
+    return idToLetter(self.station_id);
+}
+
+pub fn idToLetter(station_id: Id) u8 {
+    return @intFromEnum(station_id) +| 0x40;
+}
+
+pub fn letterToId(station_letter: u8) Id {
+    return @enumFromInt(std.ascii.toUpper(station_letter) -| 0x40);
+}
+
+pub fn point(self: *const Station) lma.math(f64).ElemVec {
+    return .{ .elems = .{ self.latitude, self.longitude, self.altitude, 0 } };
+}
+
+pub const List = struct {
+    stations: std.ArrayList(Station),
+    allocator: Allocator,
+    arena: std.heap.ArenaAllocator,
+
+    pub fn init(gpa: Allocator) List {
+        return .{
+            .stations = .empty,
+            .allocator = gpa,
+            .arena = .init(gpa),
+        };
+    }
+
+    pub fn deinit(self: *List) void {
+        self.stations.deinit(self.allocator);
+        self.arena.deinit();
+    }
+};
+
+pub const ParseError = error{ ReadFailed, OutOfMemory, InvalidHeader, InvalidValue, BadFile, UnsupportedVersion };
+
+pub const csv = struct {
+    const columns: []const []const u8 = &.{ "Letter", "ID", "Network ID", "Name", "Latitude", "Longitude", "Altitude", "Delay (ns)", "Revision", "Channel" };
+
+    /// Write Stations to a CSV file
+    /// When delimiter is null, use a comma (`,`)
+    pub fn write(list: *const List, w: *Writer, delimiter: ?u8) Writer.Error!void {
+        const separator = delimiter orelse ',';
+        for (columns, 1..) |column, idx| {
+            try w.writeAll(column);
+            try w.writeByte(if (idx == columns.len) '\n' else separator);
+        }
+        for (list.stations.items) |station| {
+            try w.print(
+                "{[letter]c}{[sep]c}{[id]d}{[sep]c}{[net_id]d}{[sep]c}{[name]s}{[sep]c}" ++
+                    "{[lat]d:.9}{[sep]c}{[lon]d:.9}{[sep]c}{[alt]d:.3}{[sep]c}{[delay]d:.1}{[sep]c}" ++
+                    "{[revision]d}{[sep]c}{[channel]d}\n",
+                .{
+                    .sep = separator,
+                    .letter = station.stationLetter(),
+                    .id = station.station_id,
+                    .net_id = station.network_id,
+                    .name = station.name,
+                    .lat = station.latitude,
+                    .lon = station.longitude,
+                    .alt = station.altitude,
+                    .delay = std.time.ns_per_s * lma.nano.fromNano(f32, station.delay),
+                    .revision = station.revision,
+                    .channel = station.channel,
+                },
+            );
+        }
+        try w.flush();
+    }
+
+    /// Read Stations from a CSV file
+    /// When delimiter is null, use a comma (`,`)
+    pub fn read(self: *List, r: *Reader, delimiter: ?u8) ParseError!void {
+        innerRead(self, r, delimiter) catch |e| return switch (e) {
+            else => |err| err,
+            error.StreamTooLong => error.BadFile,
+        };
+    }
+
+    fn innerRead(self: *List, r: *Reader, delimiter: ?u8) (error{StreamTooLong} || ParseError)!void {
+        // Read CSV header
+        const csv_header = try r.takeDelimiter('\n') orelse {
+            log.err("Empty file.", .{});
+            return error.InvalidHeader;
+        };
+        const del = delimiter orelse blk: {
+            const common_delimiters = [_]u8{ ',', ';', '\t', '|' };
+            for (common_delimiters) |del| {
+                const column_count = 1 + std.mem.countScalar(u8, csv_header, del);
+                if (column_count == columns.len) break :blk del;
+            }
+            log.err("No valid delimiter found.", .{});
+            return error.InvalidHeader;
+        };
+
+        while (try r.takeDelimiter('\n')) |line| {
+            var iter = std.mem.splitScalar(u8, line, del);
+            try self.stations.append(self.allocator, .{
+                .station_id = blk: {
+                    const non_empty = std.mem.trim(u8, try unwrapToken(iter.next()), " ");
+                    if (non_empty.len != 1) {
+                        log.err("Station Letter is empty.", .{});
+                        return error.InvalidValue;
+                    }
+                    const letter_id = letterToId(non_empty[0]);
+                    const station_id: Id = @enumFromInt(try getInt(u8, iter.next()));
+                    if (letter_id != station_id) {
+                        log.err(
+                            "Letter '{c}' (id: {d}) doesn't match station id {d}.",
+                            .{ non_empty[0], @intFromEnum(letter_id), @intFromEnum(station_id) },
+                        );
+                        return error.InvalidValue;
+                    }
+                    break :blk station_id;
+                },
+                .network_id = @enumFromInt(try getInt(u8, iter.next())),
+                .name = try self.arena.allocator().dupe(u8, std.mem.trim(u8, try unwrapToken(iter.next()), " ")),
+                .latitude = try getFloat(f64, iter.next()),
+                .longitude = try getFloat(f64, iter.next()),
+                .altitude = try getFloat(f32, iter.next()),
+                .delay = @round(4 * (try getFloat(f32, iter.next()))),
+                .revision = try getInt(u8, iter.next()),
+                .channel = try getInt(u8, iter.next()),
+            });
+        }
+    }
+
+    test "csv format round trip" {
+        var data: List = .init(std.testing.allocator);
+        defer data.deinit();
+
+        var rng: std.Random.DefaultPrng = .init(std.testing.random_seed);
+        const random = rng.random();
+        for (0..10) |_| {
+            const buf = try data.arena.allocator().alloc(u8, random.intRangeAtMost(u8, 5, 255));
+            random.bytes(buf);
+            for (buf) |*byte| byte.* = (byte.* & 0x1F) + 0x5B;
+            try data.stations.append(data.allocator, .{
+                .station_id = letterToId(random.intRangeAtMost(u8, 'A', 'Z')),
+                .network_id = @enumFromInt(random.intRangeAtMost(u8, 1, 255)),
+                .name = buf,
+                .latitude = 180 * random.float(f64) - 90,
+                .longitude = 360 * random.float(f64) - 180,
+                .altitude = 2_000 * random.float(f32) - 1_000,
+                .delay = random.intRangeAtMost(i32, -4_000, 4_000),
+                .revision = random.int(u8),
+                .channel = random.int(u8),
+            });
+        }
+
+        // Write to a buffer and read from it with a new instance
+        var writer: Writer.Allocating = .init(data.allocator);
+        defer writer.deinit();
+        try csv.write(&data, &writer.writer, '\t');
+
+        var read_data: List = .init(std.testing.allocator);
+        defer read_data.deinit();
+        var reader: Reader = .fixed(writer.written());
+        try csv.read(&read_data, &reader, null);
+
+        for (data.stations.items, read_data.stations.items) |original, final| {
+            var any_error: bool = false;
+            std.testing.expect(original.station_id == final.station_id) catch {
+                std.debug.print("Station ID mismatch: {d} {d}\n", .{ original.station_id, final.station_id });
+                any_error = true;
+            };
+            std.testing.expect(original.network_id == final.network_id) catch {
+                std.debug.print("Network ID mismatch: {d} {d}\n", .{ original.network_id, final.network_id });
+                any_error = true;
+            };
+            std.testing.expect(std.mem.eql(u8, original.name, final.name)) catch {
+                std.debug.print("Name mismatch:\n{s}\n{s}\n", .{ original.name, final.name });
+                any_error = true;
+            };
+            std.testing.expect(std.math.approxEqAbs(f64, original.latitude, final.latitude, 1e-9)) catch {
+                std.debug.print("Latitude mismatch: {d} {d}\n", .{ original.latitude, final.latitude });
+                any_error = true;
+            };
+            std.testing.expect(std.math.approxEqAbs(f64, original.longitude, final.longitude, 1e-9)) catch {
+                std.debug.print("Longitude mismatch: {d} {d}\n", .{ original.longitude, final.longitude });
+                any_error = true;
+            };
+            std.testing.expect(std.math.approxEqAbs(f32, original.altitude, final.altitude, 1e-3)) catch {
+                std.debug.print("Altitude mismatch: {d} {d}\n", .{ original.altitude, final.altitude });
+                any_error = true;
+            };
+            std.testing.expect(original.delay == final.delay) catch {
+                std.debug.print("Delay mismatch: {d} {d}\n", .{ original.delay, final.delay });
+                any_error = true;
+            };
+            std.testing.expect(original.revision == final.revision) catch {
+                std.debug.print("Revision mismatch: {d} {d}\n", .{ original.revision, final.revision });
+                any_error = true;
+            };
+            std.testing.expect(original.channel == final.channel) catch {
+                std.debug.print("Channel mismatch: {d} {d}\n", .{ original.channel, final.channel });
+                any_error = true;
+            };
+            if (any_error) return error.ValueMismatch;
+        }
+    }
+
+    test "csv cleanup" {
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, testCsvCleanup, .{});
+    }
+
+    fn testCsvCleanup(gpa: Allocator) !void {
+        var data: List = .init(gpa);
+        defer data.deinit();
+
+        var rng: std.Random.DefaultPrng = .init(std.testing.random_seed);
+        const random = rng.random();
+        for (0..10) |_| {
+            const buf = try data.arena.allocator().alloc(u8, 10);
+            @memcpy(buf, "Dummy name");
+            try data.stations.append(data.allocator, .{
+                .station_id = letterToId(random.intRangeAtMost(u8, 'A', 'Z')),
+                .network_id = @enumFromInt(random.intRangeAtMost(u8, 1, 255)),
+                .name = buf,
+                .latitude = 180 * random.float(f64) - 90,
+                .longitude = 360 * random.float(f64) - 180,
+                .altitude = 2_000 * random.float(f32) - 1_000,
+                .delay = random.intRangeAtMost(i32, -4_000, 4_000),
+                .revision = random.int(u8),
+                .channel = random.int(u8),
+            });
+        }
+
+        // Write to a buffer and read from it with a new instance
+        var writer: Writer.Allocating = .init(data.allocator);
+        defer writer.deinit();
+        csv.write(&data, &writer.writer, null) catch |err| switch (err) {
+            error.WriteFailed => return error.OutOfMemory,
+        };
+
+        var read_data: List = .init(gpa);
+        defer read_data.deinit();
+        var reader: Reader = .fixed(writer.written());
+        try csv.read(&read_data, &reader, null);
+    }
+};
+
+/// Read Stations from a GPS file
+/// When delimiter is null, use a comma (`,`)
+pub fn fromGps(self: *List, r: *Reader) ParseError!void {
+    innerFromGps(self, r) catch |e| return switch (e) {
+        else => |err| err,
+        error.StreamTooLong => error.BadFile,
+    };
+}
+
+fn innerFromGps(self: *List, r: *Reader) (error{StreamTooLong} || ParseError)!void {
+    const version = while (try r.takeDelimiter('\n')) |line| {
+        if (line.len == 0) return error.BadFile;
+        if (line[0] == '#') continue;
+        const version_header = "version";
+        if (std.mem.startsWith(u8, line, version_header)) {
+            break getInt(usize, line[version_header.len..]) catch |e| switch (e) {
+                error.BadFile => |err| return err,
+                error.InvalidValue => return error.InvalidHeader,
+            };
+        } else return error.InvalidHeader;
+    } else return error.BadFile;
+
+    const old_len = self.stations.items.len;
+    var network_id: Id = @enumFromInt(0);
+    switch (version) {
+        2 => {
+            // Network description
+            while (try r.takeDelimiter('\n')) |line| {
+                if (line.len == 0) return error.BadFile;
+                if (line[0] == '#') continue;
+                var iter = std.mem.tokenizeAny(u8, line, " \t");
+                _ = iter.next();
+                network_id = @enumFromInt(try getInt(u8, iter.next()));
+                break;
+            } else return error.BadFile;
+
+            while (try r.takeDelimiter('\n')) |line| {
+                if (line.len == 0) return error.BadFile;
+                if (line[0] == '#') continue;
+                var iter = std.mem.tokenizeAny(u8, line, " \t");
+                const entry: Station = .{
+                    .station_id = blk: {
+                        const non_empty = std.mem.trim(u8, try unwrapToken(iter.next()), " ");
+                        if (non_empty.len != 1) {
+                            log.err("Station Letter is empty.", .{});
+                            return error.InvalidValue;
+                        }
+                        const letter_id = letterToId(non_empty[0]);
+                        const station_id: Id = @enumFromInt(try getInt(u8, iter.next()));
+                        if (letter_id != station_id) {
+                            log.err(
+                                "Letter '{c}' (id: {d}) doesn't match station id {d}.",
+                                .{ non_empty[0], @intFromEnum(letter_id), @intFromEnum(station_id) },
+                            );
+                            return error.InvalidValue;
+                        }
+                        break :blk station_id;
+                    },
+                    .network_id = network_id,
+                    .name = try self.arena.allocator().dupe(u8, try unwrapToken(iter.next())),
+                    .latitude = try getFloat(f64, iter.next()),
+                    .longitude = try getFloat(f64, iter.next()),
+                    .altitude = try getFloat(f32, iter.next()),
+                    .delay = @round(4 * (try getFloat(f32, discard_3: {
+                        for (0..3) |_| _ = iter.next();
+                        break :discard_3 iter.next();
+                    }))),
+                    .revision = try getInt(u8, iter.next()),
+                    .channel = try getInt(u8, iter.next()),
+                };
+                for (0..2) |_| _ = try unwrapToken(iter.next());
+
+                for (self.stations.items[old_len..]) |*new_entry| {
+                    if (new_entry.station_id == entry.station_id) {
+                        new_entry.* = entry;
+                        break;
+                    }
+                } else try self.stations.append(self.allocator, entry);
+            }
+        },
+        else => return error.UnsupportedVersion,
+    }
+}
+
+test fromGps {
+    var buffer: [1024]u8 = undefined;
+
+    const file = try std.Io.Dir.cwd().openFile(std.testing.io, "test/data/test.gps", .{});
+    var file_reader = file.reader(std.testing.io, &buffer);
+
+    var data: List = .init(std.testing.allocator);
+    defer data.deinit();
+
+    try fromGps(&data, &file_reader.interface);
+
+    for (data.stations.items, 0..5) |station, idx| {
+        var name_buffer: [64]u8 = undefined;
+        try std.testing.expectEqualDeep(Station{
+            .station_id = @enumFromInt(1 + @as(u8, @intCast(idx))),
+            .network_id = @enumFromInt(255),
+            .name = std.fmt.bufPrint(&name_buffer, "Name_{d}", .{1 + idx}) catch unreachable,
+            .latitude = 42.0 + @as(f64, @floatFromInt(idx)) / 10,
+            .longitude = 2.0 + @as(f64, @floatFromInt(idx)) / 10,
+            .altitude = @as(f32, @floatFromInt(1 + idx)) * 10,
+            .delay = 4 * (100 + 10 * @as(i32, @intCast(idx))),
+            .revision = 1 + @as(u8, @intCast(idx)),
+            .channel = 6 + @as(u8, @intCast(idx)),
+        }, station);
+    }
+}
+
+/// Read Stations from a LOC file
+/// When delimiter is null, use a comma (`,`)
+pub fn fromLoc(self: *List, r: *Reader) ParseError!void {
+    innerFromLoc(self, r) catch |e| return switch (e) {
+        else => |err| err,
+        error.StreamTooLong => error.BadFile,
+    };
+}
+
+fn innerFromLoc(self: *List, r: *Reader) (error{StreamTooLong} || ParseError)!void {
+    var header_components: usize = 0;
+    while (try r.takeDelimiter('\n')) |line| {
+        if (line.len == 0) return error.BadFile;
+        if (line[0] == '#') continue;
+        header_components += 1;
+        if (header_components >= 4) break;
+    } else return error.BadFile;
+
+    // TODO swap to peek
+    while (try r.takeDelimiter('\n')) |line| {
+        if (line.len == 0) {
+            log.err("Line without comment nor data.", .{});
+            return error.BadFile;
+        }
+        if (line[0] == '#') continue;
+
+        if (std.mem.eql(u8, "END", std.mem.trim(u8, line, " "))) break;
+
+        r.seek -= line.len + 1;
+        try self.stations.append(self.allocator, .{
+            .name = try self.arena.allocator().dupe(u8, std.mem.trim(u8, try unwrapToken(try r.takeDelimiter('\n')), " ")),
+            .station_id = blk: {
+                const non_empty = std.mem.trim(u8, try unwrapToken(try r.takeDelimiter('\n')), " ");
+                if (non_empty.len != 1) {
+                    log.err("Station Letter is empty.", .{});
+                    return error.InvalidValue;
+                }
+                const letter_id = letterToId(non_empty[0]);
+                break :blk letter_id;
+            },
+            .network_id = @enumFromInt(0),
+            .latitude = try getFloat(f64, try r.takeDelimiter('\n')),
+            .longitude = try getFloat(f64, try r.takeDelimiter('\n')),
+            .altitude = try getFloat(f32, try r.takeDelimiter('\n')),
+            .delay = @round(4 * (try getFloat(f32, try r.takeDelimiter('\n')))),
+            .revision = try getInt(u8, try r.takeDelimiter('\n')),
+            .channel = try getInt(u8, try r.takeDelimiter('\n')),
+        });
+    }
+}
+
+test fromLoc {
+    var buffer: [1024]u8 = undefined;
+
+    const file = try std.Io.Dir.cwd().openFile(std.testing.io, "test/data/test.loc", .{});
+    var file_reader = file.reader(std.testing.io, &buffer);
+
+    var data: List = .init(std.testing.allocator);
+    defer data.deinit();
+
+    try fromLoc(&data, &file_reader.interface);
+
+    for (data.stations.items, 0..5) |station, idx| {
+        var name_buffer: [64]u8 = undefined;
+        try std.testing.expectEqualDeep(Station{
+            .station_id = @enumFromInt(1 + @as(u8, @intCast(idx))),
+            .network_id = @enumFromInt(0),
+            .name = std.fmt.bufPrint(&name_buffer, "Name_{d}", .{1 + idx}) catch unreachable,
+            .latitude = 42.0 + @as(f64, @floatFromInt(idx)) / 10,
+            .longitude = 2.0 + @as(f64, @floatFromInt(idx)) / 10,
+            .altitude = @as(f32, @floatFromInt(1 + idx)) * 10,
+            .delay = 4 * (100 + 10 * @as(i32, @intCast(idx))),
+            .revision = 1 + @as(u8, @intCast(idx)),
+            .channel = 6 + @as(u8, @intCast(idx)),
+        }, station);
+    }
+}
+
+pub fn fromDat(self: *List, r: *Reader) !void {
+    _ = try dat_file.output.parse(r, null, self);
+}
+
+inline fn getFloat(Float: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Float {
+    return std.fmt.parseFloat(Float, std.mem.trim(u8, try unwrapToken(s), " ")) catch {
+        log.err("Value \"{s}\" is not a valid number", .{s.?});
+        return error.InvalidValue;
+    };
+}
+
+inline fn getInt(Int: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Int {
+    return std.fmt.parseInt(Int, std.mem.trim(u8, try unwrapToken(s), " "), 10) catch {
+        const info = @typeInfo(Int).int;
+        log.err(
+            "Value \"{s}\" is not a valid integer of type {c}{d}",
+            .{ s.?, if (info.signedness == .signed) 'i' else 'u', info.bits },
+        );
+        return error.InvalidValue;
+    };
+}
+
+inline fn unwrapToken(s: ?[]const u8) error{BadFile}![]const u8 {
+    return s orelse {
+        log.err("File terminated while reading", .{});
+        return error.BadFile;
+    };
+}
+
+comptime {
+    std.testing.refAllDecls(@This());
+}

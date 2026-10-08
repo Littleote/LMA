@@ -7,6 +7,12 @@ const opt = nargs.options;
 
 const utils = @import("utils.zig");
 
+pub const std_options: std.Options = .{
+    .log_scope_levels = &.{
+        .{ .level = .debug, .scope = lma.log.scopes.signal_file },
+    },
+};
+
 pub const Cli = struct {
     const Output = struct {
         path: []const u8,
@@ -48,7 +54,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
     defer if (csv_dir) |dir| dir.close(io);
 
     // Output BIN directory
-    const bin_dir: ?std.Io.Dir = if (args.csv.skip) null else try dat_dir.createDirPathOpen(io, args.bin.path, .{});
+    const bin_dir: ?std.Io.Dir = if (args.bin.skip) null else try dat_dir.createDirPathOpen(io, args.bin.path, .{});
     defer if (bin_dir) |dir| dir.close(io);
 
     // Iterate for all test source files
@@ -60,7 +66,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
         }
 
         var buffer: [1024]u8 = undefined;
-        var data: Signal = .init(gpa);
+        var data: Signal.List = .init(gpa);
         defer data.deinit();
         {
             // Parse source file
@@ -71,12 +77,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
             );
             defer file.close(io);
             var file_reader = file.reader(io, &buffer);
-            try lma.data.dat_file.SignalParser.fromReader(&file_reader.interface, &data, .{
-                .log_level = @enumFromInt(@max(
-                    @intFromEnum(std.log.Level.info),
-                    @intFromEnum(std.options.log_level),
-                )),
-            });
+            try lma.data.dat_file.SignalParser.fromReader(&file_reader.interface, &data, .{});
         }
 
         if (csv_dir) |dir| {
@@ -88,7 +89,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
             defer csv.close(io);
             var file_writer = csv.writer(io, &buffer);
 
-            try data.toCsv(&file_writer.interface, null);
+            try Signal.csv.write(&data, &file_writer.interface, null);
         }
 
         if (bin_dir) |dir| {
@@ -99,7 +100,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
             const bin = try dir.createFile(io, name, .{});
             defer bin.close(io);
             var file_writer = bin.writer(io, &buffer);
-            try data.toBin(&file_writer.interface);
+            try Signal.bin.write(&data, &file_writer.interface);
         }
     }
 }

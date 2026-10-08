@@ -2,7 +2,7 @@ const std = @import("std");
 const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 const lma = @import("../lma.zig");
-const data = lma.data;
+const segmented = lma.data.segmented;
 const cast = lma.cast;
 
 const ParseError = error{InvalidValue};
@@ -35,8 +35,18 @@ pub const Signal = extern struct {
 
     padding: u16 = 0,
 
+    pub const List = segmented.Segmented(@This());
+
     // CSV elements
-    pub inline fn toCsv(self: Signal, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
+    pub const csv = segmented.csv(@This(), .{
+        .columns = &.{ "Time", "Decibel-miliwatt" },
+        .read = readCsv,
+        .write = writeCsv,
+
+        .testing = testing,
+    });
+
+    pub fn writeCsv(self: Signal, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.3}\n", .{
             del,
             cast.to(f64, epoch) + lma.nano.fromNano(f64, self.nanosecond),
@@ -44,7 +54,7 @@ pub const Signal = extern struct {
         });
     }
 
-    pub inline fn fromCsv(self: *Signal, line: []u8, del: u8) ParseError!usize {
+    pub fn readCsv(self: *Signal, line: []const u8, del: u8) ParseError!usize {
         var iterator = std.mem.tokenizeScalar(u8, line, del);
         const time = std.math.modf(try parse(f64, iterator.next(), .float));
         const epoch: usize = @intFromFloat(time.ipart);
@@ -57,8 +67,11 @@ pub const Signal = extern struct {
         return epoch;
     }
 
-    pub const csv = struct {
-        pub const columns: []const []const u8 = &.{ "Time", "Decibel-miliwatt" };
+    // Testing elements
+    const testing: segmented.TestConfig(@This()) = .{
+        .dummy = dummyValue,
+        .eql = eql,
+        .approxEql = approxEql,
     };
 
     pub fn eql(first: Signal, second: Signal) bool {
@@ -76,9 +89,14 @@ pub const Signal = extern struct {
         };
     }
 
-    pub const bin = struct {
-        pub const tag = "toa";
-    };
+    // Binary format elements
+    pub const bin = segmented.bin(@This(), .{
+        .tag = "signal",
+    });
+
+    comptime {
+        std.testing.refAllDecls(@This());
+    }
 };
 
 /// Points indicating the sources of VHF radiation the LMA system captured
@@ -113,8 +131,18 @@ pub const Point = extern struct {
         return .{ .elems = .{ self.latitude, self.longitude, self.altitude, 0 } };
     }
 
+    pub const List = segmented.Segmented(@This());
+
     // CSV elements
-    pub inline fn toCsv(self: Point, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
+    pub const csv = segmented.csv(@This(), .{
+        .columns = &.{ "Time", "Latitude", "Longitude", "Altitude", "Decibel-watt", "Station mask", "Fitness" },
+        .read = readCsv,
+        .write = writeCsv,
+
+        .testing = testing,
+    });
+
+    pub fn writeCsv(self: Point, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.8}{0c}{3d:.8}{0c}{4d:.3}{0c}{5d:.3}{0c}0x{6x:0>8}{0c}{7d:.2}\n", .{
             del,
             cast.to(f64, epoch) + lma.nano.fromNano(f64, self.nanosecond),
@@ -127,7 +155,7 @@ pub const Point = extern struct {
         });
     }
 
-    pub inline fn fromCsv(self: *Point, line: []u8, del: u8) ParseError!usize {
+    pub fn readCsv(self: *Point, line: []const u8, del: u8) ParseError!usize {
         var iterator = std.mem.tokenizeScalar(u8, line, del);
         const time = std.math.modf(try parse(f64, iterator.next(), .float));
         const epoch: usize = @intFromFloat(time.ipart);
@@ -150,8 +178,11 @@ pub const Point = extern struct {
         return epoch;
     }
 
-    pub const csv = struct {
-        pub const columns: []const []const u8 = &.{ "Time", "Latitude", "Longitude", "Altitude", "Decibel-watt", "Station mask", "Fitness" };
+    // Testing elements
+    const testing: segmented.TestConfig(@This()) = .{
+        .dummy = dummyValue,
+        .eql = eql,
+        .approxEql = approxEql,
     };
 
     pub fn eql(first: Point, second: Point) bool {
@@ -194,9 +225,14 @@ pub const Point = extern struct {
         };
     }
 
-    pub const bin = struct {
-        pub const tag = "point";
-    };
+    // Binary format elements
+    pub const bin = segmented.bin(@This(), .{
+        .tag = "point",
+    });
+
+    comptime {
+        std.testing.refAllDecls(@This());
+    }
 };
 
 /// Points indicating the sources of VHF radiation the LMA system captured
@@ -242,8 +278,18 @@ pub const Clustered = extern struct {
         return .{ .elems = .{ self.latitude, self.longitude, self.altitude, 0 } };
     }
 
+    pub const List = segmented.Segmented(@This());
+
     // CSV elements
-    pub inline fn toCsv(self: Clustered, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
+    pub const csv = segmented.csv(@This(), .{
+        .columns = &.{ "Time", "Latitude", "Longitude", "Altitude", "Cluster", "Decibel-watt" },
+        .read = readCsv,
+        .write = writeCsv,
+
+        .testing = testing,
+    });
+
+    pub fn writeCsv(self: Clustered, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.8}{0c}{3d:.8}{0c}{4d:.3}{0c}{5d}{0c}{6d:.3}\n", .{
             del,
             cast.to(f64, epoch) + lma.nano.fromNano(f64, self.nanosecond),
@@ -255,7 +301,7 @@ pub const Clustered = extern struct {
         });
     }
 
-    pub inline fn fromCsv(self: *Clustered, line: []u8, del: u8) ParseError!usize {
+    pub fn readCsv(self: *Clustered, line: []const u8, del: u8) ParseError!usize {
         var iterator = std.mem.tokenizeScalar(u8, line, del);
         const time = std.math.modf(try parse(f64, iterator.next(), .float));
         const epoch: usize = @intFromFloat(time.ipart);
@@ -276,15 +322,15 @@ pub const Clustered = extern struct {
         return epoch;
     }
 
-    pub const csv = struct {
-        pub const columns: []const []const u8 = &.{ "Time", "Latitude", "Longitude", "Altitude", "Cluster", "Decibel-watt" };
+    // Testing elements
+    const testing: segmented.TestConfig(@This()) = .{
+        .dummy = dummyValue,
+        .eql = eql,
+        .approxEql = approxEql,
     };
 
-    pub fn eql(first: Clustered, second: Clustered) bool {
-        inline for (std.meta.fieldNames(Point)) |name| {
-            if (@field(first, name) != @field(second, name)) return false;
-        }
-        return true;
+    pub fn eql(a: Clustered, b: Clustered) bool {
+        return std.meta.eql(a, b);
     }
 
     pub fn approxEql(first: Clustered, second: Clustered) bool {
@@ -316,7 +362,16 @@ pub const Clustered = extern struct {
         };
     }
 
-    pub const bin = struct {
-        pub const tag = "cluster";
-    };
+    // Binary format elements
+    pub const bin = segmented.bin(@This(), .{
+        .tag = "cluster",
+    });
+
+    comptime {
+        std.testing.refAllDecls(@This());
+    }
 };
+
+comptime {
+    std.testing.refAllDecls(@This());
+}

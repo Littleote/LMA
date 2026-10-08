@@ -5,12 +5,20 @@ const builtin = @import("builtin");
 const lma = @import("lma");
 const match = lma.pipeline.match;
 const ToaSolver = lma.pipeline.ToaSolver;
+const Signal = lma.data.Signal;
 const nargs = @import("nargs");
 const opt = nargs.options;
 
 const files = @import("files.zig");
 const runner = @import("runner.zig");
 const parse_time = @import("parse_time.zig");
+
+pub const std_options: std.Options = .{
+    .log_scope_levels = &.{
+        .{ .level = .warn, .scope = lma.log.scopes.signal_file },
+        .{ .level = .err, .scope = lma.log.scopes.station_file },
+    },
+};
 
 const CliTime = struct {
     date: parse_time.Date.Type,
@@ -139,7 +147,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     var threaded: std.Io.Threaded = .init(gpa, .{ .async_limit = .nothing, .concurrent_limit = .nothing, .environ = init.environ });
     const io = threaded.io();
 
-    var options: Cli = undefined;
+    var cli: Cli = undefined;
     {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
@@ -167,16 +175,16 @@ pub fn main(init: std.process.Init.Minimal) void {
             return;
         }
 
-        root.init(&mem, &diag, gpa, &options) catch return;
+        root.init(&mem, &diag, gpa, &cli) catch return;
     }
-    defer root.deinit(gpa, &options);
+    defer root.deinit(gpa, &cli);
 
-    threaded.async_limit = @enumFromInt(options.threads - 1);
-    threaded.concurrent_limit = @enumFromInt(options.threads - 1);
+    threaded.async_limit = @enumFromInt(cli.threads - 1);
+    threaded.concurrent_limit = @enumFromInt(cli.threads - 1);
 
     var buffer: [1024]u8 = undefined;
 
-    if (options.files.probe) |probe_file| probe: {
+    if (cli.files.probe) |probe_file| probe: {
         const file = std.Io.Dir.cwd().openFile(io, probe_file, .{}) catch {
             std.log.warn("Unable to open probe file.", .{});
             break :probe;
@@ -194,9 +202,9 @@ pub fn main(init: std.process.Init.Minimal) void {
     defer if (probe_data) |*data| data.deinit();
 
     // Load stations
-    var stations: lma.data.Stations = .init(gpa);
+    var stations: lma.data.Station.List = .init(gpa);
     defer stations.deinit();
-    for (options.files.stations) |network| {
+    for (cli.files.stations) |network| {
         const file = std.Io.Dir.cwd().openFile(io, network, .{}) catch |err| {
             std.log.err("Unable to open station/network file \"{s}\" with error {s}.", .{ network, @errorName(err) });
             continue;
@@ -225,11 +233,11 @@ pub fn main(init: std.process.Init.Minimal) void {
 
     // Load signals
     var active_stations: usize = 0;
-    var full_signal_buffer: [lma.constants.network.max_network]lma.data.Signal = @splat(.init(gpa));
-    const full_signals: []lma.data.Signal = full_signal_buffer[0..count];
+    var full_signal_buffer: [lma.constants.network.max_network]Signal.List = @splat(.init(gpa));
+    const full_signals: []Signal.List = full_signal_buffer[0..count];
     defer for (full_signals) |*signal| signal.deinit();
 
-    for (options.files.inputs) |*pattern| {
+    for (cli.files.inputs) |*pattern| {
         var glob: nargs.params.io.Glob.Iterator = pattern.iterator(io, null) catch |e| switch (e) {
             error.Canceled => unreachable,
             else => |err| {
@@ -245,7 +253,7 @@ pub fn main(init: std.process.Init.Minimal) void {
                 break :blk null;
             },
         }) |entry| {
-            for (options.files.excluded) |exclude| {
+            for (cli.files.excluded) |exclude| {
                 const name = std.fs.path.basename(exclude);
                 if (std.mem.find(u8, entry.basename, name)) |_| {
                     std.log.info(
@@ -255,11 +263,11 @@ pub fn main(init: std.process.Init.Minimal) void {
                 }
             }
 
-            loadStation(io, entry.dir, entry.basename, options.time.date.string[2..8].*, options.time.hour.string, stations, full_signals) catch |err| {
+            loadStation(io, entry.dir, entry.basename, cli.time.date.string[2..8].*, cli.time.hour.string, stations, full_signals) catch |err| {
                 switch (err) {
                     error.BadName => std.log.warn(
                         \\File "{s}" doesn't conform to naming convention "{{CODE}}_{{NETWORK}}_{{STATION_NAME}}_{{YYMMDD}}_{{HHMMSS}}". (With YYMMDD = {s} and HHMMSS = {s})
-                    , .{ entry.basename, options.time.date.string[2..8].*, options.time.hour.string }),
+                    , .{ entry.basename, cli.time.date.string[2..8].*, cli.time.hour.string }),
                     error.UnknownStation => std.log.warn(
                         \\No station associated to "{s}".
                     , .{entry.basename}),
@@ -282,7 +290,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         return;
     }
 
-    var out_dir: std.Io.Dir = if (options.files.out_dir) |dir| std.Io.Dir.cwd().createDirPathOpen(io, dir, .{}) catch |e| switch (e) {
+    var out_dir: std.Io.Dir = if (cli.files.out_dir) |dir| std.Io.Dir.cwd().createDirPathOpen(io, dir, .{}) catch |e| switch (e) {
         error.Canceled => unreachable,
         else => |err| blk: {
             std.log.warn("Failed to open \"{s}\" with error {s} defaulting to cwd.", .{ dir, @errorName(err) });
@@ -290,14 +298,14 @@ pub fn main(init: std.process.Init.Minimal) void {
         },
     } else .cwd();
 
-    const start_time = (options.time.start orelse options.time.hour).toSeconds();
-    const end_time = switch (options.time.ending) {
+    const start_time = (cli.time.start orelse cli.time.hour).toSeconds();
+    const end_time = switch (cli.time.ending) {
         .end => |end| end.toSeconds(),
         .total => |total| start_time + total,
     };
     const analysed = end_time - start_time;
 
-    const result = runner.run(io, gpa, points, full_signals, options.config, .init(start_time, analysed)) catch |err| switch (err) {
+    const result = runner.run(io, gpa, points, full_signals, cli.config, .init(start_time, analysed)) catch |err| switch (err) {
         error.Canceled => unreachable,
         error.OutOfMemory => @panic("OOM"),
     };
@@ -307,13 +315,13 @@ pub fn main(init: std.process.Init.Minimal) void {
 
     var default_file_buffer = "CUSTOM_YYMMDD_HHMMSS_SSSS.dat.gz"[0..].*;
 
-    const out_files: []const []const u8 = if (options.files.outputs.len == 0) &.{
+    const out_files: []const []const u8 = if (cli.files.outputs.len == 0) &.{
         std.fmt.bufPrint(
             &default_file_buffer,
             "CUSTOM_{s}_{s}_{d:0>4}.dat.gz",
-            .{ options.time.date.string[2..8].*, (options.time.start orelse options.time.hour).string, analysed },
+            .{ cli.time.date.string[2..8].*, (cli.time.start orelse cli.time.hour).string, analysed },
         ) catch unreachable,
-    } else options.files.outputs;
+    } else cli.files.outputs;
     for (out_files) |out| {
         const err: anyerror = skip: {
             const file = out_dir.createFile(io, out, .{}) catch |err| break :skip err;
@@ -329,15 +337,15 @@ pub fn main(init: std.process.Init.Minimal) void {
 
     std.debug.print("Total points: {d}\n", .{output.array.items.len});
 
-    if (options.config.verbose) {
+    if (cli.config.verbose) {
         for (stations.stations.items, 0..) |*station, i| {
-            const correction = lma.nano.toFixed(i32, result.stats.stations[i].calibration());
+            const correction = lma.nano.toDelta(result.stats.stations[i].calibration());
             station.delay -= correction;
         }
         var writer: std.Io.Writer.Allocating = .init(gpa);
         defer writer.deinit();
 
-        stations.toCsv(&writer.writer, null) catch {};
+        lma.data.Station.csv.write(&stations, &writer.writer, null) catch {};
         std.debug.print("Updated stations:\n{s}", .{writer.written()});
     }
 }
@@ -349,8 +357,8 @@ pub fn loadStation(
     file: []const u8,
     date: [6]u8,
     time: [6]u8,
-    stations: lma.data.Stations,
-    signals: []lma.data.Signal,
+    stations: lma.data.Station.List,
+    signals: []Signal.List,
 ) error{ Reported, BadName, UnknownStation, DuplicateStation }!void {
     const cancel = io.swapCancelProtection(.blocked);
     defer _ = io.swapCancelProtection(cancel);

@@ -3,16 +3,10 @@ const Allocator = std.mem.Allocator;
 const Io = std.Io;
 const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
-const builtin = @import("builtin");
 
 const lma = @import("../lma.zig");
 const cast = lma.cast;
 pub const Header = lma.index.SubSlice;
-
-pub const Config = struct {
-    version: usize,
-    tag: []const u8,
-};
 
 pub const Search = enum {
     at_least,
@@ -25,16 +19,246 @@ pub const Shift = struct {
     backward: u32 = 0,
 };
 
-pub const IteratorMode = union(enum) {
-    /// Iterate until the last epoch in the data
-    all: void,
-    until_epoch: u64,
+pub fn TestConfig(Elem: type) type {
+    return struct {
+        dummy: fn (std.Random) Elem,
+        eql: fn (Elem, Elem) bool = defaultEql,
+        approxEql: fn (Elem, Elem) bool = defaultEql,
 
-    /// Iterate until the specified epoch
-    pub fn until(epoch: u64) IteratorMode {
-        return .{ .until_epoch = epoch };
-    }
+        pub fn defaultEql(a: Elem, b: Elem) bool {
+            return std.meta.eql(a, b);
+        }
+    };
+}
+
+pub const BinConfig = struct {
+    tag: []const u8,
 };
+
+pub fn CsvConfig(Elem: type) type {
+    return struct {
+        columns: []const []const u8,
+        read: fn (out: *Elem, line: []const u8, delimiter: u8) error{InvalidValue}!u64,
+        write: fn (in: Elem, writer: *Writer, epoch: u64, delimiter: u8) Writer.Error!void,
+
+        testing: ?TestConfig(Elem) = null,
+    };
+}
+
+pub fn bin(Elem: type, comptime config: BinConfig) type {
+    return struct {
+        const List = Segmented(Elem);
+
+        // HEADER: "LMA-{[tag]s}-{[hash]x:0>16}\n"
+        //  tag = Elem.bin.tag
+        //  hash = typeHash(Elem)
+        const file_tag = std.fmt.comptimePrint("LMA-{[tag]s}", .{ .tag = config.tag });
+        const file_header = std.fmt.comptimePrint("{[file_tag]s}-{[hash]x:0>16}\n", .{ .file_tag = file_tag, .hash = typeHash(Elem) });
+
+        /// Write segments to custom binary format
+        pub fn write(list: *const List, w: *Writer) Writer.Error!void {
+            // File Header
+            try w.writeAll(file_header);
+            try w.writeInt(u64, list.start_epoch, .little);
+            try w.writeInt(u32, @intCast(list.headers.items.len), .little);
+            try w.writeInt(u32, @intCast(list.array.items.len), .little);
+
+            var start: u32 = 0;
+            for (list.headers.items) |header| {
+                const saved_header: Header = .{ .start = start, .size = header.size };
+                try w.writeStruct(saved_header, .little);
+                try w.writeSliceEndian(Elem, header.getConst(Elem, list.array.items), .little);
+                start += header.size;
+            }
+            try w.flush();
+        }
+
+        /// Read segments from custom binary format
+        pub fn read(list: *List, r: *Reader) List.ParseError!void {
+            innerRead(list, r) catch |e| return switch (e) {
+                else => |err| err,
+                error.EndOfStream => error.BadFile,
+            };
+        }
+
+        fn readHeader(r: *Reader) List.ParseError!void {
+            const header = r.take(file_header.len) catch |e| return switch (e) {
+                error.ReadFailed => |err| err,
+                error.EndOfStream => error.InvalidHeader,
+            };
+
+            if (std.mem.eql(u8, file_header, header)) return;
+            return if (std.mem.eql(u8, file_tag, header[0..file_tag.len]))
+                error.UnsupportedVersion
+            else
+                error.InvalidHeader;
+        }
+
+        pub fn innerRead(list: *List, r: *Reader) (error{EndOfStream} || List.ParseError)!void {
+            try readHeader(r);
+
+            list.start_epoch = try r.takeInt(u64, .little);
+            const headers = try r.takeInt(u32, .little);
+            const elements = try r.takeInt(u32, .little);
+
+            try list.headers.ensureTotalCapacityPrecise(list.allocator, headers);
+            errdefer list.headers.deinit(list.allocator);
+            try list.array.ensureTotalCapacityPrecise(list.allocator, elements);
+            errdefer list.array.deinit(list.allocator);
+
+            for (0..headers) |_| {
+                list.headers.appendAssumeCapacity(try r.takeStruct(Header, .little));
+                const header = list.headers.getLast();
+                const slice = list.array.addManyAsSliceAssumeCapacity(header.size);
+                try r.readSliceEndian(Elem, slice, .little);
+            }
+        }
+    };
+}
+
+pub fn csv(Elem: type, comptime config: CsvConfig(Elem)) type {
+    return struct {
+        const List = Segmented(Elem);
+        const common_delimiters = [_]u8{ ',', ';', '\t', '|' };
+
+        /// Write segmented data to a CSV file
+        /// When delimiter is null, use a comma (`,`)
+        pub fn write(list: *const List, w: *Writer, delimiter: ?u8) Writer.Error!void {
+            const del = delimiter orelse ',';
+            for (config.columns, 1..) |column, idx| {
+                try w.writeAll(column);
+                try w.writeByte(if (idx == config.columns.len) '\n' else del);
+            }
+            for (list.headers.items, 0..) |header, epoch_delta| {
+                const epoch: u64 = list.start_epoch + epoch_delta;
+                for (list.array.items[header.start..][0..header.size]) |value| {
+                    try config.write(value, w, epoch, del);
+                }
+            }
+            try w.flush();
+        }
+
+        /// Read data from CSV file as segments
+        /// When delimiter is null, the most common delimiters are tested
+        pub fn read(list: *List, r: *Reader, delimiter: ?u8) List.ParseError!void {
+            innerRead(list, r, delimiter) catch |e| return switch (e) {
+                else => |err| err,
+                error.StreamTooLong => error.BadFile,
+            };
+        }
+
+        fn innerRead(list: *List, r: *Reader, delimiter: ?u8) (error{StreamTooLong} || List.ParseError)!void {
+            // Read CSV header
+            const csv_header = try r.takeDelimiter('\n') orelse return error.InvalidHeader;
+            const del = delimiter orelse blk: {
+                for (common_delimiters) |del| {
+                    const columns = 1 + std.mem.countScalar(u8, csv_header, del);
+                    if (columns == config.columns.len) break :blk del;
+                }
+                return error.InvalidHeader;
+            };
+
+            // Short-circuit for empty csv
+            const first_line = r.peekDelimiterExclusive('\n') catch |e| switch (e) {
+                error.EndOfStream => return,
+                else => |err| return err,
+            };
+            var first_value: Elem = undefined;
+            list.start_epoch = try config.read(&first_value, first_line, del);
+            var last_epoch: u64 = list.start_epoch;
+
+            // Parse entries
+            errdefer list.deinit();
+            var header = try list.headers.addOne(list.allocator);
+            // Start first header info
+            header.* = .{
+                .start = @intCast(list.array.items.len),
+                .size = 0,
+            };
+            while (try r.takeDelimiter('\n')) |line| {
+                const value = try list.array.addOne(list.allocator);
+                const current_epoch: u64 = try config.read(value, line, del);
+                if (last_epoch != current_epoch) {
+                    // Finish current and start next header info
+                    const last_len: u32 = @intCast(list.array.items.len - 1);
+                    header.size = last_len - header.start;
+                    const epoch_delta: usize = @intCast(current_epoch - last_epoch);
+                    try list.headers.appendNTimes(list.allocator, .{ .start = last_len, .size = 0 }, epoch_delta);
+                    last_epoch = current_epoch;
+                    header = &list.headers.items[list.headers.items.len - 1];
+                }
+            }
+            // Finish last header info
+            header.size = @intCast(list.array.items.len - header.start);
+        }
+
+        test "csv columns" {
+            const testing = config.testing orelse return error.SkipZigTest;
+
+            var data: Segmented(Elem) = .init(std.testing.allocator);
+            defer data.deinit();
+            try randomSegments(Elem, &data, testing, &orderedEpochs(3), 5);
+
+            // Write to a buffer and read from it to check for issues with the CSV format
+            var writer: Writer.Allocating = .init(data.allocator);
+            defer writer.deinit();
+            const del = ',';
+            try write(&data, &writer.writer, del);
+
+            var reader: Reader = .fixed(writer.written());
+            const csv_header = try reader.takeDelimiter('\n') orelse {
+                std.log.err("Missing CSV header in buffer\n{s}", .{writer.written()});
+                return error.InvalidHeader;
+            };
+            const columns_delimiters = config.columns.len - 1;
+            if (std.mem.countScalar(u8, csv_header, del) != columns_delimiters) {
+                std.log.err("Delimiter used in header\n{s}", .{csv_header});
+                return error.InvalidHeader;
+            }
+            var rows: usize = 0;
+            while (try reader.takeDelimiter('\n')) |line| {
+                if (std.mem.countScalar(u8, line, del) != columns_delimiters) {
+                    std.log.err("Column number mismatch between header\n{s}\nAnd entry\n{s}", .{ csv_header, line });
+                    return error.InvalidValue;
+                }
+                rows += 1;
+            }
+            if (rows != 3 * 5) {
+                std.log.err("Row count mismatch\n{s}", .{writer.written()});
+                return error.InvalidValue;
+            }
+        }
+
+        test "csv format round trip" {
+            const testing = config.testing orelse return error.SkipZigTest;
+
+            var data: Segmented(Elem) = .init(std.testing.allocator);
+            defer data.deinit();
+            try randomSegments(Elem, &data, testing, &orderedEpochs(10), 5);
+
+            // Write to a buffer and read from it with a new Segmented instance
+            var writer: Writer.Allocating = .init(data.allocator);
+            defer writer.deinit();
+            try write(&data, &writer.writer, null);
+
+            var read_data: Segmented(Elem) = .init(std.testing.allocator);
+            defer read_data.deinit();
+            var reader: Reader = .fixed(writer.written());
+            read(&read_data, &reader, null) catch |err| {
+                std.log.err("Failed to parse\n{s}", .{writer.written()});
+                return err;
+            };
+
+            try std.testing.expectEqualSlices(Header, data.headers.items, read_data.headers.items);
+            for (data.array.items, read_data.array.items) |original, final| {
+                std.testing.expect(testing.approxEql(original, final)) catch |err| {
+                    std.log.err("Entry\n{any}\nBecame\n{any}.", .{ original, final });
+                    return err;
+                };
+            }
+        }
+    };
+}
 
 pub fn Segmented(Elem: type) type {
     return struct {
@@ -65,217 +289,6 @@ pub fn Segmented(Elem: type) type {
         }
 
         pub const ParseError = error{ ReadFailed, OutOfMemory, InvalidHeader, InvalidValue, BadFile, UnsupportedVersion };
-
-        // const bin_header_tag = std.fmt.comptimePrint("LMA-{[tag]s}-{[hash]x:0>16}\n", .{ .tag = Elem.bin.tag, .hash = typeHash(Elem) });
-        const bin_header = std.fmt.comptimePrint("LMA-{[tag]s}-{[hash]x:0>16}\n", .{ .tag = Elem.bin.tag, .hash = typeHash(Elem) });
-
-        /// Write segments to custom binary format
-        pub fn toBin(self: *const Self, w: *Writer) Writer.Error!void {
-            // File Header
-            try w.writeAll(bin_header);
-            try w.writeInt(u64, self.start_epoch, .little);
-            try w.writeInt(u32, @intCast(self.headers.items.len), .little);
-            try w.writeInt(u32, @intCast(self.array.items.len), .little);
-
-            var start: u32 = 0;
-            for (self.headers.items) |header| {
-                const saved_header: Header = .{ .start = start, .size = header.size };
-                try w.writeStruct(saved_header, .little);
-                try w.writeSliceEndian(Elem, header.getConst(Elem, self.array.items), .little);
-                start += header.size;
-            }
-            try w.flush();
-        }
-
-        fn fromBinHeader(r: *Reader) Self.ParseError!void {
-            const header = r.take(bin_header.len) catch |e| return switch (e) {
-                error.ReadFailed => |err| err,
-                error.EndOfStream => error.InvalidHeader,
-            };
-
-            if (std.mem.eql(u8, bin_header, header)) return;
-            return if (std.mem.eql(
-                u8,
-                bin_header[0..bin_header.len -| 18],
-                header[0..header.len -| 18],
-            )) error.UnsupportedVersion else error.InvalidHeader;
-        }
-
-        /// Read segments from custom binary format
-        pub fn fromBin(self: *Self, r: *Reader) Self.ParseError!void {
-            self.innerFromBin(r) catch |e| return switch (e) {
-                else => |err| err,
-                error.EndOfStream => error.BadFile,
-            };
-        }
-
-        pub fn innerFromBin(self: *Self, r: *Reader) (error{EndOfStream} || Self.ParseError)!void {
-            const file_header = r.take(bin_header.len) catch |e| return switch (e) {
-                error.ReadFailed => |err| err,
-                error.EndOfStream => error.InvalidHeader,
-            };
-
-            if (!std.mem.eql(u8, bin_header, file_header)) {
-                return if (std.mem.eql(
-                    u8,
-                    bin_header[0..bin_header.len -| 18],
-                    file_header[0..file_header.len -| 18],
-                )) error.UnsupportedVersion else error.InvalidHeader;
-            }
-
-            self.start_epoch = try r.takeInt(u64, .little);
-            const headers = try r.takeInt(u32, .little);
-            const elements = try r.takeInt(u32, .little);
-            try self.headers.ensureTotalCapacityPrecise(self.allocator, headers);
-            errdefer self.headers.deinit(self.allocator);
-            try self.array.ensureTotalCapacityPrecise(self.allocator, elements);
-            errdefer self.array.deinit(self.allocator);
-            for (0..headers) |_| {
-                self.headers.appendAssumeCapacity(try r.takeStruct(Header, .little));
-                const header = self.headers.getLast();
-                const slice = self.array.addManyAsSliceAssumeCapacity(header.size);
-                try r.readSliceEndian(Elem, slice, .little);
-            }
-        }
-
-        /// Write segmented data to a CSV file
-        /// When delimiter is null, use a comma (`,`)
-        pub fn toCsv(self: *const Self, w: *Writer, delimiter: ?u8) Writer.Error!void {
-            if (!@hasDecl(Elem, "csv")) @compileError("Type " ++ @typeName(Elem) ++ " doesn't support writting/reading to CSV.");
-            const del = delimiter orelse ',';
-            for (Elem.csv.columns, 1..) |column, idx| {
-                try w.writeAll(column);
-                try w.writeByte(if (idx == Elem.csv.columns.len) '\n' else del);
-            }
-            for (self.headers.items, 0..) |header, epoch_delta| {
-                const epoch: u64 = self.start_epoch + epoch_delta;
-                for (self.array.items[header.start..][0..header.size]) |value| {
-                    try value.toCsv(w, epoch, del);
-                }
-            }
-            try w.flush();
-        }
-
-        /// Read data from CSV file as segments
-        /// When delimiter is null, the most common delimiters are tested
-        pub fn fromCsv(self: *Self, r: *Reader, delimiter: ?u8) Self.ParseError!void {
-            if (!@hasDecl(Elem, "csv")) @compileError("Type " ++ @typeName(Elem) ++ " doesn't support writting/reading to CSV.");
-
-            self.innerFromCsv(r, delimiter) catch |e| return switch (e) {
-                else => |err| err,
-                error.StreamTooLong => error.BadFile,
-            };
-        }
-
-        fn innerFromCsv(self: *Self, r: *Reader, delimiter: ?u8) (error{StreamTooLong} || Self.ParseError)!void {
-            // Read CSV header
-            const csv_header = try r.takeDelimiter('\n') orelse return error.InvalidHeader;
-            const del = delimiter orelse blk: {
-                const common_delimiters = [_]u8{ ',', ';', '\t', '|' };
-                for (common_delimiters) |del| {
-                    const columns = 1 + std.mem.countScalar(u8, csv_header, del);
-                    if (columns == Elem.csv.columns.len) break :blk del;
-                }
-                return error.InvalidHeader;
-            };
-
-            // Short-circuit for empty csv
-            const first_line = r.peekDelimiterExclusive('\n') catch |e| switch (e) {
-                error.EndOfStream => return,
-                else => |err| return err,
-            };
-            var first_value: Elem = undefined;
-            self.start_epoch = try first_value.fromCsv(first_line, del);
-            var last_epoch: u64 = self.start_epoch;
-
-            // Parse entries
-            errdefer self.deinit();
-            var header = try self.headers.addOne(self.allocator);
-            // Start first header info
-            header.* = .{
-                .start = @intCast(self.array.items.len),
-                .size = 0,
-            };
-            while (try r.takeDelimiter('\n')) |line| {
-                const value = try self.array.addOne(self.allocator);
-                const current_epoch: u64 = try value.fromCsv(line, del);
-                if (last_epoch != current_epoch) {
-                    // Finish current and start next header info
-                    const last_len: u32 = @intCast(self.array.items.len - 1);
-                    header.size = last_len - header.start;
-                    const epoch_delta: usize = @intCast(current_epoch - last_epoch);
-                    try self.headers.appendNTimes(self.allocator, .{ .start = last_len, .size = 0 }, epoch_delta);
-                    last_epoch = current_epoch;
-                    header = &self.headers.items[self.headers.items.len - 1];
-                }
-            }
-            // Finish last header info
-            header.size = @intCast(self.array.items.len - header.start);
-        }
-
-        test "csv columns" {
-            if (!@hasDecl(Elem, "csv")) return error.SkipZigTest;
-            var data: Segmented(Elem) = .init(std.testing.allocator);
-            defer data.deinit();
-            try randomSegments(Elem, &data, &orderedEpochs(3), 5);
-
-            // Write to a buffer and read from it to check for issues with the CSV format
-            var writer: Writer.Allocating = .init(data.allocator);
-            defer writer.deinit();
-            const del = ',';
-            try data.toCsv(&writer.writer, del);
-
-            var reader: Reader = .fixed(writer.written());
-            const csv_header = try reader.takeDelimiter('\n') orelse {
-                std.log.err("Missing CSV header in buffer\n{s}", .{writer.written()});
-                return error.InvalidHeader;
-            };
-            const columns_delimiters = Elem.csv.columns.len - 1;
-            if (std.mem.countScalar(u8, csv_header, del) != columns_delimiters) {
-                std.log.err("Delimiter used in header\n{s}", .{csv_header});
-                return error.InvalidHeader;
-            }
-            var rows: usize = 0;
-            while (try reader.takeDelimiter('\n')) |line| {
-                if (std.mem.countScalar(u8, line, del) != columns_delimiters) {
-                    std.log.err("Column number mismatch between header\n{s}\nAnd entry\n{s}", .{ csv_header, line });
-                    return error.InvalidValue;
-                }
-                rows += 1;
-            }
-            if (rows != 3 * 5) {
-                std.log.err("Row count mismatch\n{s}", .{writer.written()});
-                return error.InvalidValue;
-            }
-        }
-
-        test "csv format round trip" {
-            if (!@hasDecl(Elem, "csv")) return error.SkipZigTest;
-            var data: Segmented(Elem) = .init(std.testing.allocator);
-            defer data.deinit();
-            try randomSegments(Elem, &data, &orderedEpochs(10), 5);
-
-            // Write to a buffer and read from it with a new Segmented instance
-            var writer: Writer.Allocating = .init(data.allocator);
-            defer writer.deinit();
-            try data.toCsv(&writer.writer, null);
-
-            var read_data: Segmented(Elem) = .init(std.testing.allocator);
-            defer read_data.deinit();
-            var reader: Reader = .fixed(writer.written());
-            read_data.fromCsv(&reader, null) catch |err| {
-                std.log.err("Failed to parse\n{s}", .{writer.written()});
-                return err;
-            };
-
-            try std.testing.expectEqualSlices(Header, data.headers.items, read_data.headers.items);
-            for (data.array.items, read_data.array.items) |original, read| {
-                std.testing.expect(Elem.approxEql(original, read)) catch |err| {
-                    std.log.err("Entry\n{any}\nBecame\n{any}.", .{ original, read });
-                    return err;
-                };
-            }
-        }
 
         /// Create a copy of the data
         pub fn copy(self: *const Self, gpa: Allocator) error{OutOfMemory}!Self {
@@ -420,7 +433,7 @@ pub fn Segmented(Elem: type) type {
 
         /// Create a view of the data, containing the specified epoch range
         /// The returned view is form start inclusive to end exclusive
-        pub fn epochRange(self: *const Self, start: usize, end: usize) Self {
+        pub fn epochRange(self: *const Self, start: u64, end: u64) Self {
             std.debug.assert(start < end);
             var view: Self = .init(Allocator.failing);
 
@@ -437,15 +450,13 @@ pub fn Segmented(Elem: type) type {
 
         /// Iterate through all epochs from start to the given limit
         /// Epochs that are empty or have no header for it, will yield an empty slice
-        pub fn epochIterator(self: *const Self, start: ?u64, mode: IteratorMode) Iterator {
-            if (self.headers.items.len == 0 and start == null) return .init(self, 0, 0);
+        pub fn epochIterator(self: *const Self, start: ?u64, end: ?u64) Iterator {
+            const iter_end = end orelse self.start_epoch + self.headers.items.len;
+            const iter_start = start orelse if (self.headers.items.len == 0) iter_end else self.start_epoch;
             return .init(
                 self,
-                start orelse self.start_epoch,
-                switch (mode) {
-                    .all => self.start_epoch + self.headers.items.len,
-                    .until_epoch => |epoch| epoch,
-                },
+                iter_start,
+                iter_end,
             );
         }
 
@@ -546,7 +557,15 @@ const Dummy = extern struct {
     value: u32,
 
     // CSV elements
-    pub inline fn toCsv(self: Dummy, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
+    const csv_fmt = csv(@This(), .{
+        .columns = &.{ "Epoch", "Value" },
+        .read = fromCsv,
+        .write = toCsv,
+
+        .testing = testing,
+    });
+
+    fn toCsv(self: Dummy, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
         try w.print("{[seconds]d}{[delimiter]c}{[value]d}\n", .{
             .seconds = epoch,
             .delimiter = del,
@@ -554,34 +573,38 @@ const Dummy = extern struct {
         });
     }
 
-    pub inline fn fromCsv(self: *Dummy, line: []u8, del: u8) error{InvalidValue}!usize {
+    fn fromCsv(self: *Dummy, line: []u8, del: u8) error{InvalidValue}!usize {
         var iterator = std.mem.tokenizeScalar(u8, line, del);
         const epoch = std.fmt.parseInt(usize, iterator.next() orelse return error.InvalidValue, 10) catch return error.InvalidValue;
         self.value = std.fmt.parseInt(u32, iterator.next() orelse return error.InvalidValue, 10) catch return error.InvalidValue;
         return epoch;
     }
 
-    pub const csv = struct {
-        pub const columns: []const []const u8 = &.{ "Epoch", "Value" };
+    // Testing elements
+    const testing: TestConfig(@This()) = .{
+        .dummy = dummyValue,
+        .eql = eql,
+        .approxEql = approxEql,
     };
 
-    pub inline fn eql(first: Dummy, second: Dummy) bool {
+    fn eql(first: Dummy, second: Dummy) bool {
         return first.value == second.value;
     }
 
-    pub const approxEql = Dummy.eql;
+    const approxEql = Dummy.eql;
 
-    pub fn lower(_: void, first: Dummy, second: Dummy) bool {
+    fn lower(_: void, first: Dummy, second: Dummy) bool {
         return first.value < second.value;
     }
 
-    pub fn dummyValue(rand: std.Random) Dummy {
+    fn dummyValue(rand: std.Random) Dummy {
         return .{ .value = rand.int(u32) };
     }
 
-    pub const bin = struct {
-        pub const tag = "dummy";
-    };
+    // BIN elements
+    const bin_fmt = bin(@This(), .{
+        .tag = "dummy",
+    });
 };
 
 inline fn orderedEpochs(comptime count: usize) [count]u64 {
@@ -590,7 +613,7 @@ inline fn orderedEpochs(comptime count: usize) [count]u64 {
     return buffer;
 }
 
-fn randomSegments(Elem: type, data: *Segmented(Elem), epochs: []const u64, size: u32) !void {
+fn randomSegments(Elem: type, data: *Segmented(Elem), testing: TestConfig(Elem), epochs: []const u64, size: u32) !void {
     data.start_epoch = epochs[0];
     const last_epoch = epochs[epochs.len - 1] + 1;
     const epoch_count = last_epoch - data.start_epoch;
@@ -607,24 +630,24 @@ fn randomSegments(Elem: type, data: *Segmented(Elem), epochs: []const u64, size:
     var rng: std.Random.DefaultPrng = .init(std.testing.random_seed);
     const random = rng.random();
     for (data.array.addManyAsSliceAssumeCapacity(epochs.len * size)) |*element| {
-        element.* = Elem.dummyValue(random);
+        element.* = testing.dummy(random);
     }
 }
 
 test "bin format round trip" {
     var data: Segmented(Dummy) = .init(std.testing.allocator);
     defer data.deinit();
-    try randomSegments(Dummy, &data, &.{ 2, 5, 9, 12, 13, 14, 15, 16, 18, 24 }, 5);
+    try randomSegments(Dummy, &data, Dummy.testing, &.{ 2, 5, 9, 12, 13, 14, 15, 16, 18, 24 }, 5);
 
     // Write to a buffer and read from it with a new Segmented instance
     var writer: Writer.Allocating = .init(data.allocator);
     defer writer.deinit();
-    try data.toBin(&writer.writer);
+    try Dummy.bin_fmt.write(&data, &writer.writer);
 
     var read_data: Segmented(Dummy) = .init(std.testing.allocator);
     defer read_data.deinit();
     var reader: Reader = .fixed(writer.written());
-    try read_data.fromBin(&reader);
+    try Dummy.bin_fmt.read(&read_data, &reader);
 
     try std.testing.expect(data.start_epoch == read_data.start_epoch);
     try std.testing.expectEqualSlices(Header, data.headers.items, read_data.headers.items);
@@ -636,7 +659,7 @@ test "bin format round trip" {
 test "bin format uncompressed" {
     var complete: Segmented(Dummy) = .init(std.testing.allocator);
     defer complete.deinit();
-    try randomSegments(Dummy, &complete, &.{ 2, 3, 4, 7, 8, 9, 13, 14, 15, 16, 17, 18 }, 5);
+    try randomSegments(Dummy, &complete, Dummy.testing, &.{ 2, 3, 4, 7, 8, 9, 13, 14, 15, 16, 17, 18 }, 5);
 
     var range: Segmented(Dummy) = try complete.epochRange(5, 10).copy(std.testing.allocator);
     defer range.deinit();
@@ -644,14 +667,15 @@ test "bin format uncompressed" {
     // Write to a buffer and read from it with a new Segmented instance
     var writer: Writer.Allocating = .init(range.allocator);
     defer writer.deinit();
-    try range.toBin(&writer.writer);
+    try Dummy.bin_fmt.write(&range, &writer.writer);
     range.compress();
 
     var read_data: Segmented(Dummy) = .init(std.testing.allocator);
     defer read_data.deinit();
     var reader: Reader = .fixed(writer.written());
-    try read_data.fromBin(&reader);
+    try Dummy.bin_fmt.read(&read_data, &reader);
 
+    try std.testing.expect(range.start_epoch == read_data.start_epoch);
     try std.testing.expectEqualSlices(Header, range.headers.items, read_data.headers.items);
     for (range.array.items, read_data.array.items) |original, destination| {
         try std.testing.expect(Dummy.eql(original, destination));
@@ -661,11 +685,12 @@ test "bin format uncompressed" {
 test "copy" {
     var origin: Segmented(Dummy) = .init(std.testing.allocator);
     defer origin.deinit();
-    try randomSegments(Dummy, &origin, &orderedEpochs(10), 5);
+    try randomSegments(Dummy, &origin, Dummy.testing, &orderedEpochs(10), 5);
 
     var dest = try origin.copy(origin.allocator);
     defer dest.deinit();
 
+    try std.testing.expect(origin.start_epoch == dest.start_epoch);
     try std.testing.expectEqualSlices(Header, origin.headers.items, dest.headers.items);
     for (origin.array.items, dest.array.items) |original, destination| {
         try std.testing.expect(Dummy.eql(original, destination));
@@ -675,7 +700,7 @@ test "copy" {
 test "concatenate" {
     var complete: Segmented(Dummy) = .init(std.testing.allocator);
     defer complete.deinit();
-    try randomSegments(Dummy, &complete, &.{ 2, 3, 4, 7, 8, 9, 13, 14, 15, 16, 17, 18 }, 5);
+    try randomSegments(Dummy, &complete, Dummy.testing, &.{ 2, 3, 4, 7, 8, 9, 13, 14, 15, 16, 17, 18 }, 5);
 
     var reconstructed: Segmented(Dummy) = try .concatenate(&.{
         complete.epochRange(0, 5),
@@ -685,6 +710,7 @@ test "concatenate" {
     defer reconstructed.deinit();
     reconstructed.compress();
 
+    try std.testing.expect(complete.start_epoch == reconstructed.start_epoch);
     try std.testing.expectEqualSlices(Header, complete.headers.items, reconstructed.headers.items);
     for (complete.array.items, reconstructed.array.items) |original, destination| {
         try std.testing.expect(Dummy.eql(original, destination));
@@ -694,7 +720,7 @@ test "concatenate" {
 test "compress" {
     var complete: Segmented(Dummy) = .init(std.testing.allocator);
     defer complete.deinit();
-    try randomSegments(Dummy, &complete, &orderedEpochs(10), 5);
+    try randomSegments(Dummy, &complete, Dummy.testing, &orderedEpochs(10), 5);
 
     var compressed = try complete.epochRange(3, 7).copy(std.testing.allocator);
     defer compressed.deinit();
@@ -736,7 +762,7 @@ test "epochApplyShift" {
     var data: Segmented(Dummy) = .init(std.testing.allocator);
     defer data.deinit();
     const epochs = [_]u64{ 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };
-    try randomSegments(Dummy, &data, &epochs, 10);
+    try randomSegments(Dummy, &data, Dummy.testing, &epochs, 10);
 
     var failure: ?u64 = null;
     try data.epochApplyShift({}, applyShiftSetConst);
@@ -753,7 +779,7 @@ test "epochApplyShift uncompressed" {
     var data: Segmented(Dummy) = .init(std.testing.allocator);
     defer data.deinit();
     const epochs = [_]u64{ 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };
-    try randomSegments(Dummy, &data, &epochs, 10);
+    try randomSegments(Dummy, &data, Dummy.testing, &epochs, 10);
     for (data.headers.items) |*header| {
         header.size = 5;
     }
@@ -779,7 +805,7 @@ test "epochIndex" {
     try std.testing.expect(data.epochIndex(1, .at_least) == null);
 
     const epochs = [_]u64{ 2, 4, 6, 8, 10, 11, 12, 13, 14, 15, 20 };
-    try randomSegments(Dummy, &data, &epochs, 0);
+    try randomSegments(Dummy, &data, Dummy.testing, &epochs, 0);
 
     // Below range
     try std.testing.expect(data.epochIndex(0, .at_most) == null);
@@ -803,7 +829,7 @@ test "epochRange" {
     try std.testing.expect(data.epochRange(1, 3).headers.items.len == 0);
 
     const epochs = [_]u64{ 2, 4, 6, 8, 10, 11, 12, 13, 14, 15, 20 };
-    try randomSegments(Dummy, &data, &epochs, 0);
+    try randomSegments(Dummy, &data, Dummy.testing, &epochs, 0);
 
     // Below range
     try std.testing.expect(data.epochRange(0, 1).headers.items.len == 0);
@@ -830,22 +856,22 @@ test "epochIterator" {
     const failed: []Dummy = &failed_buffer;
 
     // Empty
-    iter = data.epochIterator(1, .until(3));
+    iter = data.epochIterator(1, 3);
     try std.testing.expect((iter.next() orelse failed).len == 0);
     try std.testing.expect((iter.next() orelse failed).len == 0);
     try std.testing.expect(iter.next() == null);
     try std.testing.expect(iter.epoch == 3);
 
     // Undefined lower bound
-    iter = data.epochIterator(null, .until(5));
+    iter = data.epochIterator(null, 5);
     try std.testing.expect(iter.next() == null);
 
     // Undefined upper bound
-    iter = data.epochIterator(8, .all);
+    iter = data.epochIterator(8, null);
     try std.testing.expect(iter.next() == null);
 
     // Undefined bounds
-    iter = data.epochIterator(null, .all);
+    iter = data.epochIterator(null, null);
     try std.testing.expect(iter.next() == null);
 
     const test_values = struct {
@@ -854,51 +880,51 @@ test "epochIterator" {
             return std.mem.findScalar(u64, &epochs, number) != null;
         }
     };
-    try randomSegments(Dummy, &data, &test_values.epochs, 5);
+    try randomSegments(Dummy, &data, Dummy.testing, &test_values.epochs, 5);
 
     // Below range
-    iter = data.epochIterator(0, .until(1));
+    iter = data.epochIterator(0, 1);
     try std.testing.expect((iter.next() orelse failed).len == 0);
     try std.testing.expect(iter.next() == null);
     try std.testing.expect(iter.epoch == 1);
 
     // Above range
-    iter = data.epochIterator(25, .until(30));
+    iter = data.epochIterator(25, 30);
     for (25..30) |_|
         try std.testing.expect((iter.next() orelse failed).len == 0);
     try std.testing.expect(iter.next() == null);
     try std.testing.expect(iter.epoch == 30);
 
     // Outside both
-    iter = data.epochIterator(1, .until(23));
+    iter = data.epochIterator(1, 23);
     for (1..23) |idx|
         try std.testing.expect((iter.next() orelse failed).len == @as(usize, if (test_values.contains(idx)) 5 else 0));
     try std.testing.expect(iter.next() == null);
     try std.testing.expect(iter.epoch == 23);
 
     // In range
-    iter = data.epochIterator(4, .until(14));
+    iter = data.epochIterator(4, 14);
     for (4..14) |idx|
         try std.testing.expect((iter.next() orelse failed).len == @as(usize, if (test_values.contains(idx)) 5 else 0));
     try std.testing.expect(iter.next() == null);
     try std.testing.expect(iter.epoch == 14);
 
     // Until the end
-    iter = data.epochIterator(8, .all);
+    iter = data.epochIterator(8, null);
     for (8..21) |idx|
         try std.testing.expect((iter.next() orelse failed).len == @as(usize, if (test_values.contains(idx)) 5 else 0));
     try std.testing.expect(iter.next() == null);
     try std.testing.expect(iter.epoch == 21);
 
     // From the start
-    iter = data.epochIterator(null, .until(10));
+    iter = data.epochIterator(null, 10);
     for (2..10) |idx|
         try std.testing.expect((iter.next() orelse failed).len == @as(usize, if (test_values.contains(idx)) 5 else 0));
     try std.testing.expect(iter.next() == null);
     try std.testing.expect(iter.epoch == 10);
 
     // Full range
-    iter = data.epochIterator(null, .all);
+    iter = data.epochIterator(null, null);
     for (2..21) |idx|
         try std.testing.expect((iter.next() orelse failed).len == @as(usize, if (test_values.contains(idx)) 5 else 0));
     try std.testing.expect(iter.next() == null);
@@ -908,7 +934,7 @@ test "epochIterator" {
 test "valuesAt" {
     var data: Segmented(Dummy) = .init(std.testing.allocator);
     defer data.deinit();
-    try randomSegments(Dummy, &data, &orderedEpochs(10), 5);
+    try randomSegments(Dummy, &data, Dummy.testing, &orderedEpochs(10), 5);
 
     try std.testing.expect(data.valuesAt(null).len == 0);
     for (data.array.items[10..15], data.valuesAt(2)) |sliced, located| {

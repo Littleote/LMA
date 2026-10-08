@@ -2,13 +2,12 @@ const std = @import("std");
 
 pub const dat_file = @import("data/dat_file.zig");
 pub const segmented = @import("data/segmented.zig");
-pub const Segmented = segmented.Segmented;
-pub const types = @import("data/types.zig");
 
-pub const Signal = Segmented(types.Signal);
-pub const Points = Segmented(types.Point);
-pub const Clusters = Segmented(types.Clustered);
-pub const Stations = @import("data/Stations.zig");
+const types = @import("data/types.zig");
+pub const Signal = types.Signal;
+pub const Point = types.Point;
+pub const Clustered = types.Clustered;
+pub const Station = @import("data/Station.zig");
 
 comptime {
     std.testing.refAllDecls(@This());

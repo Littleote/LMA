@@ -1,6 +1,8 @@
 const std = @import("std");
 
-const data = @import("lma").data;
+const lma = @import("lma");
+const data = lma.data;
+const Point = data.Point;
 const nargs = @import("nargs");
 const opt = nargs.options;
 
@@ -50,9 +52,9 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
     while (try iterator.next(io)) |entry| {
         var loaded = false;
         var time: ?u64 = null;
-        var points: data.Points = .init(gpa);
+        var points: Point.List = .init(gpa);
         defer points.deinit();
-        var stations: data.Stations = .init(gpa);
+        var stations: data.Station.List = .init(gpa);
         defer stations.deinit();
         {
             // Parse source file
@@ -86,39 +88,32 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
             if (time == null) continue;
         }
         const save_time = utils.saveTime(null, time, 60 * 10 * 1);
+        // Save as CSV
         {
-            // Save as CSV
             {
                 const name = utils.fileName(&name_buffer, save_time, "csv");
                 const csv = try csv_dir.createFile(io, name, .{});
                 defer csv.close(io);
                 var file_writer = csv.writer(io, &buffer);
-                try points.toCsv(&file_writer.interface, null);
+                try Point.csv.write(&points, &file_writer.interface, null);
             }
 
             if (load_stations and loaded) {
                 const csv = try station.?.createFile(io, "stations.csv", .{});
                 defer csv.close(io);
                 var file_writer = csv.writer(io, &buffer);
-                try stations.toCsv(&file_writer.interface, null);
+                try data.Station.csv.write(&stations, &file_writer.interface, null);
             }
         }
 
+        // Save as BIN
         {
-            // Save as BIN
             {
                 const name = utils.fileName(&name_buffer, save_time, "bin");
                 const bin = try bin_dir.createFile(io, name, .{});
                 defer bin.close(io);
                 var file_writer = bin.writer(io, &buffer);
-                try points.toBin(&file_writer.interface);
-            }
-
-            if (load_stations and loaded) {
-                const csv = try station.?.createFile(io, "stations.csv", .{});
-                defer csv.close(io);
-                var file_writer = csv.writer(io, &buffer);
-                try stations.toCsv(&file_writer.interface, null);
+                try Point.bin.write(&points, &file_writer.interface);
             }
         }
         load_stations = load_stations and !loaded;

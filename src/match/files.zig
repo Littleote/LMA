@@ -3,6 +3,9 @@ const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 
 const lma = @import("lma");
+const Signal = lma.data.Signal;
+const Point = lma.data.Point;
+const Station = lma.data.Station;
 const nargs = @import("nargs");
 
 pub const ParseError = error{ ReadFailed, OutOfMemory, InvalidHeader, InvalidValue, BadFile, UnsupportedVersion };
@@ -75,31 +78,31 @@ pub fn innerLoad(
     }
 }
 
-pub fn loadStations(stations: *lma.data.Stations, file_name: []const u8, reader: *Reader) error{ ReadFailed, Logged }!void {
+pub fn loadStations(stations: *lma.data.Station.List, file_name: []const u8, reader: *Reader) error{ ReadFailed, Logged }!void {
     const Enum = enum {
         csv,
         gps,
         loc,
 
-        pub fn fromCsv(data: *lma.data.Stations, r: *Reader) ParseError!void {
-            try data.fromCsv(r, null);
+        pub fn fromCsv(data: *lma.data.Station.List, r: *Reader) ParseError!void {
+            try lma.data.Station.csv.read(data, r, null);
         }
 
-        pub fn fromGps(data: *lma.data.Stations, r: *Reader) ParseError!void {
-            try data.fromGps(r);
+        pub fn fromGps(data: *lma.data.Station.List, r: *Reader) ParseError!void {
+            try lma.data.Station.fromGps(data, r);
         }
 
-        pub fn fromLoc(data: *lma.data.Stations, r: *Reader) ParseError!void {
-            try data.fromLoc(r);
+        pub fn fromLoc(data: *lma.data.Station.List, r: *Reader) ParseError!void {
+            try lma.data.Station.fromLoc(data, r);
         }
 
-        pub fn unimplemented(_: *lma.data.Stations, _: *Reader) ParseError!void {
+        pub fn unimplemented(_: *lma.data.Station.List, _: *Reader) ParseError!void {
             @panic("Not yet implemented");
         }
     };
 
     try load(
-        lma.data.Stations,
+        lma.data.Station.List,
         stations,
         Enum,
         .init(.{
@@ -113,32 +116,27 @@ pub fn loadStations(stations: *lma.data.Stations, file_name: []const u8, reader:
     );
 }
 
-pub fn loadSignals(signals: *lma.data.Signal, file_name: []const u8, reader: *Reader) error{ ReadFailed, Logged }!void {
+pub fn loadSignals(signals: *Signal.List, file_name: []const u8, reader: *Reader) error{ ReadFailed, Logged }!void {
     const Enum = enum {
         csv,
         bin,
         dat,
 
-        pub fn fromCsv(data: *lma.data.Signal, r: *Reader) ParseError!void {
-            try data.fromCsv(r, null);
+        pub fn fromCsv(data: *Signal.List, r: *Reader) ParseError!void {
+            try Signal.csv.read(data, r, null);
         }
 
-        pub fn fromBin(data: *lma.data.Signal, r: *Reader) ParseError!void {
-            try data.fromBin(r);
+        pub fn fromBin(data: *Signal.List, r: *Reader) ParseError!void {
+            try Signal.bin.read(data, r);
         }
 
-        pub fn fromDat(data: *lma.data.Signal, r: *Reader) ParseError!void {
-            try lma.data.dat_file.SignalParser.fromReader(r, data, .{
-                .log_level = @enumFromInt(@min(
-                    @intFromEnum(std.log.Level.warn),
-                    @intFromEnum(std.options.log_level),
-                )),
-            });
+        pub fn fromDat(data: *Signal.List, r: *Reader) ParseError!void {
+            try lma.data.dat_file.SignalParser.fromReader(r, data, .{});
         }
     };
 
     try load(
-        lma.data.Signal,
+        Signal.List,
         signals,
         Enum,
         .init(.{
@@ -152,16 +150,16 @@ pub fn loadSignals(signals: *lma.data.Signal, file_name: []const u8, reader: *Re
     );
 }
 
-pub fn savePoints(data: *lma.data.Points, aux_stations: *const lma.data.Stations, aux_statistics: []const lma.pipeline.ToaSolver.Statistics, file_name: []const u8, w: *std.Io.Writer) WriteError!void {
+pub fn savePoints(data: *Point.List, aux_stations: *const Station.List, aux_statistics: []const lma.pipeline.ToaSolver.Statistics, file_name: []const u8, w: *std.Io.Writer) WriteError!void {
     try innerSavePoints(data, aux_stations, aux_statistics, std.fs.path.basename(file_name), w, true);
 }
 
-inline fn innerSavePoints(data: *lma.data.Points, aux_stations: *const lma.data.Stations, aux_statistics: []const lma.pipeline.ToaSolver.Statistics, basename: []const u8, w: *std.Io.Writer, comptime allow_compression: bool) WriteError!void {
+inline fn innerSavePoints(data: *Point.List, aux_stations: *const Station.List, aux_statistics: []const lma.pipeline.ToaSolver.Statistics, basename: []const u8, w: *std.Io.Writer, comptime allow_compression: bool) WriteError!void {
     const stem, const suffix = std.mem.cutScalarLast(u8, basename, '.') orelse .{ basename, "" };
     const extension: Extension = .parse(suffix);
     switch (extension) {
-        .csv => try data.toCsv(w, null),
-        .bin => try data.toBin(w),
+        .csv => try Point.csv.write(data, w, null),
+        .bin => try Point.bin.write(data, w),
         .dat => try lma.data.dat_file.output.print(w, data, aux_stations, aux_statistics),
         .gz => {
             if (!allow_compression) return error.InvalidExtension;

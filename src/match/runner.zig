@@ -1,82 +1,31 @@
 const std = @import("std");
 
 const root = @import("main.zig");
-const parse_time = @import("parse_time.zig");
-
-const nargs = @import("nargs");
-const opt = nargs.options;
+const cli = @import("cli.zig");
 
 const lma = @import("lma");
 const math = lma.math(ToaSolver.Float);
 const match = lma.pipeline.match;
 const network = lma.constants.network;
-const ToaSolver = lma.pipeline.ToaSolver;
 
+const ToaSolver = lma.pipeline.ToaSolver;
 const Signal = lma.data.Signal;
 const Point = lma.data.Point;
 const Float = match.Float;
-
-pub const Config = struct {
-    weights: lma.pipeline.match.Weights = .@"const+decibels",
-    beam_width: u16 = 0,
-    dfs_attempts: u16 = 4,
-    memory: u32 = 5,
-    probability: f32 = 0.90,
-    chunk: u32 = if (@import("builtin").single_threaded) 24 * 60 * 60 else 60,
-    corr_window: f32 = 0.1,
-    verbose: bool,
-};
-
-pub const config_parser: nargs.Node(Config) = .build(opt.Groups, .any(.{ .name = "CONFIG", .show = .{ .description = "LMA solver configuration" } }, .{
-    .memory = .build(opt.Named, .single(.integer(.{ .max = 20 }), .{
-        .name = "memory",
-        .description = "Number of solutions saved to check for new nearby solutions.",
-    })),
-    .beam_width = .build(opt.Named, .single(.integer(.{ .max = 50 }), .{
-        .name = "beam-width",
-        .description = "Beam search width: Maximum number of solutions tested with this method.",
-    })),
-    .dfs_attempts = .build(opt.Named, .single(.integer(.{ .max = 50 }), .{
-        .name = "depth-tries",
-        .description = "Depth first search attempts: Number of tries to find promising combinations at each depth.",
-    })),
-    .probability = .build(opt.Named, .single(.floating(.{ .min = .open(0), .max = .closed(1) }), .{
-        .name = "threshold",
-        .description = "Average probability of the station combination.",
-    })),
-    .weights = .build(opt.Named, .single(.choice, .{
-        .name = "corr-weight",
-        .description = "Value to use to compute the correlation input weights",
-        .display = "WEIGHT",
-    })),
-    .verbose = opt.flags.Flag(.{
-        .name = "verbose",
-        .description = "Show run statistics",
-    }),
-    .chunk = .build(opt.Named, .single(.wrap(parse_time.Seconds), .{
-        .name = "divide",
-        .description = "Total time to analyse per thread as either SECONDS or HH:MM:SS.",
-        .display = "SECONDS",
-    })),
-    .corr_window = .build(opt.Named, .single(.floating(.{ .min = .closed(0.001), .max = .closed(1) }), .{
-        .name = "correlation-window",
-        .description = "Refresh rate of the correlation window, with the size being double this value.",
-    })),
-}));
 
 pub fn run(
     io: std.Io,
     gpa: std.mem.Allocator,
     stations: []math.Vec,
     signals: []const Signal.List,
-    config: Config,
+    config: cli.Options.Config,
     span: lma.index.SubSlice,
 ) RunError!RunReturn {
     // Verbose timing start total and per process
     const timer_start: std.Io.Timestamp = .now(io, .real);
     const resource_start: std.Io.Timestamp = .now(io, .cpu_process);
 
-    const workers: u32 = @max(1, @divFloor(span.size + config.chunk / 2, config.chunk));
+    const workers: u32 = @max(1, @divFloor(span.size + config.chunk.seconds / 2, config.chunk.seconds));
     // @divCielling
     const work: u32 = @divTrunc(span.size + workers - 1, workers);
 
@@ -139,7 +88,7 @@ pub fn runChunk(
     gpa: std.mem.Allocator,
     stations: []math.Vec,
     full_signals: []const Signal.List,
-    config: Config,
+    config: cli.Options.Config,
     span: lma.index.SubSlice,
 ) RunError!RunReturn {
     const count: u32 = @intCast(stations.len);
@@ -210,7 +159,7 @@ pub fn runChunk(
     const work_buffer = try gpa.alloc(
         Float,
         @max(
-            (network.max_network * root.max_matches + network.max_consensus) * config.beam_width * 2,
+            (network.max_network * root.max_matches + network.max_consensus) * config.search.beam_width * 2,
             network.max_network * root.max_matches * network.max_consensus,
         ),
     );
@@ -218,7 +167,7 @@ pub fn runChunk(
 
     const memory_buffer = try gpa.alloc(
         ToaSolver.Source,
-        config.memory,
+        config.search.memory,
     );
     defer gpa.free(memory_buffer);
 
@@ -232,8 +181,16 @@ pub fn runChunk(
         memory_buffer,
         work_buffer,
         .{
-            .beam_search = if (config.beam_width == 0) null else .{ .loglikelihood = @log(config.probability), .width = config.beam_width, .consensus = 6 },
-            .depth_first_search = if (config.dfs_attempts == 0) null else .{ .loglikelihood = @log(config.probability), .attempts = .count(config.dfs_attempts), .consensus = 6 },
+            .beam_search = if (config.search.beam_width == 0) null else .{
+                .loglikelihood = @log(config.search.probability),
+                .width = config.search.beam_width,
+                .consensus = config.search.consensus,
+            },
+            .depth_first_search = if (config.search.dfs_attempts == 0) null else .{
+                .loglikelihood = @log(config.search.probability),
+                .attempts = config.search.dfs_attempts,
+                .consensus = config.search.consensus,
+            },
             .probe = probe_ptr,
         },
     );
@@ -247,8 +204,8 @@ pub fn runChunk(
         .time_matrix = time_matrix,
         .corr_buffer = corr_buffer,
         .aux_buffer = &aux_corr_buffer,
-        .window_size = lma.nano.toNano(@min(1, 2 * config.corr_window)),
-        .refresh_rate = lma.nano.toNano(config.corr_window),
+        .window_size = lma.nano.toNano(@min(1, 2 * config.correlation.window)),
+        .refresh_rate = lma.nano.toNano(config.correlation.window),
     };
 
     for (span.start..span.end()) |time| {
@@ -258,7 +215,7 @@ pub fn runChunk(
             signal.* = full_signal.valuesAt(full_signal.epochIndex(time, .exact));
             weight_array.clearRetainingCapacity();
             weight.* = try weight_array.addManyAsSlice(gpa, signal.len);
-            config.weights.calculate(signal.*, weight.*);
+            config.correlation.weights.calculate(signal.*, weight.*);
             size += signal.len;
         }
 

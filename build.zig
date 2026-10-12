@@ -244,6 +244,7 @@ fn matchExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
             "--probe",
             "data/points/" ++ date_time.date ++ "/probes/" ++ date_time.date ++ "_" ++ date_time.time ++ "_0600.dat",
         });
+        if (b.args) |args| run_match.addArgs(args);
         step.dependOn(&run_match.step);
     }
 }

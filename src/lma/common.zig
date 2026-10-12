@@ -269,7 +269,7 @@ pub const constants = struct {
     };
 
     /// LMA network
-    pub const network: Network = if (@hasDecl(root, "network")) root.network else Network.default;
+    pub const network: Network = if (@hasDecl(root, "lma_network")) root.network else Network.default;
 
     pub const Network = struct {
         pub const default: Network = .{ .max_network = 32, .min_consensus = 5, .max_consensus = 8 };

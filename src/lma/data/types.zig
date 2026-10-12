@@ -29,7 +29,7 @@ inline fn parse(T: type, s: ?[]const u8, comptime config: ParseConfig) ParseErro
 pub const Signal = extern struct {
     /// Nanoseconds since the start of the second
     /// Value expressed with fixed point 30.2
-    nanosecond: u32,
+    nanosecond: lma.nano.Nano,
     /// Decibels detected with base of 1mW/m²
     dBm: f16,
 
@@ -94,6 +94,91 @@ pub const Signal = extern struct {
         .tag = "signal",
     });
 
+    pub fn decimate(list: *List, window: lma.nano.Nano) void {
+        var start: u32 = 0;
+        for (list.headers.items) |*header| {
+            var size: u32 = 0;
+            var current_window: u32 = 0;
+            var best_idx: usize = header.start;
+            var best_dBm: f16 = -std.math.inf(f16);
+            for (header.get(list.array.items), header.start..) |signal, idx| {
+                const new_window = signal.nanosecond / window;
+                if (new_window != current_window) {
+                    if (best_idx < idx) {
+                        list.array.items[start + size] = list.array.items[best_idx];
+                        size += 1;
+                    }
+                    current_window = new_window;
+
+                    best_idx = idx;
+                    best_dBm = signal.dBm;
+                } else if (signal.dBm > best_dBm) {
+                    best_idx = idx;
+                    best_dBm = signal.dBm;
+                }
+            }
+            if (best_idx < header.end()) {
+                list.array.items[start + size] = list.array.items[best_idx];
+                size += 1;
+            }
+            header.* = .init(start, size);
+            start += size;
+        }
+    }
+
+    fn initArray(comptime nanosecond: []const lma.nano.Nano, comptime dBm: [nanosecond.len]f16) [nanosecond.len]Signal {
+        var out: [nanosecond.len]Signal = undefined;
+        for (0..nanosecond.len) |idx| {
+            out[idx] = .{ .nanosecond = nanosecond[idx], .dBm = dBm[idx] };
+        }
+        return out;
+    }
+
+    test decimate {
+        const Nano = lma.nano.Nano;
+        var list: List = .init(std.testing.allocator);
+        defer list.deinit();
+        list.start_epoch = 100;
+        try list.headers.appendSlice(list.allocator, &.{ .init(0, 13), .init(13, 0), .init(13, 10) });
+        try list.array.appendSlice(list.allocator, &comptime initArray(
+            &[_]Nano{ 1, 2, 3, 7, 8, 9 } ++
+                &[_]Nano{ 10, 12, 18, 19 } ++
+                &[_]Nano{ 35, 39 } ++
+                &[_]Nano{40} ++
+                &[_]Nano{ 1, 2, 3, 7, 8, 9 } ++
+                &[_]Nano{ 10, 12, 18, 19 },
+            .{ 1, 2, 3, 7, 8, 9 } ++
+                .{ 10, 8, 2, 1 } ++
+                .{ 5, 9 } ++
+                .{10} ++
+                .{ 1, 2, 3, 7, 8, 9 } ++
+                .{ 10, 8, 2, 1 },
+        ));
+
+        var expected: List = .init(std.testing.allocator);
+        defer expected.deinit();
+        expected.start_epoch = 100;
+        try expected.headers.appendSlice(expected.allocator, &.{ .init(0, 4), .init(4, 0), .init(4, 2) });
+        try expected.array.appendSlice(expected.allocator, &comptime initArray(
+            &[_]Nano{ 9, 10, 39, 40 } ++
+                &[_]Nano{ 9, 10 },
+            .{ 9, 10, 9, 10 } ++
+                .{ 9, 10 },
+        ));
+
+        decimate(&list, 10);
+
+        try std.testing.expect(expected.start_epoch == list.start_epoch);
+        try std.testing.expectEqualSlices(segmented.Header, expected.headers.items, list.headers.items);
+        for (expected.headers.items, list.headers.items) |e_header, l_header| {
+            errdefer std.debug.print("While comparing header {any}\n", .{e_header});
+            for (e_header.get(expected.array.items), l_header.get(list.array.items), 0..) |baseline, decimated, idx| {
+                errdefer std.debug.print("Expected {any} but found {any} at position {d}\n", .{ baseline, decimated, idx });
+                try std.testing.expect(testing.eql(baseline, decimated));
+            }
+        }
+    }
+
     comptime {
         std.testing.refAllDecls(@This());
     }
@@ -105,7 +190,7 @@ pub const Point = extern struct {
 
     /// Nanoseconds since the start of the second
     /// Value expressed with fixed point 30.2
-    nanosecond: u32,
+    nanosecond: lma.nano.Nano,
 
     /// Latitude of the point using WGS84
     latitude: f32,
@@ -259,7 +344,7 @@ pub const Clustered = extern struct {
 
     /// Nanoseconds since the start of the second
     /// Value expressed with fixed point 30.2
-    nanosecond: u32,
+    nanosecond: lma.nano.Nano,
 
     /// Latitude of the point using WGS84
     latitude: f32,

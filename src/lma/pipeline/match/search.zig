@@ -132,18 +132,8 @@ pub const BeamSearch = struct {
 
 pub const DepthFirstSearch = struct {
     pub const Options = struct {
-        pub const Attempts = enum(u16) {
-            single = 1,
-            unlimited = std.math.maxInt(u16),
-            _,
-
-            pub fn count(value: u16) Attempts {
-                return @enumFromInt(value);
-            }
-        };
-
         loglikelihood: Float,
-        attempts: Attempts,
+        attempts: u16,
         consensus: usize = max_consensus,
     };
 
@@ -208,7 +198,7 @@ pub const DepthFirstSearch = struct {
                 // Search for the next match
                 const frame: *Frame = &self.frames[self.depth];
                 frame.attempt += 1;
-                if (frame.attempt > @intFromEnum(self.options.attempts)) continue :state .exit;
+                if (frame.attempt > self.options.attempts) continue :state .exit;
                 const index: u16 = @intCast(std.sort.argMax(Float, frame.loglikelihood[0..self.candidates.len], {}, std.sort.asc(Float)) orelse unreachable);
                 if (frame.loglikelihood[index] <= self.options.loglikelihood * (1 + self.depth)) continue :state .exit;
                 frame.index = index;

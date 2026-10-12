@@ -1,17 +1,15 @@
 const std = @import("std");
-
+const nargs = @import("nargs");
 const builtin = @import("builtin");
 
 const lma = @import("lma");
 const match = lma.pipeline.match;
 const ToaSolver = lma.pipeline.ToaSolver;
 const Signal = lma.data.Signal;
-const nargs = @import("nargs");
-const opt = nargs.options;
 
 const files = @import("files.zig");
 const runner = @import("runner.zig");
-const parse_time = @import("parse_time.zig");
+const cli = @import("cli.zig");
 
 pub const std_options: std.Options = .{
     .log_scope_levels = &.{
@@ -19,108 +17,6 @@ pub const std_options: std.Options = .{
         .{ .level = .err, .scope = lma.log.scopes.station_file },
     },
 };
-
-const CliTime = struct {
-    date: parse_time.Date.Type,
-    hour: parse_time.Time.Type,
-    start: ?parse_time.Time.Type,
-    ending: union(enum) {
-        end: parse_time.Time.Type,
-        total: parse_time.Seconds.Type,
-    },
-};
-const CliFiles = struct {
-    stations: []const []const u8,
-    inputs: []nargs.params.io.Glob.Pattern,
-    excluded: []const []const u8,
-    outputs: []const []const u8,
-    out_dir: ?[]const u8,
-    probe: ?[]const u8,
-};
-const Cli = struct { threads: usize, time: CliTime, files: CliFiles, config: runner.Config };
-const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "match" }, .{
-    .threads = .build(opt.Named, .single(.integer(.{ .min = 1, .max_str = "unlimited" }), .{
-        .name = "threads",
-        .description = "Number of threads to use for execution.",
-        .display = "COUNT",
-        .default = .init(@intFromEnum(std.Io.Limit.unlimited), "auto"),
-        .short = .auto,
-    })),
-    .time = .build(opt.Groups, .any(.{ .name = "DATE" }, .{
-        .date = .build(opt.Named, .single(.wrap(parse_time.Date), .{
-            .name = "date",
-            .description = "Date from input files",
-            .display = "DATE",
-            .short = .auto,
-        })),
-        .hour = .build(opt.Named, .single(.wrap(parse_time.Time), .{
-            .name = "time",
-            .description = "Time from input files.",
-            .display = "TIME",
-            .short = .set('h'),
-        })),
-        .start = .optional(.{ .default = "File start time" }, .build(opt.Named, .single(.wrap(parse_time.Time), .{
-            .name = "analyse-start",
-            .description = "Analysis start time.",
-            .display = "TIME",
-            .alternatives = &.{.alias("analyze-start")},
-        }))),
-        .ending = .build(opt.Groups, .exclusive(.{ .name = "DATE", .show = .hidden }, .total, .{
-            .end = .build(opt.Named, .single(.wrap(parse_time.Time), .{
-                .name = "analyse-end",
-                .description = "Analysis end time.",
-                .display = "TIME",
-                .alternatives = &.{.alias("analyze-end")},
-            })),
-            .total = .build(opt.Named, .single(.wrap(parse_time.Seconds), .{
-                .name = "analyse",
-                .description = "Total time to analyse as either SECONDS or HH:MM:SS.",
-                .display = "SECONDS",
-                .alternatives = &.{.alias("analyze")},
-            })),
-        })),
-    })),
-    .files = .build(opt.Groups, .any(.{ .name = "FILES", .show = .usage }, .{
-        .stations = .build(opt.Named, .variable(.string, .{ .min = 1 }, .{
-            .name = "stations",
-            .description = "File with station data. Accepts \".csv\", \".gps\" and \".loc\".",
-            .display = "FILE",
-            .short = .auto,
-        })),
-        .inputs = .build(opt.Named, .variable(.wrap(nargs.params.io.Glob), .{ .min = 1 }, .{
-            .name = "input",
-            .description = "Glob pattern for all signal input files. Accepts \".csv\", \".dat\" and \".bin\" (with or without \".gz\").",
-            .display = "GLOB",
-            .short = .auto,
-        })),
-        .excluded = .build(opt.Named, .variable(.string, .{}, .{
-            .name = "exclude",
-            .description = "Stations to exclude by name. Only the station name is necessary.",
-            .display = "NAME",
-            .default = .init(&.{}, "none"),
-        })),
-        .outputs = .build(opt.Named, .variable(.string, .{ .max = 5 }, .{
-            .name = "output",
-            .description = "Destination file to store the results. Accepts \".csv\", \".dat\" and \".bin\" (with or without \".gz\").",
-            .display = "FILE",
-            .short = .auto,
-            .default = .init(&.{}, "CUSTOM_{YYMMDD}_{HHMMSS}_{SSSS}.dat.gz"),
-        })),
-        .out_dir = .build(opt.Named, .single(.optional(.string), .{
-            .name = "output-path",
-            .description = "Destination path were to create the generated files.",
-            .display = "PATH",
-            .default = .init(null, "current working directory"),
-        })),
-        .probe = .build(opt.Named, .single(.optional(.string), .{
-            .name = "probe",
-            .description = "Points to probe the method. Accepts \".dat\".",
-            .display = "FILE",
-            .default = .init(null, "No probe"),
-        })),
-    })),
-    .config = runner.config_parser,
-}));
 
 pub const Float = match.Float;
 pub const Precise = ToaSolver.Float;
@@ -147,7 +43,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     var threaded: std.Io.Threaded = .init(gpa, .{ .async_limit = .nothing, .concurrent_limit = .nothing, .environ = init.environ });
     const io = threaded.io();
 
-    var cli: Cli = undefined;
+    var options: cli.Options = undefined;
     {
         var arena: std.heap.ArenaAllocator = .init(gpa);
         defer arena.deinit();
@@ -159,9 +55,9 @@ pub fn main(init: std.process.Init.Minimal) void {
             diag.deinit();
         }
 
-        var mem = root.initMemory().*;
+        var mem = cli.command.initMemory().*;
         while (tokenizer.peek()) |token| {
-            if (root.parse(&mem, &tokenizer, &diag) == .no_match) {
+            if (cli.command.parse(&mem, &tokenizer, &diag) == .no_match) {
                 tokenizer.discardAssumeToken();
                 diag.log(.unused_token, "", token);
             }
@@ -170,21 +66,21 @@ pub fn main(init: std.process.Init.Minimal) void {
         if (diag.special_flags.get(.help)) {
             var help_buf: [128]u8 = undefined;
             var stdout = std.Io.File.stdout().writer(io, &help_buf);
-            nargs.Help.print(.{ .info = root.info }, .{ .name_width = 15, .tree_art = .ascii_arrow, .spacing = true }, &stdout.interface) catch {};
+            nargs.Help.print(.{ .info = cli.command.info }, .{ .name_width = 15, .tree_art = .ascii_arrow, .spacing = true }, &stdout.interface) catch {};
             stdout.flush() catch {};
             return;
         }
 
-        root.init(&mem, &diag, gpa, &cli) catch return;
+        cli.command.init(&mem, &diag, gpa, &options) catch return;
     }
-    defer root.deinit(gpa, &cli);
+    defer cli.command.deinit(gpa, &options);
 
-    threaded.async_limit = @enumFromInt(cli.threads - 1);
-    threaded.concurrent_limit = @enumFromInt(cli.threads - 1);
+    threaded.async_limit = @enumFromInt(options.threads - 1);
+    threaded.concurrent_limit = @enumFromInt(options.threads - 1);
 
     var buffer: [1024]u8 = undefined;
 
-    if (cli.files.probe) |probe_file| probe: {
+    if (options.files.probe) |probe_file| probe: {
         const file = std.Io.Dir.cwd().openFile(io, probe_file, .{}) catch {
             std.log.warn("Unable to open probe file.", .{});
             break :probe;
@@ -204,7 +100,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     // Load stations
     var stations: lma.data.Station.List = .init(gpa);
     defer stations.deinit();
-    for (cli.files.stations) |network| {
+    for (options.files.stations) |network| {
         const file = std.Io.Dir.cwd().openFile(io, network, .{}) catch |err| {
             std.log.err("Unable to open station/network file \"{s}\" with error {s}.", .{ network, @errorName(err) });
             continue;
@@ -237,7 +133,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     const full_signals: []Signal.List = full_signal_buffer[0..count];
     defer for (full_signals) |*signal| signal.deinit();
 
-    for (cli.files.inputs) |*pattern| {
+    for (options.files.inputs) |*pattern| {
         var glob: nargs.params.io.Glob.Iterator = pattern.iterator(io, null) catch |e| switch (e) {
             error.Canceled => unreachable,
             else => |err| {
@@ -253,7 +149,7 @@ pub fn main(init: std.process.Init.Minimal) void {
                 break :blk null;
             },
         }) |entry| {
-            for (cli.files.excluded) |exclude| {
+            for (options.files.excluded) |exclude| {
                 const name = std.fs.path.basename(exclude);
                 if (std.mem.find(u8, entry.basename, name)) |_| {
                     std.log.info(
@@ -263,11 +159,20 @@ pub fn main(init: std.process.Init.Minimal) void {
                 }
             }
 
-            loadStation(io, entry.dir, entry.basename, cli.time.date.string[2..8].*, cli.time.hour.string, stations, full_signals) catch |err| {
+            loadStation(
+                io,
+                entry.dir,
+                entry.basename,
+                options.time.date.string[2..8].*,
+                options.time.hour.string,
+                stations,
+                full_signals,
+                if (options.config.decimate) |window| window * 4_000 else null,
+            ) catch |err| {
                 switch (err) {
                     error.BadName => std.log.warn(
                         \\File "{s}" doesn't conform to naming convention "{{CODE}}_{{NETWORK}}_{{STATION_NAME}}_{{YYMMDD}}_{{HHMMSS}}". (With YYMMDD = {s} and HHMMSS = {s})
-                    , .{ entry.basename, cli.time.date.string[2..8].*, cli.time.hour.string }),
+                    , .{ entry.basename, options.time.date.string[2..8].*, options.time.hour.string }),
                     error.UnknownStation => std.log.warn(
                         \\No station associated to "{s}".
                     , .{entry.basename}),
@@ -290,7 +195,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         return;
     }
 
-    var out_dir: std.Io.Dir = if (cli.files.out_dir) |dir| std.Io.Dir.cwd().createDirPathOpen(io, dir, .{}) catch |e| switch (e) {
+    var out_dir: std.Io.Dir = if (options.files.out_dir) |dir| std.Io.Dir.cwd().createDirPathOpen(io, dir, .{}) catch |e| switch (e) {
         error.Canceled => unreachable,
         else => |err| blk: {
             std.log.warn("Failed to open \"{s}\" with error {s} defaulting to cwd.", .{ dir, @errorName(err) });
@@ -298,14 +203,14 @@ pub fn main(init: std.process.Init.Minimal) void {
         },
     } else .cwd();
 
-    const start_time = (cli.time.start orelse cli.time.hour).toSeconds();
-    const end_time = switch (cli.time.ending) {
+    const start_time = (options.time.start orelse options.time.hour).toSeconds();
+    const end_time = switch (options.time.ending) {
         .end => |end| end.toSeconds(),
-        .total => |total| start_time + total,
+        .total => |total| start_time + total.seconds,
     };
     const analysed = end_time - start_time;
 
-    const result = runner.run(io, gpa, points, full_signals, cli.config, .init(start_time, analysed)) catch |err| switch (err) {
+    const result = runner.run(io, gpa, points, full_signals, options.config, .init(start_time, analysed)) catch |err| switch (err) {
         error.Canceled => unreachable,
         error.OutOfMemory => @panic("OOM"),
     };
@@ -315,13 +220,13 @@ pub fn main(init: std.process.Init.Minimal) void {
 
     var default_file_buffer = "CUSTOM_YYMMDD_HHMMSS_SSSS.dat.gz"[0..].*;
 
-    const out_files: []const []const u8 = if (cli.files.outputs.len == 0) &.{
+    const out_files: []const []const u8 = if (options.files.outputs.len == 0) &.{
         std.fmt.bufPrint(
             &default_file_buffer,
             "CUSTOM_{s}_{s}_{d:0>4}.dat.gz",
-            .{ cli.time.date.string[2..8].*, (cli.time.start orelse cli.time.hour).string, analysed },
+            .{ options.time.date.string[2..8].*, (options.time.start orelse options.time.hour).string, analysed },
         ) catch unreachable,
-    } else cli.files.outputs;
+    } else options.files.outputs;
     for (out_files) |out| {
         const err: anyerror = skip: {
             const file = out_dir.createFile(io, out, .{}) catch |err| break :skip err;
@@ -337,7 +242,7 @@ pub fn main(init: std.process.Init.Minimal) void {
 
     std.debug.print("Total points: {d}\n", .{output.array.items.len});
 
-    if (cli.config.verbose) {
+    if (options.config.verbose) {
         for (stations.stations.items, 0..) |*station, i| {
             const correction = lma.nano.toDelta(result.stats.stations[i].calibration());
             station.delay -= correction;
@@ -359,6 +264,7 @@ pub fn loadStation(
     time: [6]u8,
     stations: lma.data.Station.List,
     signals: []Signal.List,
+    decimation: ?lma.nano.Nano,
 ) error{ Reported, BadName, UnknownStation, DuplicateStation }!void {
     const cancel = io.swapCancelProtection(.blocked);
     defer _ = io.swapCancelProtection(cancel);
@@ -408,6 +314,9 @@ pub fn loadStation(
                 }
                 return error.Reported;
             };
+            if (decimation) |window| {
+                Signal.decimate(&signals[idx], window);
+            }
             for (signals[idx].array.items) |*signal| {
                 signal.nanosecond += delay;
             }

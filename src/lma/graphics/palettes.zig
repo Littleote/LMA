@@ -101,7 +101,7 @@ pub const r3g3b2: Palette = blk: {
     @setEvalBranchQuota(256 * 100);
     var out: Palette = undefined;
     for (0..256) |idx| {
-        const col: R3G3B2 = @bitCast(@as(u8, idx));
+        const col: R3G3B2 = @fromBackingInt(@as(u8, idx));
         out[idx] = col.asColor();
     }
     break :blk out;
@@ -111,9 +111,9 @@ const named: Palette = blk: {
     @setEvalBranchQuota(256 * 100);
     var out: Palette = @splat(.black);
     var i = 0;
-    for (@typeInfo(Color).@"struct".decls) |decl| {
-        if (@TypeOf(@field(Color, decl.name)) != Color) continue;
-        out[i] = @field(Color, decl.name);
+    for (@typeInfo(Color).@"struct".decl_names) |name| {
+        if (@TypeOf(@field(Color, name)) != Color) continue;
+        out[i] = @field(Color, name);
         i += 1;
     }
     break :blk out;

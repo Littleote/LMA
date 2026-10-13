@@ -397,7 +397,7 @@ pub const Statistics = struct {
         }
 
         pub fn add(self: *Station, other: Station) void {
-            inline for (comptime std.meta.fieldNames(Station)) |name| {
+            inline for (comptime @typeInfo(Station).@"struct".field_names) |name| {
                 @field(self, name) += @field(other, name);
             }
         }
@@ -407,7 +407,7 @@ pub const Statistics = struct {
     stations: [max_network]Station = @splat(.{}),
 
     pub fn add(self: *Statistics, other: *const Statistics) void {
-        inline for (comptime std.meta.fieldNames(Counts)) |name| {
+        inline for (comptime @typeInfo(Counts).@"struct".field_names) |name| {
             @field(self.counts, name) += @field(other.counts, name);
         }
         for (&self.stations, other.stations) |*lhs, rhs| {
@@ -416,7 +416,7 @@ pub const Statistics = struct {
     }
 
     pub fn format(self: *const Statistics, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        inline for (comptime std.meta.fieldNames(Counts)) |name| {
+        inline for (comptime @typeInfo(Counts).@"struct".field_names) |name| {
             try w.print("Variable {s} = {d}\n", .{ name, @field(self.counts, name) });
         }
         {
@@ -885,11 +885,14 @@ pub const least_squares = struct {
     }
 
     comptime {
-        _ = test_cases(levenberg_marquardt);
-        _ = test_cases(gauss_newton);
+        const builtin = @import("builtin");
+        if (builtin.is_test) {
+            _ = test_cases(levenberg_marquardt);
+            _ = test_cases(gauss_newton);
+        }
     }
 };
 
 comptime {
-    std.testing.refAllDecls(least_squares);
+    std.testing.refAllDecls(@This());
 }

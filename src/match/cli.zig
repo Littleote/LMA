@@ -11,7 +11,7 @@ pub const command: nargs.Node(Options) = .build(opt.Groups, .any(.{ .name = "mat
         .name = "threads",
         .description = "Number of threads to use for execution.",
         .display = "COUNT",
-        .default = .init(@intFromEnum(std.Io.Limit.unlimited), "auto"),
+        .default = .init(@backingInt(std.Io.Limit.unlimited), "auto"),
         .short = .auto,
     })),
     .time = .build(opt.Groups, .any(.{ .name = "DATE" }, .{
@@ -216,9 +216,7 @@ pub const time = struct {
                         return error.InvalidValue;
                     },
                     error.InvalidDate => {
-                        diag.log(.invalid_value_reason,
-                            \\"{s}" is not a valid date.
-                        , .{buf});
+                        diag.log(.invalid_value_reason, "{q} is not a valid date.", .{buf});
                         return error.InvalidValue;
                     },
                 };
@@ -299,9 +297,7 @@ pub const time = struct {
                         return error.InvalidValue;
                     },
                     error.InvalidTime => {
-                        diag.log(.invalid_value_reason,
-                            \\"{s}" is not a valid time.
-                        , .{buf});
+                        diag.log(.invalid_value_reason, "{q} is not a valid time.", .{buf});
                         return error.InvalidValue;
                     },
                 };
@@ -353,9 +349,7 @@ pub const time = struct {
                         return error.InvalidValue;
                     },
                     error.InvalidTime => {
-                        diag.log(.invalid_value_reason,
-                            \\"{s}" is not a valid time.
-                        , .{buf});
+                        diag.log(.invalid_value_reason, "{q} is not a valid time.", .{buf});
                         return error.InvalidValue;
                     },
                 };

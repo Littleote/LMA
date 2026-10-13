@@ -351,11 +351,11 @@ pub fn math(comptime Float: type) type {
             w = 3,
 
             pub fn dim(at: u2) Axis {
-                return @enumFromInt(at);
+                return @fromBackingInt(at);
             }
 
             pub fn idx(self: Axis) u2 {
-                return @intFromEnum(self);
+                return @backingInt(self);
             }
 
             pub inline fn unit(comptime axis: Axis) Vec {
@@ -634,7 +634,7 @@ pub fn math(comptime Float: type) type {
 
             pub inline fn mask(comptime self: Swizzle) @Vector(4, i32) {
                 comptime {
-                    const bits: BitPattern = @bitCast(@intFromEnum(self));
+                    const bits: BitPattern = @fromBackingInt(@backingInt(self));
                     return .{ bits.x.idx(), bits.y.idx(), bits.z.idx(), bits.w.idx() };
                 }
             }

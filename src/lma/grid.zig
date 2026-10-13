@@ -39,11 +39,11 @@ pub const Shape = struct {
         }
 
         pub fn fromInt(int: u4) Neighbour {
-            return @bitCast(int);
+            return @fromBackingInt(int);
         }
 
         pub fn toInt(self: Neighbour) u4 {
-            return @bitCast(self);
+            return @backingInt(self);
         }
 
         pub const left: Neighbour = .init(-1, 0);

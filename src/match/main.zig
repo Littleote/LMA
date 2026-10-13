@@ -33,14 +33,17 @@ pub fn correlation_size(dist: Float, step: match.Step) u32 {
 }
 
 pub fn main(init: std.process.Init.Minimal) void {
-    const use_debug = builtin.mode == .Debug or builtin.single_threaded;
-    var allocator: if (use_debug) std.heap.DebugAllocator(.{}) else void = if (use_debug) .init else {};
-    defer if (use_debug) {
-        _ = allocator.deinit();
+    var safe_allocator: std.heap.SafeAllocator = .init(std.heap.page_allocator, .{});
+    const use_safe_allocator = builtin.mode.runtimeSafety() or builtin.single_threaded;
+    defer if (use_safe_allocator) {
+        _ = safe_allocator.deinit();
     };
-    const gpa: std.mem.Allocator = if (use_debug) allocator.allocator() else std.heap.smp_allocator;
+    const gpa = if (use_safe_allocator) safe_allocator.allocator() else std.heap.smp_allocator;
+    // Footer gets zeroed while awaiting
+    // Reason still unknown
+    const io_gpa = if (use_safe_allocator) std.heap.page_allocator else std.heap.smp_allocator;
 
-    var threaded: std.Io.Threaded = .init(gpa, .{ .async_limit = .nothing, .concurrent_limit = .nothing, .environ = init.environ });
+    var threaded: std.Io.Threaded = .init(io_gpa, .{ .async_limit = .nothing, .concurrent_limit = .nothing, .environ = init.environ });
     const io = threaded.io();
 
     var options: cli.Options = undefined;
@@ -50,8 +53,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         var tokenizer: nargs.Tokenizer = .initFromStatic((init.args.toSlice(arena.allocator()) catch @panic("OOM"))[1..]);
         var diag: nargs.Diagnostic = .init(gpa, .default);
         defer {
-            for (diag.error_list.items) |info|
-                std.log.err("{f}", .{info});
+            for (diag.error_list.items) |info| std.log.err("{f}", .{info});
             diag.deinit();
         }
 
@@ -75,8 +77,12 @@ pub fn main(init: std.process.Init.Minimal) void {
     }
     defer cli.command.deinit(gpa, &options);
 
-    threaded.async_limit = @enumFromInt(options.threads - 1);
-    threaded.concurrent_limit = @enumFromInt(options.threads - 1);
+    {
+        std.Io.Threaded.mutexLockUncancelable(&threaded.mutex);
+        defer std.Io.Threaded.mutexUnlock(&threaded.mutex);
+        threaded.async_limit = @fromBackingInt(options.threads - 1);
+        threaded.concurrent_limit = @fromBackingInt(options.threads - 1);
+    }
 
     var buffer: [1024]u8 = undefined;
 
@@ -102,7 +108,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     defer stations.deinit();
     for (options.files.stations) |network| {
         const file = std.Io.Dir.cwd().openFile(io, network, .{}) catch |err| {
-            std.log.err("Unable to open station/network file \"{s}\" with error {s}.", .{ network, @errorName(err) });
+            std.log.err("Unable to open station/network file {q} with error {s}.", .{ network, @errorName(err) });
             continue;
         };
         defer file.close(io);
@@ -110,7 +116,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         files.loadStations(&stations, network, &file_reader.interface) catch |err| switch (err) {
             error.Logged => continue,
             error.ReadFailed => {
-                std.log.err("Unable to load station/network file \"{s}\" with error {s}.", .{ network, @errorName(file_reader.err orelse error.Unknown) });
+                std.log.err("Unable to load station/network file {q} with error {s}.", .{ network, @errorName(file_reader.err orelse error.Unknown) });
                 continue;
             },
         };
@@ -137,7 +143,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         var glob: nargs.params.io.Glob.Iterator = pattern.iterator(io, null) catch |e| switch (e) {
             error.Canceled => unreachable,
             else => |err| {
-                std.log.err("Unable to load any files matching \"{s}\" with error {}", .{ pattern.path, err });
+                std.log.err("Unable to load any files matching {q} with error {}", .{ pattern.path, err });
                 continue;
             },
         };
@@ -145,7 +151,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         while (glob.next() catch |e| switch (e) {
             error.Canceled => unreachable,
             else => |err| blk: {
-                std.log.err("Unable to load more files matching \"{s}\" with error {}", .{ pattern.path, err });
+                std.log.err("Unable to load more files matching {q} with error {}", .{ pattern.path, err });
                 break :blk null;
             },
         }) |entry| {
@@ -198,7 +204,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     var out_dir: std.Io.Dir = if (options.files.out_dir) |dir| std.Io.Dir.cwd().createDirPathOpen(io, dir, .{}) catch |e| switch (e) {
         error.Canceled => unreachable,
         else => |err| blk: {
-            std.log.warn("Failed to open \"{s}\" with error {s} defaulting to cwd.", .{ dir, @errorName(err) });
+            std.log.warn("Failed to open {q} with error {s} defaulting to cwd.", .{ dir, @errorName(err) });
             break :blk .cwd();
         },
     } else .cwd();
@@ -218,7 +224,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     defer output.deinit();
     _ = result.stats;
 
-    var default_file_buffer = "CUSTOM_YYMMDD_HHMMSS_SSSS.dat.gz"[0..].*;
+    var default_file_buffer = "CUSTOM_YYMMDD_HHMMSS_SSSS.dat.gz".*;
 
     const out_files: []const []const u8 = if (options.files.outputs.len == 0) &.{
         std.fmt.bufPrint(

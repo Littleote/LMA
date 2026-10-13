@@ -330,7 +330,7 @@ pub const Clustered = extern struct {
 
         pub fn cluster(value: u32) Cluster {
             std.debug.assert(value != Cluster.noise.value);
-            return @enumFromInt(value);
+            return @fromBackingInt(value);
         }
 
         pub fn isNoise(self: Cluster) bool {
@@ -338,7 +338,7 @@ pub const Clustered = extern struct {
         }
 
         pub fn id(self: Cluster) ?u32 {
-            return if (self.isNoise()) null else @intFromEnum(self);
+            return if (self.isNoise()) null else @backingInt(self);
         }
     };
 
@@ -381,7 +381,7 @@ pub const Clustered = extern struct {
             self.latitude,
             self.longitude,
             self.altitude,
-            @intFromEnum(self.cluster),
+            @backingInt(self.cluster),
             self.dBW,
         });
     }

@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .nice_args = .{
-            .url = "git+https://codeberg.org/Littleote/nice_args.git?ref=v0.1.0#30e17f1b58380bf9b44f9081814a34a4e0c77b94",
-            .hash = "nice_args-0.1.0-dev+12-g3sjmxtGAwBVnmIaGieE_J_S2tbdnjyPLdYiAHpJtq3s",
+            .url = "git+https://codeberg.org/Littleote/nice_args.git?ref=v0.1.0#a2d2338742728565e43de52236b9898ed3ca3981",
+            .hash = "nice_args-0.1.0-dev+14-g3sjm61kAwAlKPf5t7l7gvzV2wX39aonmzJcLic4kbI6",
         },
     },
     .paths = .{

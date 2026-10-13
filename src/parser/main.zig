@@ -24,7 +24,7 @@ const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "parser" }, .{
 pub fn main(init: std.process.Init) !void {
     var options: Cli = undefined;
     {
-        var tokenizer: nargs.Tokenizer = try .initFromArgs(init.gpa, init.minimal.args);
+        var tokenizer: nargs.Tokenizer = try .initFromArgs(init.gpa, init.minimal.args, true);
         defer tokenizer.deinit();
         var diag: nargs.Diagnostic = .init(init.gpa, .default);
         defer {

@@ -28,7 +28,7 @@ pub const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "clusters" 
 }));
 
 pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
-    const delimiter = @intFromEnum(args.delimiter);
+    const delimiter = @backingInt(args.delimiter);
 
     // Input file
     const file = try std.Io.Dir.cwd().openFile(io, args.path, .{ .mode = .read_only });
@@ -131,7 +131,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
             .altitude = try std.fmt.parseFloat(f32, iterator.next().?),
             .dBW = try std.fmt.parseFloat(f16, iterator.next().?),
             // Both 0 and -1 Indicate a noise value
-            .cluster = @enumFromInt(lma.cast.as(u32, @max(0, try std.fmt.parseInt(isize, iterator.next().?, 10)))),
+            .cluster = @fromBackingInt(lma.cast.as(u32, @max(0, try std.fmt.parseInt(isize, iterator.next().?, 10)))),
         });
     }
     last_header.size = @intCast(data.array.items.len - last_header.start);

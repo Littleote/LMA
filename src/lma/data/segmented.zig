@@ -108,7 +108,7 @@ pub fn bin(Elem: type, comptime config: BinConfig) type {
 
             for (0..headers) |_| {
                 list.headers.appendAssumeCapacity(try r.takeStruct(Header, .little));
-                const header = list.headers.getLast();
+                const header = list.headers.last().?;
                 const slice = list.array.addManyAsSliceAssumeCapacity(header.size);
                 try r.readSliceEndian(Elem, slice, .little);
             }
@@ -519,11 +519,11 @@ fn typeRepr(Type: type) []const u8 {
         .@"enum" => |info| {
             var text: []const u8 = std.fmt.comptimePrint("enum({s})", .{typeRepr(info.tag_type)});
             var first = true;
-            for (info.fields) |field| {
+            for (info.field_names, info.field_values) |name, val| {
                 text = text ++ std.fmt.comptimePrint("{c} {s} = {d}", .{
                     if (first) '{' else ',',
-                    field.name,
-                    field.value,
+                    name,
+                    val,
                 });
                 first = false;
             }
@@ -539,11 +539,11 @@ fn typeRepr(Type: type) []const u8 {
                     null,
             }) orelse @compileError("Invalid struct type.");
             var first = true;
-            for (info.fields) |field| {
+            for (info.field_names, info.field_types) |name, ty| {
                 text = text ++ std.fmt.comptimePrint("{c} {s}: {s}", .{
                     if (first) '{' else ',',
-                    field.name,
-                    typeRepr(field.type),
+                    name,
+                    typeRepr(ty),
                 });
                 first = false;
             }

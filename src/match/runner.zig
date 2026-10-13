@@ -26,8 +26,7 @@ pub fn run(
     const resource_start: std.Io.Timestamp = .now(io, .cpu_process);
 
     const workers: u32 = @max(1, @divFloor(span.size + config.chunk.seconds / 2, config.chunk.seconds));
-    // @divCielling
-    const work: u32 = @divTrunc(span.size + workers - 1, workers);
+    const work: u32 = @divCeil(span.size, workers);
 
     const futures = try gpa.alloc(std.Io.Future(RunError!RunReturn), workers);
     defer gpa.free(futures);

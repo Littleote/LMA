@@ -31,7 +31,7 @@ pub fn load(
             @panic("OOM");
         },
         else => |err| {
-            std.log.err("Unable to read file \"{s}\" {s}.", .{ file_name, switch (err) {
+            std.log.err("Unable to read file {q} {s}.", .{ file_name, switch (err) {
                 error.InvalidHeader => "because of an invalid header",
                 error.InvalidValue => "because of an invalid value",
                 error.BadFile => "because the file is malformed",

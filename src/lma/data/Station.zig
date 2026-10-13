@@ -26,11 +26,11 @@ pub fn stationLetter(self: *const Station) u8 {
 }
 
 pub fn idToLetter(station_id: Id) u8 {
-    return @intFromEnum(station_id) +| 0x40;
+    return @backingInt(station_id) +| 0x40;
 }
 
 pub fn letterToId(station_letter: u8) Id {
-    return @enumFromInt(std.ascii.toUpper(station_letter) -| 0x40);
+    return @fromBackingInt(std.ascii.toUpper(station_letter) -| 0x40);
 }
 
 pub fn point(self: *const Station) lma.math(f64).ElemVec {
@@ -127,17 +127,17 @@ pub const csv = struct {
                         return error.InvalidValue;
                     }
                     const letter_id = letterToId(non_empty[0]);
-                    const station_id: Id = @enumFromInt(try getInt(u8, iter.next()));
+                    const station_id: Id = @fromBackingInt(try getInt(u8, iter.next()));
                     if (letter_id != station_id) {
                         log.err(
                             "Letter '{c}' (id: {d}) doesn't match station id {d}.",
-                            .{ non_empty[0], @intFromEnum(letter_id), @intFromEnum(station_id) },
+                            .{ non_empty[0], @backingInt(letter_id), @backingInt(station_id) },
                         );
                         return error.InvalidValue;
                     }
                     break :blk station_id;
                 },
-                .network_id = @enumFromInt(try getInt(u8, iter.next())),
+                .network_id = @fromBackingInt(try getInt(u8, iter.next())),
                 .name = try self.arena.allocator().dupe(u8, std.mem.trim(u8, try unwrapToken(iter.next()), " ")),
                 .latitude = try getFloat(f64, iter.next()),
                 .longitude = try getFloat(f64, iter.next()),
@@ -161,7 +161,7 @@ pub const csv = struct {
             for (buf) |*byte| byte.* = (byte.* & 0x1F) + 0x5B;
             try data.stations.append(data.allocator, .{
                 .station_id = letterToId(random.intRangeAtMost(u8, 'A', 'Z')),
-                .network_id = @enumFromInt(random.intRangeAtMost(u8, 1, 255)),
+                .network_id = @fromBackingInt(random.intRangeAtMost(u8, 1, 255)),
                 .name = buf,
                 .latitude = 180 * random.float(f64) - 90,
                 .longitude = 360 * random.float(f64) - 180,
@@ -239,7 +239,7 @@ pub const csv = struct {
             @memcpy(buf, "Dummy name");
             try data.stations.append(data.allocator, .{
                 .station_id = letterToId(random.intRangeAtMost(u8, 'A', 'Z')),
-                .network_id = @enumFromInt(random.intRangeAtMost(u8, 1, 255)),
+                .network_id = @fromBackingInt(random.intRangeAtMost(u8, 1, 255)),
                 .name = buf,
                 .latitude = 180 * random.float(f64) - 90,
                 .longitude = 360 * random.float(f64) - 180,
@@ -287,7 +287,7 @@ fn innerFromGps(self: *List, r: *Reader) (error{StreamTooLong} || ParseError)!vo
     } else return error.BadFile;
 
     const old_len = self.stations.items.len;
-    var network_id: Id = @enumFromInt(0);
+    var network_id: Id = @fromBackingInt(0);
     switch (version) {
         2 => {
             // Network description
@@ -296,7 +296,7 @@ fn innerFromGps(self: *List, r: *Reader) (error{StreamTooLong} || ParseError)!vo
                 if (line[0] == '#') continue;
                 var iter = std.mem.tokenizeAny(u8, line, " \t");
                 _ = iter.next();
-                network_id = @enumFromInt(try getInt(u8, iter.next()));
+                network_id = @fromBackingInt(try getInt(u8, iter.next()));
                 break;
             } else return error.BadFile;
 
@@ -312,11 +312,11 @@ fn innerFromGps(self: *List, r: *Reader) (error{StreamTooLong} || ParseError)!vo
                             return error.InvalidValue;
                         }
                         const letter_id = letterToId(non_empty[0]);
-                        const station_id: Id = @enumFromInt(try getInt(u8, iter.next()));
+                        const station_id: Id = @fromBackingInt(try getInt(u8, iter.next()));
                         if (letter_id != station_id) {
                             log.err(
                                 "Letter '{c}' (id: {d}) doesn't match station id {d}.",
-                                .{ non_empty[0], @intFromEnum(letter_id), @intFromEnum(station_id) },
+                                .{ non_empty[0], @backingInt(letter_id), @backingInt(station_id) },
                             );
                             return error.InvalidValue;
                         }
@@ -362,8 +362,8 @@ test fromGps {
     for (data.stations.items, 0..5) |station, idx| {
         var name_buffer: [64]u8 = undefined;
         try std.testing.expectEqualDeep(Station{
-            .station_id = @enumFromInt(1 + @as(u8, @intCast(idx))),
-            .network_id = @enumFromInt(255),
+            .station_id = @fromBackingInt(1 + @as(u8, @intCast(idx))),
+            .network_id = @fromBackingInt(255),
             .name = std.fmt.bufPrint(&name_buffer, "Name_{d}", .{1 + idx}) catch unreachable,
             .latitude = 42.0 + @as(f64, @floatFromInt(idx)) / 10,
             .longitude = 2.0 + @as(f64, @floatFromInt(idx)) / 10,
@@ -415,7 +415,7 @@ fn innerFromLoc(self: *List, r: *Reader) (error{StreamTooLong} || ParseError)!vo
                 const letter_id = letterToId(non_empty[0]);
                 break :blk letter_id;
             },
-            .network_id = @enumFromInt(0),
+            .network_id = @fromBackingInt(0),
             .latitude = try getFloat(f64, try r.takeDelimiter('\n')),
             .longitude = try getFloat(f64, try r.takeDelimiter('\n')),
             .altitude = try getFloat(f32, try r.takeDelimiter('\n')),
@@ -440,8 +440,8 @@ test fromLoc {
     for (data.stations.items, 0..5) |station, idx| {
         var name_buffer: [64]u8 = undefined;
         try std.testing.expectEqualDeep(Station{
-            .station_id = @enumFromInt(1 + @as(u8, @intCast(idx))),
-            .network_id = @enumFromInt(0),
+            .station_id = @fromBackingInt(1 + @as(u8, @intCast(idx))),
+            .network_id = @fromBackingInt(0),
             .name = std.fmt.bufPrint(&name_buffer, "Name_{d}", .{1 + idx}) catch unreachable,
             .latitude = 42.0 + @as(f64, @floatFromInt(idx)) / 10,
             .longitude = 2.0 + @as(f64, @floatFromInt(idx)) / 10,
@@ -459,7 +459,7 @@ pub fn fromDat(self: *List, r: *Reader) !void {
 
 inline fn getFloat(Float: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Float {
     return std.fmt.parseFloat(Float, std.mem.trim(u8, try unwrapToken(s), " ")) catch {
-        log.err("Value \"{s}\" is not a valid number", .{s.?});
+        log.err("Value {q} is not a valid number", .{s.?});
         return error.InvalidValue;
     };
 }
@@ -468,7 +468,7 @@ inline fn getInt(Int: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Int {
     return std.fmt.parseInt(Int, std.mem.trim(u8, try unwrapToken(s), " "), 10) catch {
         const info = @typeInfo(Int).int;
         log.err(
-            "Value \"{s}\" is not a valid integer of type {c}{d}",
+            "Value {q} is not a valid integer of type {c}{d}",
             .{ s.?, if (info.signedness == .signed) 'i' else 'u', info.bits },
         );
         return error.InvalidValue;

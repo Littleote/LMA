@@ -3,28 +3,28 @@
 A collection of programs with the objective of running the full pipeline for processing and analysing the data from a lightning mapping array (LMA).
 
 ## Table of Contents
+
 1. [Build Process](#Build-Process)
-    1. [Requirements](#Requirements)
-    2. [Compiling](#Compiling)
+   1. [Requirements](#Requirements)
+   2. [Compiling](#Compiling)
 
 2. [Running](#Running)
-    1. [Signal Matching](#Signal-Matching)
-    2. [Hole Detection](#Hole-Detection)
-    3. [File Conversion](#File-Conversion)
-
+   1. [Signal Matching](#Signal-Matching)
+   2. [Hole Detection](#Hole-Detection)
+   3. [File Conversion](#File-Conversion)
 
 ## Build Process
 
 ### Requirements
 
-Zig compiler version 0.16.0 (the version can be seen using `zig version`)
+Zig compiler version 0.17.0 (the version can be seen using `zig version`)
 
 ### Compiling
 
 To compile all programs, run the following command:
 
 ```sh
-zig build -Doptimize=ReleaseSafe
+zig build all -Doptimize=safe
 ```
 
 This will generate an executable for the host system and CPU. The executables can be found at `zig-out/bin`.
@@ -33,16 +33,16 @@ If the objective is to run the program in other systems, this can be specified w
 
 ```sh
 # Build for a linux x86_64 without any restrictions on the cpu
-zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux-none
+zig build all -Doptimize=safe -Dtarget=x86_64-linux-none
 
 # Build for a mac with an m3 or newer
-zig build -Doptimize=ReleaseSafe -Dtarget=aarch64-macos-none -Dcpu=apple_m3
+zig build all -Doptimize=safe -Dtarget=aarch64-macos-none -Dcpu=apple_m3
 
 # Build for a 32-bit windows machin running on a pentium 3
-zig build -Doptimize=ReleaseSafe -Dtarget=x86-windows-none -Dcpu=pentium3
+zig build all -Doptimize=safe -Dtarget=x86-windows-none -Dcpu=pentium3
 ```
 
-If the objective is to compile only one of the programs, this can be specified by adding the following parameter between `build` and the set of options:
+If the objective is to compile only one of the programs, this can be specified by changing the parameter `all` to one of the following:
 
 ```sh
 # Signal Matching
@@ -80,7 +80,6 @@ You can view the full list of options for the command line by running `match --h
 Locate regions with an abnormally low lightning activity compared to its surroundings.
 
 You can view the full list of options for the command line by running `holes --help`.
-
 
 ### File Conversion
 

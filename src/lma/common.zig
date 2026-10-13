@@ -55,7 +55,7 @@ pub const cast = struct {
             .int => switch (output_type) {
                 .int => @intCast(value),
                 .float => @floatFromInt(value),
-                .@"enum" => @enumFromInt(value),
+                .@"enum" => @fromBackingInt(@intCast(value)),
                 else => @compileError("Unable to cast from " ++ @tagName(input_type) ++ " to " ++ @tagName(output_type)),
             },
             .float => switch (output_type) {
@@ -64,7 +64,7 @@ pub const cast = struct {
                 else => @compileError("Unable to cast from " ++ @tagName(input_type) ++ " to " ++ @tagName(output_type)),
             },
             .@"enum" => switch (output_type) {
-                .int => @intFromEnum(value),
+                .int => @backingInt(value),
                 else => @compileError("Unable to change from " ++ @tagName(input_type) ++ " to " ++ @tagName(output_type)),
             },
             .optional => if (value) |inner| cast(@typeInfo(T).optional.child, inner) else null,

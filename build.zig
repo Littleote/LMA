@@ -1,90 +1,153 @@
 const std = @import("std");
 
-var emit_bin: bool = true;
-var maybe_date_time: ?DateTime = null;
+const Options = struct {
+    target: std.Build.ResolvedTarget,
+    optimize: std.lang.Optimize,
+    single_threaded: bool,
+};
+
+const Exe = struct {
+    parser: *std.Build.Step.Compile,
+    match: *std.Build.Step.Compile,
+    holes: *std.Build.Step.Compile,
+};
+
+const Demo = enum {
+    parser,
+    match,
+    holes,
+};
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
-    const single_threaded = b.option(bool, "single-threaded", "Generate the executables in single threaded mode.") orelse false;
-    emit_bin = !(b.option(bool, "no-bin", "Skip emitting the binary.") orelse false);
-    maybe_date_time = DateTime.addOption(b);
+    const opt: Options = .{
+        .target = b.standardTargetOptions(.{}),
+        .optimize = b.standardOptimizeOption(.{}),
+        .single_threaded = b.option(bool, "single-threaded", "Generate the executables in single threaded mode.") orelse false,
+    };
+    const filter_option = b.option([]const u8, "test-filter", "Select a subset of tests to run");
+    const emit_bin = !(b.option(bool, "no-bin", "Skip emitting the binary.") orelse false);
 
     const nargs = b.dependency("nice_args", .{
-        .target = target,
-        .optimize = optimize,
+        .target = opt.target,
+        .optimize = opt.optimize,
     }).module("nice_args");
 
     const math = b.createModule(.{
         .root_source_file = b.path("src/lma/math.zig"),
-        .target = target,
-        .optimize = if (optimize == .Debug) .Debug else .ReleaseFast,
-        .single_threaded = single_threaded,
+        .target = opt.target,
+        .optimize = if (opt.optimize == .debug) .debug else .fast,
+        .single_threaded = opt.single_threaded,
     });
 
-    const lma = b.createModule(.{
+    const lma = b.addModule("lma", .{
         .root_source_file = b.path("src/lma/lma.zig"),
-        .target = target,
-        .optimize = optimize,
-        .single_threaded = single_threaded,
-        .imports = &.{
-            .{ .name = "math", .module = math },
-        },
+        .target = opt.target,
+        .optimize = opt.optimize,
+        .single_threaded = opt.single_threaded,
+        .imports = &.{.{ .name = "math", .module = math }},
     });
 
-    docs(b, lma);
+    const exe: Exe = .{
+        .parser = b.addExecutable(.{
+            .name = "parser",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/parser/main.zig"),
+                .target = opt.target,
+                .optimize = opt.optimize,
+                .imports = &.{
+                    .{ .module = lma, .name = "lma" },
+                    .{ .module = nargs, .name = "nargs" },
+                },
+                .single_threaded = opt.single_threaded,
+            }),
+        }),
+        .match = b.addExecutable(.{
+            .name = "match",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/match/main.zig"),
+                .target = opt.target,
+                .optimize = opt.optimize,
+                .imports = &.{
+                    .{ .module = lma, .name = "lma" },
+                    .{ .module = nargs, .name = "nargs" },
+                },
+                .single_threaded = opt.single_threaded,
+            }),
+        }),
+        .holes = b.addExecutable(.{
+            .name = "holes",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/lholes/main.zig"),
+                .target = opt.target,
+                .optimize = opt.optimize,
+                .imports = &.{
+                    .{ .module = lma, .name = "lma" },
+                    .{ .module = nargs, .name = "nargs" },
+                },
+                .single_threaded = opt.single_threaded,
+            }),
+        }),
+    };
 
-    const filter_option = b.option([]const u8, "test-filter", "Select a subset of tests to run");
+    const parser_step = b.step("parser", "Parse the selected files and generate a new file in a different format.");
+    parser_step.dependOn(if (emit_bin) &b.addInstallArtifact(exe.parser, .{}).step else &exe.parser.step);
+
+    const match_step = b.step("match", "Match a set of station data files and locate the sources using time of arrival.");
+    match_step.dependOn(if (emit_bin) &b.addInstallArtifact(exe.match, .{}).step else &exe.match.step);
+
+    const holes_step = b.step("holes", "Hole detection functionality.");
+    holes_step.dependOn(if (emit_bin) &b.addInstallArtifact(exe.holes, .{}).step else &exe.holes.step);
+
+    const all_step = b.step("all", "Generate all executables.");
+    all_step.dependOn(parser_step);
+    all_step.dependOn(match_step);
+    all_step.dependOn(holes_step);
+
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = b.addLibrary(.{ .name = "lma", .root_module = lma }).getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+
+    const docs_step = b.step("docs", "Install docs into zig-out/docs");
+    docs_step.dependOn(&install_docs.step);
+
     const lma_tests = b.addTest(.{
         .root_module = lma,
         .filters = if (filter_option) |filter| &.{filter} else &.{},
     });
 
-    const run_lma_tests = b.addRunArtifact(lma_tests);
+    const math_tests = b.addTest(.{
+        .root_module = math,
+        .filters = if (filter_option) |filter| &.{filter} else &.{},
+    });
 
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_lma_tests.step);
+    test_step.dependOn(if (emit_bin) &b.addRunArtifact(lma_tests).step else &lma_tests.step);
+    test_step.dependOn(if (emit_bin) &b.addRunArtifact(math_tests).step else &lma_tests.step);
 
-    parserExe(b, b.addExecutable(.{
-        .name = "parser",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/parser/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .module = lma, .name = "lma" },
-                .{ .module = nargs, .name = "nargs" },
-            },
-            .single_threaded = single_threaded,
-        }),
-    }));
+    const demo_step = b.step("demo", "Run the selected demo");
 
-    matchExe(b, b.addExecutable(.{
-        .name = "match",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/match/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .module = lma, .name = "lma" },
-                .{ .module = nargs, .name = "nargs" },
+    if (b.option(Demo, "demo", "")) |demo| {
+        b.getInstallStep().dependOn(demo_step);
+        switch (demo) {
+            .parser => {
+                parseDemo(b, demo_step, exe.parser);
+                parser_step.dependOn(demo_step);
             },
-            .single_threaded = single_threaded,
-        }),
-    }));
-
-    holesExe(b, b.addExecutable(.{
-        .name = "holes",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/lholes/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .module = lma, .name = "lma" },
-                .{ .module = nargs, .name = "nargs" },
+            .match => {
+                matchDemo(b, demo_step, exe.match);
+                match_step.dependOn(demo_step);
             },
-        }),
-    }));
+            .holes => {
+                holeDemo(b, demo_step, exe.holes);
+                holes_step.dependOn(demo_step);
+            },
+        }
+    } else {
+        b.getInstallStep().dependOn(all_step);
+        demo_step.dependOn(&b.addFail("Missing demo option").step);
+    }
 }
 
 const DateTime = struct {
@@ -92,7 +155,7 @@ const DateTime = struct {
     time: [6]u8,
 
     pub fn addOption(b: *std.Build) ?DateTime {
-        const input = b.option([]const u8, "date", "Date to use as input in the format 'YYMMDD-HHMMSS'") orelse return null;
+        const input = b.option([]const u8, "date", "Date to use as input for demo in the format 'YYMMDD-HHMMSS'") orelse return null;
         bad_input: {
             const date, const time = std.mem.cutScalar(u8, input, '-') orelse break :bad_input;
             if (std.mem.replacementSize(u8, date, "/", "") != 6 or std.mem.replacementSize(u8, time, ":", "") != 6) break :bad_input;
@@ -109,7 +172,6 @@ const DateTime = struct {
 
 const ParseStage = packed struct(u3) {
     pub const BuildOptions = enum {
-        none,
         signals,
         points,
         clusters,
@@ -118,7 +180,6 @@ const ParseStage = packed struct(u3) {
 
     pub fn init(options: BuildOptions) ParseStage {
         return switch (options) {
-            .none => .{},
             .signals => .{ .signals = true },
             .points => .{ .points = true },
             .clusters => .{ .clusters = true },
@@ -131,120 +192,104 @@ const ParseStage = packed struct(u3) {
     clusters: bool = false,
 };
 
-fn docs(b: *std.Build, module: *std.Build.Module) void {
-    const install_docs = b.addInstallDirectory(.{
-        .source_dir = b.addLibrary(.{ .name = "lma", .root_module = module }).getEmittedDocs(),
-        .install_dir = .prefix,
-        .install_subdir = "docs",
-    });
-
-    const docs_step = b.step("docs", "Install docs into zig-out/docs");
-    docs_step.dependOn(&install_docs.step);
-}
-
-fn parserExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
-    const step = b.step(
-        "parser",
-        "Parse the selected files and generate the corresponding '.bin' and '.csv' files",
-    );
-
-    step.dependOn(if (emit_bin) &b.addInstallArtifact(exe, .{}).step else &exe.step);
-    b.getInstallStep().dependOn(step);
-
-    // DEMO
-    const stage: ParseStage = .init(b.option(
+fn parseDemo(b: *std.Build, step: *std.Build.Step, exe: *std.Build.Step.Compile) void {
+    var failed = false;
+    const date = DateTime.addOption(b) orelse fail: {
+        step.dependOn(&b.addFail("Missing date.").step);
+        failed = true;
+        break :fail undefined;
+    };
+    const stage_opt = b.option(
         ParseStage.BuildOptions,
         "stage",
         "Stage to parse, generating the corresponding '.bin' and '.csv' files.",
-    ) orelse .none);
+    ) orelse fail: {
+        step.dependOn(&b.addFail("Missing stage.").step);
+        failed = true;
+        break :fail undefined;
+    };
+    if (failed) return;
 
-    if (maybe_date_time) |date_time| {
-        if (stage.signals) {
-            const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "signals", "-i=data/signals/" ++ date_time.date ++ "/sources" });
-            step.dependOn(&run.step);
-        }
-        if (stage.points) {
-            const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "points", "-i=data/points/" ++ date_time.date ++ "/output", "-s=data/stations" });
-            step.dependOn(&run.step);
-        }
-        if (stage.clusters) {
-            const run = b.addRunArtifact(exe);
-            run.addArgs(&.{ "clusters", "-i=data/lightnings/" ++ date_time.date ++ "/XCALMA_" ++ date_time.date ++ ".csv" });
-            step.dependOn(&run.step);
-        }
+    const stage: ParseStage = .init(stage_opt);
+
+    if (stage.signals) {
+        const run = b.addRunArtifact(exe);
+        run.addArgs(&.{ "signals", "-i=data/signals/" ++ date.date ++ "/sources" });
+        run.addPassthruArgs();
+        step.dependOn(&run.step);
+    }
+    if (stage.points) {
+        const run = b.addRunArtifact(exe);
+        run.addArgs(&.{ "points", "-i=data/points/" ++ date.date ++ "/output", "-s=data/stations" });
+        run.addPassthruArgs();
+        step.dependOn(&run.step);
+    }
+    if (stage.clusters) {
+        const run = b.addRunArtifact(exe);
+        run.addArgs(&.{ "clusters", "-i=data/lightnings/" ++ date.date ++ "/XCALMA_" ++ date.date ++ ".csv" });
+        run.addPassthruArgs();
+        step.dependOn(&run.step);
     }
 }
 
-fn holesExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
-    const step = b.step("holes", "Showcase of the hole detection functionality.");
-    step.dependOn(if (emit_bin) &b.addInstallArtifact(exe, .{}).step else &exe.step);
-    b.getInstallStep().dependOn(step);
+fn holeDemo(b: *std.Build, step: *std.Build.Step, exe: *std.Build.Step.Compile) void {
+    var failed = false;
+    const date = DateTime.addOption(b) orelse fail: {
+        step.dependOn(&b.addFail("Missing date.").step);
+        failed = true;
+        break :fail undefined;
+    };
+    if (failed) return;
 
-    // DEMO
-    if (maybe_date_time) |date_time| {
-        const run_demo_grid = b.addRunArtifact(exe);
-        run_demo_grid.addArgs(&.{
-            "--region=catalunya",
-            "-r=high",
-            "-i=data/lightnings/" ++ date_time.date ++ "/bin",
-            "--cat-map",
-            "--ffmpeg",
-        });
-        step.dependOn(&run_demo_grid.step);
-    }
+    const run = b.addRunArtifact(exe);
+    run.addArgs(&.{
+        "--region=catalunya",
+        "-r=high",
+        "-i=data/lightnings/" ++ date.date ++ "/bin",
+        "--cat-map",
+        "--ffmpeg",
+    });
+    run.addPassthruArgs();
+    step.dependOn(&run.step);
 }
 
-fn matchExe(b: *std.Build, exe: *std.Build.Step.Compile) void {
-    const step = b.step("match", "Match a set of station data '.bin' files and locate the sources using time of arrival.");
-    step.dependOn(if (emit_bin) &b.addInstallArtifact(exe, .{}).step else &exe.step);
-    b.getInstallStep().dependOn(step);
+fn matchDemo(b: *std.Build, step: *std.Build.Step, exe: *std.Build.Step.Compile) void {
+    const InputFile = enum { bin, dat };
+    const StationFile = enum { csv, gps };
 
-    // DEMO
-    if (maybe_date_time) |date_time| {
-        const probing = b.option(bool, "probe", "Pass a probe file to the matching algorithm.") orelse false;
-        const Values = enum {
-            @"station:csv",
-            @"station:gps",
-            @"input:bin",
-            @"input:dat",
-        };
-        const inputs = b.option([]const Values, "inputs", "Input sources (\"station\" and \"input\") format.") orelse &.{};
+    var failed = false;
+    const date = DateTime.addOption(b) orelse fail: {
+        step.dependOn(&b.addFail("Missing date.").step);
+        failed = true;
+        break :fail undefined;
+    };
+    const inputs = b.option(InputFile, "input", "Input sources format.") orelse .dat;
+    const stations = b.option(StationFile, "station", "Station data format.") orelse .gps;
+    const probing = b.option(bool, "probe", "Pass a probe file to the matching algorithm.") orelse false;
+    if (failed) return;
 
-        var station_files: enum { csv, gps } = .gps;
-        var input_files: enum { bin, dat } = .dat;
-
-        for (inputs) |input| switch (input) {
-            .@"station:csv" => station_files = .csv,
-            .@"station:gps" => station_files = .gps,
-            .@"input:bin" => input_files = .bin,
-            .@"input:dat" => input_files = .dat,
-        };
-
-        const run_match = b.addRunArtifact(exe);
-        switch (station_files) {
-            .csv => run_match.addArgs(&.{"-s=data/stations/stations.csv"}),
-            .gps => run_match.addArgs(&.{ "--stations", "data/stations/upc.gps", "data/stations/mcat.gps" }),
-        }
-        switch (input_files) {
-            .bin => run_match.addArgs(&.{"-i=data/signals/" ++ date_time.date ++ "/bin/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".bin"}),
-            .dat => run_match.addArgs(&.{"-i=data/signals/" ++ date_time.date ++ "/sources/*_*_*_" ++ date_time.date ++ "_" ++ date_time.time ++ ".dat"}),
-        }
-        run_match.addArgs(&.{
-            "-o",
-            "data/points/" ++ date_time.date ++ "/csv/corr-" ++ date_time.time[0..2] ++ "h-" ++ date_time.time[2..4] ++ "min-" ++ date_time.time[4..6] ++ "s.csv",
-            "data/points/" ++ date_time.date ++ "/output/CUSTOM_" ++ date_time.date ++ "_" ++ date_time.time ++ "_0600.dat.gz",
-            "--verbose",
-            "-d=" ++ date_time.date,
-            "-h=" ++ date_time.time,
-            "--analyse=10:00",
-        });
-        if (probing) run_match.addArgs(&.{
-            "--probe",
-            "data/points/" ++ date_time.date ++ "/probes/" ++ date_time.date ++ "_" ++ date_time.time ++ "_0600.dat",
-        });
-        if (b.args) |args| run_match.addArgs(args);
-        step.dependOn(&run_match.step);
+    const run = b.addRunArtifact(exe);
+    switch (inputs) {
+        .bin => run.addArgs(&.{"-i=data/signals/" ++ date.date ++ "/bin/*_*_*_" ++ date.date ++ "_" ++ date.time ++ ".bin"}),
+        .dat => run.addArgs(&.{"-i=data/signals/" ++ date.date ++ "/sources/*_*_*_" ++ date.date ++ "_" ++ date.time ++ ".dat"}),
     }
+    switch (stations) {
+        .csv => run.addArgs(&.{"-s=data/stations/stations.csv"}),
+        .gps => run.addArgs(&.{ "--stations", "data/stations/upc.gps", "data/stations/mcat.gps" }),
+    }
+    run.addArgs(&.{
+        "-o",
+        "data/points/" ++ date.date ++ "/csv/corr-" ++ date.time[0..2] ++ "h-" ++ date.time[2..4] ++ "min-" ++ date.time[4..6] ++ "s.csv",
+        "data/points/" ++ date.date ++ "/output/CUSTOM_" ++ date.date ++ "_" ++ date.time ++ "_0600.dat.gz",
+        "--verbose",
+        "-d=" ++ date.date,
+        "-h=" ++ date.time,
+        "--analyse=10:00",
+    });
+    if (probing) run.addArgs(&.{
+        "--probe",
+        "data/points/" ++ date.date ++ "/probes/" ++ date.date ++ "_" ++ date.time ++ "_0600.dat",
+    });
+    run.addPassthruArgs();
+    step.dependOn(&run.step);
 }

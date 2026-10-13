@@ -203,7 +203,7 @@ const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "holes" }, .{
 pub fn parseNargs(gpa: Allocator, io: std.Io, cli: std.process.Args) !Args {
     var command: Cli = undefined;
     {
-        var tokenizer: nargs.Tokenizer = try .initFromArgs(gpa, cli);
+        var tokenizer: nargs.Tokenizer = try .initFromArgs(gpa, cli, true);
         defer tokenizer.deinit();
         var diag: nargs.Diagnostic = .init(gpa, .default);
         defer {
@@ -323,21 +323,21 @@ pub const ExternArgs = extern struct {
 
 fn parseFloat(s: []const u8) !Float {
     return std.fmt.parseFloat(Float, s) catch |err| {
-        std.log.err("Failure to parse \"{s}\" as a float", .{s});
+        std.log.err("Failure to parse {q} as a float", .{s});
         return err;
     };
 }
 
 fn parseInt(Int: type, s: []const u8) !Int {
     return std.fmt.parseInt(Int, s, 10) catch |err| {
-        std.log.err("Failure to parse \"{s}\" as an integer", .{s});
+        std.log.err("Failure to parse {q} as an integer", .{s});
         return err;
     };
 }
 
 fn parseCoords(s: []const u8) !struct { Float, Float } {
     const lat, const lon = std.mem.cutScalar(u8, s, ',') orelse {
-        std.log.err("Failure to parse latitude and longitude from \"{s}\" due to missing coma separator", .{s});
+        std.log.err("Failure to parse latitude and longitude from {q} due to missing coma separator", .{s});
         return error.Parsing;
     };
     return .{ try parseFloat(lat), try parseFloat(lon) };

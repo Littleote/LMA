@@ -32,15 +32,15 @@ pub const Cluster = enum(u16) {
 
     pub fn cluster(value: u16) Cluster {
         std.debug.assert(value != 0);
-        return @enumFromInt(value);
+        return @fromBackingInt(value);
     }
 
     pub fn any(value: u16) Cluster {
-        return @enumFromInt(value);
+        return @fromBackingInt(value);
     }
 
     pub fn int(self: Cluster) u16 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 
     pub fn addToSet(value: Cluster, set: *std.ArrayList(Cluster)) void {

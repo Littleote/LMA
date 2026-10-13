@@ -395,21 +395,23 @@ pub const SignalParser = struct {
 
             fn format(value: T, w: *Writer) Writer.Error!void {
                 var separator = true;
-                inline for (@typeInfo(T).@"struct".fields) |field| {
+                const info = @typeInfo(T).@"struct";
+                inline for (info.field_names, info.field_types) |name, ty| {
                     const fmt = comptime blk: {
                         var fmt: []const u8 = "";
                         var underscore = true;
-                        for (@typeInfo(field.type).@"struct".fields) |subfield| {
+                        const sub_info = @typeInfo(ty).@"struct";
+                        for (sub_info.field_names, sub_info.field_types) |sub_name, sub_ty| {
                             if (underscore) underscore = false else fmt = "_" ++ fmt;
                             fmt = std.fmt.comptimePrint(
                                 "{{[{s}]b:0>{d}}}",
-                                .{ subfield.name, @typeInfo(subfield.type).int.bits },
+                                .{ sub_name, @typeInfo(sub_ty).int.bits },
                             ) ++ fmt;
                         }
-                        break :blk fmt[0..].*;
+                        break :blk fmt.*;
                     };
                     if (separator) separator = false else try w.writeByte('/');
-                    try w.print(&fmt, @field(value, field.name));
+                    try w.print(&fmt, @field(value, name));
                 }
             }
 
@@ -540,7 +542,7 @@ pub const SignalParser = struct {
         }
 
         fn above(self: @This()) u16 {
-            return @bitCast(Above{ .low = self._0.above_low, .high = self._2.above_high });
+            return @backingInt(Above{ .low = self._0.above_low, .high = self._2.above_high });
         }
 
         fn buildSignal(self: @This(), factor: f64) error{NextSecond}!Signal {
@@ -635,7 +637,7 @@ pub const output = struct {
                 current_station.* = .{
                     // Tokenizer ensures that non null entries are not empty
                     .station_id = data.Station.letterToId((iter.next() orelse return error.BadFile)[0]),
-                    .network_id = @enumFromInt(0), // Unset
+                    .network_id = @fromBackingInt(0), // Unset
                     .name = try stations.arena.allocator().dupe(u8, iter.next() orelse return error.BadFile),
                     .latitude = try getFloat(f64, iter.next()),
                     .longitude = try getFloat(f64, iter.next()),

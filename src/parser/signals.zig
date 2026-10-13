@@ -61,7 +61,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
     var iterator = dat_dir.iterate();
     while (try iterator.next(io)) |entry| {
         if (!std.mem.endsWith(u8, entry.name, ".dat")) {
-            std.log.err("Unrecognized file type \"{s}\"", .{entry.name});
+            std.log.err("Unrecognized file type {q}", .{entry.name});
             continue;
         }
 

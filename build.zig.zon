@@ -1,8 +1,8 @@
 .{
     .name = .lma,
-    .version = "0.0.0",
+    .version = "0.1.0",
     .fingerprint = 0x546aaf72f19c0241,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .nice_args = .{
             .url = "git+https://codeberg.org/Littleote/nice_args.git?ref=v0.1.0#a2d2338742728565e43de52236b9898ed3ca3981",

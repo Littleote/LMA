@@ -86,7 +86,7 @@ const Data = union(Args.Stage) {
                         try Point.csv.read(&self.points.data, r, null);
                     },
                     .dat => {
-                        _ = try lma.data.dat_file.output.parse(r, &self.points.data, null);
+                        _ = try lma.data.dat_file.output.read(r, &self.points.data);
                     },
                 }
                 self.points.iterator = self.points.data.epochIterator(generator.epoch, until);

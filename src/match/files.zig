@@ -131,7 +131,7 @@ pub fn loadSignals(signals: *Signal.List, file_name: []const u8, reader: *Reader
         }
 
         pub fn fromDat(data: *Signal.List, r: *Reader) ParseError!void {
-            try lma.data.dat_file.SignalParser.fromReader(r, data, .{});
+            try lma.data.dat_file.SignalParser.read(r, data, .{});
         }
     };
 
@@ -160,7 +160,7 @@ inline fn innerSavePoints(data: *Point.List, aux_stations: *const Station.List, 
     switch (extension) {
         .csv => try Point.csv.write(data, w, null),
         .bin => try Point.bin.write(data, w),
-        .dat => try lma.data.dat_file.output.print(w, data, aux_stations, aux_statistics),
+        .dat => try lma.data.dat_file.output.write(w, data, aux_stations, aux_statistics),
         .gz => {
             if (!allow_compression) return error.InvalidExtension;
             var flate_buffer: [std.compress.flate.max_window_len]u8 = undefined;

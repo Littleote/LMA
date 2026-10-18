@@ -6,7 +6,6 @@ const Writer = std.Io.Writer;
 const lma = @import("../lma.zig");
 const dat_file = @import("dat_file.zig");
 
-const Id = enum(u8) { _ };
 const Station = @This();
 
 const log = std.log.scoped(lma.log.hierarchy.station_file);
@@ -20,6 +19,8 @@ altitude: f32,
 delay: i32,
 revision: u8,
 channel: u8,
+
+pub const Id = enum(u8) { _ };
 
 pub fn stationLetter(self: *const Station) u8 {
     return idToLetter(self.station_id);
@@ -39,12 +40,14 @@ pub fn point(self: *const Station) lma.math(f64).ElemVec {
 
 pub const List = struct {
     stations: std.ArrayList(Station),
+    network_names: std.SinglyLinkedList,
     allocator: Allocator,
     arena: std.heap.ArenaAllocator,
 
     pub fn init(gpa: Allocator) List {
         return .{
             .stations = .empty,
+            .network_names = .{},
             .allocator = gpa,
             .arena = .init(gpa),
         };
@@ -54,12 +57,61 @@ pub const List = struct {
         self.stations.deinit(self.allocator);
         self.arena.deinit();
     }
+
+    pub fn appendNetwork(self: *List, id: Id, name: []const u8) error{OutOfMemory}!void {
+        if (self.findNetworkId(id) != null) return;
+        const node = try self.arena.allocator().create(Network);
+        node.* = .{ .id = id, .name = try self.arena.allocator().dupe(u8, name) };
+        self.network_names.prepend(&node.node);
+    }
+
+    pub fn findNetworkId(self: *const List, network_id: Id) ?*Network {
+        var maybe_node = self.network_names.first;
+        while (maybe_node) |node| {
+            defer maybe_node = node.next;
+            const network: *Network = @fieldParentPtr("node", node);
+            if (network.id == network_id) return network;
+        }
+        return null;
+    }
+
+    pub fn findNetworkName(self: *const List, network_name: []const u8) ?*Network {
+        var maybe_node = self.network_names.first;
+        while (maybe_node) |node| {
+            defer maybe_node = node.next;
+            const network: *Network = @fieldParentPtr("node", node);
+            if (std.mem.eql(u8, network.name, network_name)) return network;
+        }
+        return null;
+    }
+
+    pub fn fmtNetwork(self: *const List, default: []const u8) Network {
+        return if (self.network_names.first) |node|
+            @as(*Network, @fieldParentPtr("node", node)).*
+        else
+            .{ .name = default, .id = @fromBackingInt(0) };
+    }
+
+    const Network = struct {
+        name: []const u8,
+        id: Id,
+        node: std.SinglyLinkedList.Node = .{},
+
+        pub fn format(self: Network, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+            try writer.writeAll(self.name);
+            if (self.node.next) |next| {
+                const next_elem: *Network = @fieldParentPtr("node", next);
+                try writer.writeByte('+');
+                try next_elem.format(writer);
+            }
+        }
+    };
 };
 
 pub const ParseError = error{ ReadFailed, OutOfMemory, InvalidHeader, InvalidValue, BadFile, UnsupportedVersion };
 
 pub const csv = struct {
-    const columns: []const []const u8 = &.{ "Letter", "ID", "Network ID", "Name", "Latitude", "Longitude", "Altitude", "Delay (ns)", "Revision", "Channel" };
+    const columns: []const []const u8 = &.{ "Letter", "ID", "Network ID", "Name", "Network Name", "Latitude", "Longitude", "Altitude", "Delay (ns)", "Revision", "Channel" };
 
     /// Write Stations to a CSV file
     /// When delimiter is null, use a comma (`,`)
@@ -71,7 +123,7 @@ pub const csv = struct {
         }
         for (list.stations.items) |station| {
             try w.print(
-                "{[letter]c}{[sep]c}{[id]d}{[sep]c}{[net_id]d}{[sep]c}{[name]s}{[sep]c}" ++
+                "{[letter]c}{[sep]c}{[id]d}{[sep]c}{[net_id]d}{[sep]c}{[name]s}{[sep]c}{[net_name]s}{[sep]c}" ++
                     "{[lat]d:.9}{[sep]c}{[lon]d:.9}{[sep]c}{[alt]d:.3}{[sep]c}{[delay]d:.1}{[sep]c}" ++
                     "{[revision]d}{[sep]c}{[channel]d}\n",
                 .{
@@ -80,6 +132,7 @@ pub const csv = struct {
                     .id = station.station_id,
                     .net_id = station.network_id,
                     .name = station.name,
+                    .net_name = if (list.findNetworkId(station.network_id)) |node| node.name else "",
                     .lat = station.latitude,
                     .lon = station.longitude,
                     .alt = station.altitude,
@@ -94,14 +147,14 @@ pub const csv = struct {
 
     /// Read Stations from a CSV file
     /// When delimiter is null, use a comma (`,`)
-    pub fn read(self: *List, r: *Reader, delimiter: ?u8) ParseError!void {
-        innerRead(self, r, delimiter) catch |e| return switch (e) {
+    pub fn read(list: *List, r: *Reader, delimiter: ?u8) ParseError!void {
+        innerRead(list, r, delimiter) catch |e| return switch (e) {
             else => |err| err,
             error.StreamTooLong => error.BadFile,
         };
     }
 
-    fn innerRead(self: *List, r: *Reader, delimiter: ?u8) (error{StreamTooLong} || ParseError)!void {
+    fn innerRead(list: *List, r: *Reader, delimiter: ?u8) (error{StreamTooLong} || ParseError)!void {
         // Read CSV header
         const csv_header = try r.takeDelimiter('\n') orelse {
             log.err("Empty file.", .{});
@@ -119,32 +172,48 @@ pub const csv = struct {
 
         while (try r.takeDelimiter('\n')) |line| {
             var iter = std.mem.splitScalar(u8, line, del);
-            try self.stations.append(self.allocator, .{
-                .station_id = blk: {
-                    const non_empty = std.mem.trim(u8, try unwrapToken(iter.next()), " ");
-                    if (non_empty.len != 1) {
-                        log.err("Station Letter is empty.", .{});
-                        return error.InvalidValue;
-                    }
-                    const letter_id = letterToId(non_empty[0]);
-                    const station_id: Id = @fromBackingInt(try getInt(u8, iter.next()));
-                    if (letter_id != station_id) {
-                        log.err(
-                            "Letter '{c}' (id: {d}) doesn't match station id {d}.",
-                            .{ non_empty[0], @backingInt(letter_id), @backingInt(station_id) },
-                        );
-                        return error.InvalidValue;
-                    }
-                    break :blk station_id;
-                },
-                .network_id = @fromBackingInt(try getInt(u8, iter.next())),
-                .name = try self.arena.allocator().dupe(u8, std.mem.trim(u8, try unwrapToken(iter.next()), " ")),
-                .latitude = try getFloat(f64, iter.next()),
-                .longitude = try getFloat(f64, iter.next()),
-                .altitude = try getFloat(f32, iter.next()),
-                .delay = @round(4 * (try getFloat(f32, iter.next()))),
+
+            const elems = .{
+                .letter = try getString(iter.next()),
+                .id = try getInt(u8, iter.next()),
+                .net_id = try getInt(u8, iter.next()),
+                .name = try getString(iter.next()),
+                .net_name = try getString(iter.next()),
+                .lat = try getFloat(f64, iter.next()),
+                .lon = try getFloat(f64, iter.next()),
+                .alt = try getFloat(f32, iter.next()),
+                .delay = try getFloat(f32, iter.next()),
                 .revision = try getInt(u8, iter.next()),
                 .channel = try getInt(u8, iter.next()),
+            };
+
+            if (elems.letter.len != 1) {
+                log.err("Invalid station letter {q}.", .{elems.letter});
+                return error.InvalidValue;
+            }
+
+            if (letterToId(elems.letter[0]) != @as(Id, @fromBackingInt(elems.id))) {
+                log.err(
+                    "Letter '{c}' (id: {d}) doesn't match station id {d}.",
+                    .{ elems.letter[0], @backingInt(letterToId(elems.letter[0])), elems.id },
+                );
+                return error.InvalidValue;
+            }
+
+            if (elems.net_name.len != 0) {
+                try list.appendNetwork(@fromBackingInt(elems.net_id), elems.net_name);
+            }
+
+            try list.stations.append(list.allocator, .{
+                .station_id = @fromBackingInt(elems.id),
+                .name = try list.arena.allocator().dupe(u8, elems.name),
+                .network_id = @fromBackingInt(elems.net_id),
+                .latitude = elems.lat,
+                .longitude = elems.lon,
+                .altitude = elems.alt,
+                .delay = @round(4 * elems.delay),
+                .revision = elems.revision,
+                .channel = elems.channel,
             });
         }
     }
@@ -297,6 +366,8 @@ fn innerFromGps(self: *List, r: *Reader) (error{StreamTooLong} || ParseError)!vo
                 var iter = std.mem.tokenizeAny(u8, line, " \t");
                 _ = iter.next();
                 network_id = @fromBackingInt(try getInt(u8, iter.next()));
+                const network_name = try getString(iter.next());
+                try self.appendNetwork(network_id, network_name);
                 break;
             } else return error.BadFile;
 
@@ -359,6 +430,11 @@ test fromGps {
 
     try fromGps(&data, &file_reader.interface);
 
+    const net: *List.Network = @fieldParentPtr("node", data.network_names.first.?);
+    try std.testing.expectEqual(@as(Id, @fromBackingInt(255)), net.id);
+    try std.testing.expectEqualStrings("NAME", net.name);
+    try std.testing.expectEqual(@as(std.SinglyLinkedList.Node, .{}), net.node);
+
     for (data.stations.items, 0..5) |station, idx| {
         var name_buffer: [64]u8 = undefined;
         try std.testing.expectEqualDeep(Station{
@@ -385,11 +461,15 @@ pub fn fromLoc(self: *List, r: *Reader) ParseError!void {
 }
 
 fn innerFromLoc(self: *List, r: *Reader) (error{StreamTooLong} || ParseError)!void {
+    const net_default: Id = @fromBackingInt(0);
     var header_components: usize = 0;
     while (try r.takeDelimiter('\n')) |line| {
         if (line.len == 0) return error.BadFile;
         if (line[0] == '#') continue;
         header_components += 1;
+        if (header_components == 1) {
+            try self.appendNetwork(net_default, std.mem.trim(u8, line, " "));
+        }
         if (header_components >= 4) break;
     } else return error.BadFile;
 
@@ -405,9 +485,9 @@ fn innerFromLoc(self: *List, r: *Reader) (error{StreamTooLong} || ParseError)!vo
 
         r.seek -= line.len + 1;
         try self.stations.append(self.allocator, .{
-            .name = try self.arena.allocator().dupe(u8, std.mem.trim(u8, try unwrapToken(try r.takeDelimiter('\n')), " ")),
+            .name = try self.arena.allocator().dupe(u8, try getString(try r.takeDelimiter('\n'))),
             .station_id = blk: {
-                const non_empty = std.mem.trim(u8, try unwrapToken(try r.takeDelimiter('\n')), " ");
+                const non_empty = try getString(try r.takeDelimiter('\n'));
                 if (non_empty.len != 1) {
                     log.err("Station Letter is empty.", .{});
                     return error.InvalidValue;
@@ -415,7 +495,7 @@ fn innerFromLoc(self: *List, r: *Reader) (error{StreamTooLong} || ParseError)!vo
                 const letter_id = letterToId(non_empty[0]);
                 break :blk letter_id;
             },
-            .network_id = @fromBackingInt(0),
+            .network_id = net_default,
             .latitude = try getFloat(f64, try r.takeDelimiter('\n')),
             .longitude = try getFloat(f64, try r.takeDelimiter('\n')),
             .altitude = try getFloat(f32, try r.takeDelimiter('\n')),
@@ -437,6 +517,11 @@ test fromLoc {
 
     try fromLoc(&data, &file_reader.interface);
 
+    const net: *List.Network = @fieldParentPtr("node", data.network_names.first.?);
+    try std.testing.expectEqual(@as(Id, @fromBackingInt(0)), net.id);
+    try std.testing.expectEqualStrings("NAME", net.name);
+    try std.testing.expectEqual(@as(std.SinglyLinkedList.Node, .{}), net.node);
+
     for (data.stations.items, 0..5) |station, idx| {
         var name_buffer: [64]u8 = undefined;
         try std.testing.expectEqualDeep(Station{
@@ -451,10 +536,6 @@ test fromLoc {
             .channel = 6 + @as(u8, @intCast(idx)),
         }, station);
     }
-}
-
-pub fn fromDat(self: *List, r: *Reader) !void {
-    _ = try dat_file.output.parse(r, null, self);
 }
 
 inline fn getFloat(Float: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Float {
@@ -473,6 +554,10 @@ inline fn getInt(Int: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Int {
         );
         return error.InvalidValue;
     };
+}
+
+inline fn getString(s: ?[]const u8) error{BadFile}![]const u8 {
+    return std.mem.trim(u8, try unwrapToken(s), " ");
 }
 
 inline fn unwrapToken(s: ?[]const u8) error{BadFile}![]const u8 {

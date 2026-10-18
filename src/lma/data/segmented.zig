@@ -6,6 +6,7 @@ const Writer = std.Io.Writer;
 
 const lma = @import("../lma.zig");
 const cast = lma.cast;
+const ParseError = lma.data.ParseError;
 pub const Header = lma.index.SubSlice;
 
 pub const Search = enum {
@@ -37,6 +38,7 @@ pub const BinConfig = struct {
 
 pub fn CsvConfig(Elem: type) type {
     return struct {
+        scope: @EnumLiteral() = lma.log.hierarchy.file_rw,
         columns: []const []const u8,
         read: fn (out: *Elem, line: []const u8, delimiter: u8) error{InvalidValue}!u64,
         write: fn (in: Elem, writer: *Writer, epoch: u64, delimiter: u8) Writer.Error!void,
@@ -74,14 +76,14 @@ pub fn bin(Elem: type, comptime config: BinConfig) type {
         }
 
         /// Read segments from custom binary format
-        pub fn read(list: *List, r: *Reader) List.ParseError!void {
+        pub fn read(list: *List, r: *Reader) ParseError!void {
             innerRead(list, r) catch |e| return switch (e) {
                 else => |err| err,
                 error.EndOfStream => error.BadFile,
             };
         }
 
-        fn readHeader(r: *Reader) List.ParseError!void {
+        fn readHeader(r: *Reader) ParseError!void {
             const header = r.take(file_header.len) catch |e| return switch (e) {
                 error.ReadFailed => |err| err,
                 error.EndOfStream => error.InvalidHeader,
@@ -94,7 +96,7 @@ pub fn bin(Elem: type, comptime config: BinConfig) type {
                 error.InvalidHeader;
         }
 
-        pub fn innerRead(list: *List, r: *Reader) (error{EndOfStream} || List.ParseError)!void {
+        pub fn innerRead(list: *List, r: *Reader) (error{EndOfStream} || ParseError)!void {
             try readHeader(r);
 
             list.start_epoch = try r.takeInt(u64, .little);
@@ -118,6 +120,7 @@ pub fn bin(Elem: type, comptime config: BinConfig) type {
 
 pub fn csv(Elem: type, comptime config: CsvConfig(Elem)) type {
     return struct {
+        const log = std.log.scoped(config.scope);
         const List = Segmented(Elem);
         const common_delimiters = [_]u8{ ',', ';', '\t', '|' };
 
@@ -140,21 +143,24 @@ pub fn csv(Elem: type, comptime config: CsvConfig(Elem)) type {
 
         /// Read data from CSV file as segments
         /// When delimiter is null, the most common delimiters are tested
-        pub fn read(list: *List, r: *Reader, delimiter: ?u8) List.ParseError!void {
+        pub fn read(list: *List, r: *Reader, delimiter: ?u8) ParseError!void {
             innerRead(list, r, delimiter) catch |e| return switch (e) {
                 else => |err| err,
                 error.StreamTooLong => error.BadFile,
             };
         }
 
-        fn innerRead(list: *List, r: *Reader, delimiter: ?u8) (error{StreamTooLong} || List.ParseError)!void {
+        fn innerRead(list: *List, r: *Reader, delimiter: ?u8) (error{StreamTooLong} || ParseError)!void {
             // Read CSV header
-            const csv_header = try r.takeDelimiter('\n') orelse return error.InvalidHeader;
+            const csv_header = try r.takeDelimiter('\n') orelse {
+                return error.InvalidHeader;
+            };
             const del = delimiter orelse blk: {
                 for (common_delimiters) |del| {
                     const columns = 1 + std.mem.countScalar(u8, csv_header, del);
                     if (columns == config.columns.len) break :blk del;
                 }
+                log.err("No valid delimiter to divide {q} into {d} columns.", .{ csv_header, config.columns.len });
                 return error.InvalidHeader;
             };
 
@@ -164,7 +170,7 @@ pub fn csv(Elem: type, comptime config: CsvConfig(Elem)) type {
                 else => |err| return err,
             };
             var first_value: Elem = undefined;
-            list.start_epoch = try config.read(&first_value, first_line, del);
+            list.start_epoch = try readLine(&first_value, first_line, del);
             var last_epoch: u64 = list.start_epoch;
 
             // Parse entries
@@ -175,9 +181,15 @@ pub fn csv(Elem: type, comptime config: CsvConfig(Elem)) type {
                 .start = @intCast(list.array.items.len),
                 .size = 0,
             };
+
+            var last_attempt = true;
             while (try r.takeDelimiter('\n')) |line| {
                 const value = try list.array.addOne(list.allocator);
-                const current_epoch: u64 = try config.read(value, line, del);
+                const current_epoch: u64 = readLine(value, line, del) catch |err| {
+                    if (!last_attempt) return err;
+                    last_attempt = false;
+                    continue;
+                };
                 if (last_epoch != current_epoch) {
                     // Finish current and start next header info
                     const last_len: u32 = @intCast(list.array.items.len - 1);
@@ -190,6 +202,14 @@ pub fn csv(Elem: type, comptime config: CsvConfig(Elem)) type {
             }
             // Finish last header info
             header.size = @intCast(list.array.items.len - header.start);
+            last_attempt = true;
+        }
+
+        inline fn readLine(out: *Elem, line: []const u8, delimiter: u8) error{InvalidValue}!u64 {
+            return config.read(out, line, delimiter) catch |err| log: {
+                log.warn("Failed to read line {q}", .{line});
+                break :log err;
+            };
         }
 
         test "csv columns" {

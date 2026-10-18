@@ -6,6 +6,8 @@ const opt = nargs.options;
 const Error = nargs.components.ValueError;
 const Value = nargs.Value;
 
+const match_info = @import("info.zon");
+
 pub const command: nargs.Node(Options) = .build(opt.Groups, .any(.{ .name = "match" }, .{
     .threads = .build(opt.Named, .single(.integer(.{ .min = 1, .max_str = "unlimited" }), .{
         .name = "threads",
@@ -55,6 +57,12 @@ pub const command: nargs.Node(Options) = .build(opt.Groups, .any(.{ .name = "mat
             .display = "FILE",
             .short = .auto,
         })),
+        .stations_out = .optional(.{ .default = "Don't update" }, .build(opt.Named, .single(.string, .{
+            .name = "stations-out",
+            .description = "File to output station data with updated delays. Accepts \".csv\".",
+            .display = "FILE",
+            .short = .auto,
+        }))),
         .inputs = .build(opt.Named, .variable(.wrap(nargs.params.io.Glob), .{ .min = 1 }, .{
             .name = "input",
             .description = "Glob pattern for all signal input files. Accepts \".csv\", \".dat\" and \".bin\" (with or without \".gz\").",
@@ -72,7 +80,7 @@ pub const command: nargs.Node(Options) = .build(opt.Groups, .any(.{ .name = "mat
             .description = "Destination file to store the results. Accepts \".csv\", \".dat\" and \".bin\" (with or without \".gz\").",
             .display = "FILE",
             .short = .auto,
-            .default = .init(&.{}, "CUSTOM_{YYMMDD}_{HHMMSS}_{SSSS}.dat.gz"),
+            .default = .init(&.{}, "{Network Name}_{YYMMDD}_{HHMMSS}_{SSSS}.dat.gz"),
         })),
         .out_dir = .build(opt.Named, .single(.optional(.string), .{
             .name = "output-path",
@@ -139,6 +147,55 @@ pub const command: nargs.Node(Options) = .build(opt.Groups, .any(.{ .name = "mat
 }));
 
 pub const Options = struct {
+    pub fn init(gpa: Allocator, io: std.Io, args: std.process.Args) error{ParseFailure}!?Options {
+        var buffer: [128]u8 = undefined;
+        var tokenizer = nargs.Tokenizer.initFromArgs(gpa, args, true) catch @panic("OOM");
+        defer tokenizer.deinit();
+        var diag: nargs.Diagnostic = .init(gpa, .default);
+        defer diag.deinit();
+
+        var mem = command.initMemory().*;
+        while (tokenizer.peek()) |token| {
+            if (command.parse(&mem, &tokenizer, &diag) == .no_match) {
+                tokenizer.discardAssumeToken();
+                diag.log(.unused_token, "", token);
+            }
+        }
+
+        if (diag.special_flags.get(.help)) {
+            var stdout: std.Io.File.Writer = .initStreaming(.stdout(), io, &buffer);
+            nargs.Help.print(
+                .{ .info = command.info },
+                .{ .name_width = 15, .tree_art = .ascii_arrow, .spacing = true },
+                &stdout.interface,
+            ) catch {};
+            stdout.flush() catch {};
+            return null;
+        } else if (diag.special_flags.get(.version)) {
+            var stdout: std.Io.File.Writer = .initStreaming(.stdout(), io, &buffer);
+            stdout.interface.print("{s} version {s}\n", .{ match_info.name, match_info.version }) catch {};
+            stdout.flush() catch {};
+            return null;
+        }
+
+        var out: Options = undefined;
+        command.init(&mem, &diag, gpa, &out) catch {};
+        if (diag.error_list.items.len > 0) {
+            for (diag.error_list.items) |info| {
+                std.log.err("{f}", .{info});
+            }
+            std.log.info(
+                "Use \"{s} {f}\" to see available options.",
+                .{ match_info.name, diag.config.special_flags.get(.help)[0] },
+            );
+            return error.ParseFailure;
+        } else return out;
+    }
+
+    pub fn deinit(self: *Options, gpa: Allocator) void {
+        command.deinit(gpa, self);
+    }
+
     threads: usize,
     time: Time,
     files: Files,
@@ -179,6 +236,7 @@ pub const Options = struct {
         inputs: []nargs.params.io.Glob.Pattern,
         excluded: []const []const u8,
         stations: []const []const u8,
+        stations_out: ?[]const u8,
         out_dir: ?[]const u8,
         outputs: []const []const u8,
         probe: ?[]const u8,

@@ -9,6 +9,8 @@ pub const Point = types.Point;
 pub const Clustered = types.Clustered;
 pub const Station = @import("data/Station.zig");
 
+pub const ParseError = error{ ReadFailed, OutOfMemory, InvalidHeader, InvalidValue, BadFile, UnsupportedVersion };
+
 comptime {
     std.testing.refAllDecls(@This());
 }

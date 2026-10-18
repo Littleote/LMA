@@ -39,6 +39,7 @@ pub const Signal = extern struct {
 
     // CSV elements
     pub const csv = segmented.csv(@This(), .{
+        .scope = lma.log.hierarchy.signal_file,
         .columns = &.{ "Time", "Decibel-miliwatt" },
         .read = readCsv,
         .write = writeCsv,
@@ -220,6 +221,7 @@ pub const Point = extern struct {
 
     // CSV elements
     pub const csv = segmented.csv(@This(), .{
+        .scope = lma.log.hierarchy.points_file,
         .columns = &.{ "Time", "Latitude", "Longitude", "Altitude", "Decibel-watt", "Station mask", "Fitness" },
         .read = readCsv,
         .write = writeCsv,

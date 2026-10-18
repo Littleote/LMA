@@ -77,7 +77,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
             );
             defer file.close(io);
             var file_reader = file.reader(io, &buffer);
-            try lma.data.dat_file.SignalParser.fromReader(&file_reader.interface, &data, .{});
+            try lma.data.dat_file.SignalParser.read(&file_reader.interface, &data, .{});
         }
 
         if (csv_dir) |dir| {

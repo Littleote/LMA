@@ -18,6 +18,7 @@ pub const log = struct {
         pub const global: @EnumLiteral() = .@"LMA default";
         pub const file_rw: @EnumLiteral() = .@"LMA file read/write";
         pub const signal_file: @EnumLiteral() = .@"LMA signal file";
+        pub const points_file: @EnumLiteral() = .@"LMA flash sources file";
         pub const station_file: @EnumLiteral() = .@"LMA station file";
     };
 
@@ -31,6 +32,7 @@ pub const log = struct {
         pub const global = scopes.global;
         pub const file_rw: @EnumLiteral() = scope_or_default(scopes.file_rw, global);
         pub const signal_file: @EnumLiteral() = scope_or_default(scopes.signal_file, file_rw);
+        pub const points_file: @EnumLiteral() = scope_or_default(scopes.points_file, file_rw);
         pub const station_file: @EnumLiteral() = scope_or_default(scopes.station_file, file_rw);
     };
 };

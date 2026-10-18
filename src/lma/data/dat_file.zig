@@ -27,20 +27,6 @@ test toNative {
     try std.testing.expectEqualSlices(u16, &values, toNative(&bytes));
 }
 
-/// Helper function to parse an epoch value padded with spaces at the start
-fn parseEpoch(bytes: []const u8) error{InvalidValue}!usize {
-    const number = std.mem.trimStart(u8, bytes, " ");
-    return std.fmt.parseInt(usize, number, 10) catch error.InvalidValue;
-}
-
-test parseEpoch {
-    const epoch_1234 = try parseEpoch("       1234");
-    const epoch_5678 = try parseEpoch("5678");
-
-    try std.testing.expect(epoch_1234 == 1234);
-    try std.testing.expect(epoch_5678 == 5678);
-}
-
 pub const SignalParser = struct {
     const Signal = data.Signal;
     const Signals = Signal.List;
@@ -58,7 +44,7 @@ pub const SignalParser = struct {
     };
 
     /// Load a Time of Arrival '.dat' file from a reader
-    pub fn fromReader(
+    pub fn read(
         r: *Reader,
         signals: *Signals,
         config: Config,
@@ -559,214 +545,179 @@ pub const SignalParser = struct {
         const initRaw = mixin.fromBytesW;
         const len = mixin.len;
     };
+
+    comptime {
+        std.testing.refAllDecls(@This());
+    }
 };
 
-inline fn getFloat(Float: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Float {
-    return std.fmt.parseFloat(
-        Float,
-        std.mem.trim(u8, s orelse return error.BadFile, " "),
-    ) catch error.InvalidValue;
-}
-
-inline fn getInt(Int: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Int {
-    return std.fmt.parseInt(Int, std.mem.trim(
-        u8,
-        s orelse return error.BadFile,
-        " ",
-    ), 10) catch error.InvalidValue;
-}
-
 pub const output = struct {
-    pub const ParseError = error{
-        ReadFailed,
-        OutOfMemory,
-        InvalidHeader,
-        InvalidValue,
-        BadFile,
-    };
+    const Point = data.Point;
+    const Station = data.Station;
+    const ParseError = data.ParseError;
 
-    pub fn parse(
+    const log = std.log.scoped(lma.log.hierarchy.points_file);
+
+    pub fn read(
         r: *Reader,
-        maybe_points: ?*data.Point.List,
-        maybe_stations: ?*data.Station.List,
+        points: *Point.List,
     ) ParseError!void {
-        innerParse(r, maybe_points, maybe_stations) catch |err| return switch (err) {
+        innerRead(r, points) catch |err| return switch (err) {
             else => |new_err| new_err,
             error.StreamTooLong => error.BadFile,
         };
     }
 
-    fn innerParse(
+    fn innerRead(
         r: *Reader,
-        maybe_points: ?*data.Point.List,
-        maybe_stations: ?*data.Station.List,
+        points: *Point.List,
     ) (error{StreamTooLong} || ParseError)!void {
         var start_time: ?u64 = null;
-        var header_count: ?usize = null;
-        var values_count: ?usize = null;
+        var header_count: ?u32 = null;
+        var values_count: ?u32 = null;
         var station_count: ?usize = null;
 
-        // Advance to station information
+        // Advance to data section
         while (try r.takeDelimiter('\n')) |line| {
             if (std.mem.startsWith(u8, line, "Number of seconds")) {
-                header_count = std.fmt.parseInt(usize, line[28..], 10) catch return error.InvalidHeader;
+                @branchHint(.unpredictable);
+                header_count = std.fmt.parseInt(u32, line[28..], 10) catch return error.InvalidHeader;
             } else if (std.mem.startsWith(u8, line, "Number of stations")) {
+                @branchHint(.unpredictable);
                 station_count = std.fmt.parseInt(usize, line[20..], 10) catch return error.InvalidHeader;
             } else if (std.mem.startsWith(u8, line, "Data start time")) {
+                @branchHint(.unpredictable);
                 const time = line[line.len - 8 ..];
-                const hour = std.fmt.parseInt(usize, time[0..2], 10) catch return error.InvalidHeader;
-                const minute = std.fmt.parseInt(usize, time[3..5], 10) catch return error.InvalidHeader;
-                const second = std.fmt.parseInt(usize, time[6..8], 10) catch return error.InvalidHeader;
+                const hour = std.fmt.parseInt(u64, time[0..2], 10) catch return error.InvalidHeader;
+                const minute = std.fmt.parseInt(u64, time[3..5], 10) catch return error.InvalidHeader;
+                const second = std.fmt.parseInt(u64, time[6..8], 10) catch return error.InvalidHeader;
                 start_time = (hour * 60 + minute) * 60 + second;
             } else if (std.mem.startsWith(u8, line, "Station information")) {
+                @branchHint(.unpredictable);
+                if (station_count) |count| for (0..count) |_| {
+                    _ = try r.takeDelimiter('\n');
+                };
+            } else if (std.mem.startsWith(u8, line, "Number of events")) {
+                @branchHint(.unpredictable);
+                values_count = std.fmt.parseInt(u32, line[18..], 10) catch return error.InvalidHeader;
+            } else if (std.mem.startsWith(u8, line, "*** data ***")) {
+                @branchHint(.unpredictable);
                 break;
             }
-        } else return error.BadFile;
-
-        if (maybe_points == null and maybe_stations == null) return;
-
-        // Parse station information
-        if (maybe_stations) |stations| {
-            try stations.stations.ensureTotalCapacityPrecise(stations.allocator, station_count.?);
-
-            for (0..station_count.?) |_| {
-                const line = (try r.takeDelimiter('\n')) orelse return error.BadFile;
-                var iter = std.mem.tokenizeScalar(u8, line, ' ');
-                _ = iter.next() orelse return error.BadFile;
-                const current_station = stations.stations.addOneAssumeCapacity();
-                current_station.* = .{
-                    // Tokenizer ensures that non null entries are not empty
-                    .station_id = data.Station.letterToId((iter.next() orelse return error.BadFile)[0]),
-                    .network_id = @fromBackingInt(0), // Unset
-                    .name = try stations.arena.allocator().dupe(u8, iter.next() orelse return error.BadFile),
-                    .latitude = try getFloat(f64, iter.next()),
-                    .longitude = try getFloat(f64, iter.next()),
-                    .altitude = try getFloat(f32, iter.next()),
-                    .delay = 4 * try getInt(i32, iter.next()),
-                    .revision = try getInt(u8, iter.next()),
-                    .channel = try getInt(u8, iter.next()),
-                };
-            }
         } else {
-            for (0..station_count.?) |_| {
-                _ = try r.takeDelimiter('\n');
-            }
+            @branchHint(.unlikely);
+            std.log.err("Missing data section", .{});
+            return error.BadFile;
         }
 
-        if (maybe_points) |points| blk: {
-            // Advance to data section
-            while (try r.takeDelimiter('\n')) |line| {
-                if (std.mem.startsWith(u8, line, "Number of events")) {
-                    values_count = std.fmt.parseInt(usize, line[18..], 10) catch return error.InvalidHeader;
-                } else if (std.mem.startsWith(u8, line, "*** data ***")) {
-                    @branchHint(.unlikely);
-                    break;
-                }
-            } else return error.BadFile;
-
-            if (values_count == 0) break :blk;
-
-            try innerParsePoints(r, points, start_time, header_count.? + 1, values_count.?);
+        var missing = false;
+        if (start_time == null) {
+            @branchHint(.unlikely);
+            std.log.err("Missing data start time", .{});
+            missing = true;
+        }
+        if (header_count == null) {
+            @branchHint(.unlikely);
+            std.log.err("Missing number of seconds", .{});
+            missing = true;
+        }
+        if (values_count == null) {
+            @branchHint(.unlikely);
+            std.log.err("Missing number of events", .{});
+            missing = true;
+        }
+        if (missing) {
+            @branchHint(.unlikely);
+            return error.InvalidHeader;
         }
 
-        // No else branch necessary to synchronize the readers as all code paths end here
-        return;
+        try parsePoints(r, points, start_time.?, header_count.? + 1, values_count.?);
     }
 
-    pub fn parsePoints(
+    pub fn readSkipPrologue(
         r: *Reader,
-        points: *data.Point.List,
-        start_epoch: ?u64,
-        headers: usize,
-        entries: usize,
+        points: *Point.List,
+        start_epoch: u64,
+        headers: u32,
+        entries: u32,
     ) ParseError!void {
-        innerParsePoints(r, points, start_epoch, headers, entries) catch |e| return switch (e) {
+        while (try r.takeDelimiter('\n')) |line| {
+            if (std.mem.startsWith(u8, line, "*** data ***")) {
+                @branchHint(.unpredictable);
+                break;
+            }
+        } else {
+            @branchHint(.unlikely);
+            std.log.err("Missing data section", .{});
+            return error.BadFile;
+        }
+        parsePoints(r, points, start_epoch, headers, entries) catch |e| return switch (e) {
             else => |err| err,
             error.StreamTooLong => error.BadFile,
         };
     }
 
-    fn innerParsePoints(
+    fn parsePoints(
         r: *Reader,
-        points: *data.Point.List,
-        start_epoch: ?u64,
-        headers: usize,
-        entries: usize,
+        points: *Point.List,
+        start_epoch: u64,
+        headers: u32,
+        entries: u32,
     ) (error{StreamTooLong} || ParseError)!void {
+        points.start_epoch = start_epoch;
         if (headers == 0 or entries == 0) return;
 
         // Parse data section
+        std.debug.assert(points.headers.items.len == 0);
+        points.array.clearRetainingCapacity();
         try points.headers.ensureTotalCapacityPrecise(points.allocator, headers);
         try points.array.ensureTotalCapacityPrecise(points.allocator, entries);
 
-        const peek_line = r.peekDelimiterExclusive('\n') catch |e| return switch (e) {
-            error.ReadFailed => |err| err,
-            error.StreamTooLong, error.EndOfStream => error.BadFile,
-        };
+        var epoch: [5]u8 = undefined;
+        const start_second = start_epoch % (24 * 60 * 60);
+        _ = std.fmt.bufPrint(&epoch, "{d: >5}", .{start_second}) catch unreachable;
 
-        var last_epoch: [5]u8 = undefined;
-        @memcpy(&last_epoch, peek_line[0..5]);
-        points.start_epoch = try parseEpoch(&last_epoch);
-        if (start_epoch != null and start_epoch.? < points.start_epoch) {
-            points.start_epoch = start_epoch.?;
-            _ = std.fmt.printInt(
-                &last_epoch,
-                start_epoch.?,
-                10,
-                .lower,
-                .{ .alignment = .right, .width = 5, .fill = ' ' },
-            );
-        }
-        points.headers.appendAssumeCapacity(.{
-            .start = 0,
-            .size = 0,
-        });
-        var last_header = &points.headers.items[0];
-        defer last_header.size = @intCast(points.array.items.len - last_header.start);
+        var head: data.segmented.Header = .init(0, 0);
+        defer if (head.size != 0) points.headers.appendAssumeCapacity(head);
 
         while (try r.takeDelimiter('\n')) |line| {
-            if (!std.mem.eql(u8, &last_epoch, line[0..5])) {
-                @memcpy(&last_epoch, line[0..5]);
-                const array_size: u32 = @intCast(points.array.items.len);
-                last_header.size = array_size - last_header.start;
-                const current_epoch = points.start_epoch + points.headers.items.len - 1;
-                const target_epoch = try parseEpoch(&last_epoch);
-                if (target_epoch < points.start_epoch + points.headers.items.len) {
+            if (!std.mem.eql(u8, &epoch, line[0..5])) advance: {
+                // TODO guarantee at least 5 characters
+                @memcpy(&epoch, line[0..5]);
+                const current_epoch = points.start_epoch + points.headers.items.len;
+                const next_epoch = try parseEpoch(&epoch);
+                if (current_epoch == next_epoch) break :advance;
+                points.headers.appendAssumeCapacity(head);
+                head = .init(@intCast(points.array.items.len), 0);
+
+                if (next_epoch < current_epoch) {
                     @branchHint(.cold);
+                    log.err("Entries out of order. Value at {d}.XXX followed by {d}.XXX", .{ current_epoch, next_epoch });
+                    return error.BadFile;
+                } else if (start_epoch + headers <= next_epoch) {
+                    @branchHint(.cold);
+                    log.err("Entries too late. Expected values before {d}.000 but found {d}.XXX", .{ start_second + headers, next_epoch });
                     return error.BadFile;
                 }
-                points.headers.appendNTimesAssumeCapacity(
-                    .{ .start = array_size, .size = 0 },
-                    @intCast(target_epoch - current_epoch),
-                );
-                last_header = &points.headers.items[points.headers.items.len - 1];
+
+                points.headers.appendNTimesAssumeCapacity(head, @intCast(next_epoch - current_epoch - 1));
             }
             const current_value = points.array.addOneAssumeCapacity();
 
             var it = std.mem.tokenizeScalar(u8, line, ' ');
-            var token: []const u8 = it.next() orelse break;
-            current_value.nanosecond = 4 * (std.fmt.parseInt(
-                u32,
-                token[token.len - 9 ..],
-                10,
-            ) catch return error.InvalidHeader);
-            token = it.next() orelse break;
-            current_value.latitude = std.fmt.parseFloat(f32, token) catch return error.InvalidHeader;
-            token = it.next() orelse break;
-            current_value.longitude = std.fmt.parseFloat(f32, token) catch return error.InvalidHeader;
-            token = it.next() orelse break;
-            current_value.altitude = std.fmt.parseFloat(f32, token) catch return error.InvalidHeader;
-            token = it.next() orelse break;
-            current_value.measure_error = std.fmt.parseFloat(f16, token) catch return error.InvalidHeader;
-            token = it.next() orelse break;
-            current_value.dBW = std.fmt.parseFloat(f16, token) catch return error.InvalidHeader;
-            token = it.next() orelse break;
-            current_value.station_mask = std.fmt.parseInt(u32, token[2..], 16) catch return error.InvalidHeader;
+
+            current_value.station_mask = try getInt(u32, it.next(), -9, 10);
+            current_value.latitude = try getFloat(f32, it.next());
+            current_value.longitude = try getFloat(f32, it.next());
+            current_value.altitude = try getFloat(f32, it.next());
+            current_value.measure_error = try getFloat(f16, it.next());
+            current_value.dBW = try getFloat(f16, it.next());
+            current_value.station_mask = try getInt(u32, it.next(), 2, 16);
         } else return;
-        return error.BadFile;
+        comptime unreachable;
     }
 
-    pub fn print(
+    pub fn write(
         w: *Writer,
         points: *const data.Point.List,
         stations: *const data.Station.List,
@@ -775,7 +726,7 @@ pub const output = struct {
         // Data start time: YY/MM/DD HH:MM:SS
         // Number of seconds analyzed: ANALYSIS_TIME
         // Location: NETWORK_NAME
-        try w.writeAll("Location: CUSTOM\n");
+        try w.print("Location: {f}\n", .{stations.fmtNetwork("UNNAMED")});
 
         // Coordinate center (lat,lon,alt): LATITUDE  LONGITUDE  DUMMY_ALTITUDE
         var network_xyz = lma.math(f64).vector.zero;
@@ -898,9 +849,64 @@ pub const output = struct {
         }
         try w.flush();
     }
+
+    inline fn getFloat(Float: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Float {
+        return std.fmt.parseFloat(Float, std.mem.trim(u8, try unwrapToken(s), " ")) catch {
+            log.err("Value {q} is not a valid number", .{s.?});
+            return error.InvalidValue;
+        };
+    }
+
+    inline fn getInt(Int: type, s: ?[]const u8, comptime start: isize, base: u8) error{ BadFile, InvalidValue }!Int {
+        const unwrapped = try unwrapToken(s);
+        if (unwrapped.len <= @abs(start)) {
+            log.err(
+                "Value {q} is too short. Should be at least {d} long.",
+                .{ unwrapped, @abs(start + 1) },
+            );
+            return error.InvalidValue;
+        }
+        const slice_start = unwrapped.len +% @as(usize, @bitCast(start));
+        return std.fmt.parseInt(Int, unwrapped[slice_start..], base) catch {
+            const info = @typeInfo(Int).int;
+            log.err(
+                "Value {q} is not a valid integer of type {c}{d}",
+                .{ s.?, if (info.signedness == .signed) 'i' else 'u', info.bits },
+            );
+            return error.InvalidValue;
+        };
+    }
+
+    inline fn getString(s: ?[]const u8) error{BadFile}![]const u8 {
+        return std.mem.trim(u8, try unwrapToken(s), " ");
+    }
+
+    inline fn unwrapToken(s: ?[]const u8) error{BadFile}![]const u8 {
+        return s orelse {
+            log.err("Line terminated while reading", .{});
+            return error.BadFile;
+        };
+    }
+
+    /// Helper function to parse an epoch value padded with spaces at the start
+    fn parseEpoch(bytes: []const u8) error{InvalidValue}!usize {
+        const number = std.mem.trimStart(u8, bytes, " ");
+        return std.fmt.parseInt(usize, number, 10) catch error.InvalidValue;
+    }
+
+    test parseEpoch {
+        const epoch_1234 = try parseEpoch("       1234");
+        const epoch_5678 = try parseEpoch("5678");
+
+        try std.testing.expect(epoch_1234 == 1234);
+        try std.testing.expect(epoch_5678 == 5678);
+    }
+
+    comptime {
+        std.testing.refAllDecls(@This());
+    }
 };
 
 comptime {
-    std.testing.refAllDecls(output);
-    std.testing.refAllDecls(SignalParser);
+    std.testing.refAllDecls(@This());
 }

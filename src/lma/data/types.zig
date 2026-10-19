@@ -47,7 +47,7 @@ pub const Signal = extern struct {
         .testing = testing,
     });
 
-    pub fn writeCsv(self: Signal, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
+    fn writeCsv(self: Signal, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.3}\n", .{
             del,
             cast.to(f64, epoch) + lma.nano.fromNano(f64, self.nanosecond),
@@ -55,7 +55,7 @@ pub const Signal = extern struct {
         });
     }
 
-    pub fn readCsv(self: *Signal, line: []const u8, del: u8) ParseError!usize {
+    fn readCsv(self: *Signal, line: []const u8, del: u8) ParseError!usize {
         var iterator = std.mem.tokenizeScalar(u8, line, del);
         const time = std.math.modf(try parse(f64, iterator.next(), .float));
         const epoch: usize = @intFromFloat(time.ipart);
@@ -83,7 +83,7 @@ pub const Signal = extern struct {
         return first.nanosecond == second.nanosecond and std.math.approxEqAbs(f16, first.dBm, second.dBm, 1e-1);
     }
 
-    pub fn dummyValue(rand: std.Random) Signal {
+    fn dummyValue(rand: std.Random) Signal {
         return .{
             .nanosecond = rand.uintLessThan(u32, lma.nano.ratio),
             .dBm = @floatCast(200 * rand.float(f32) - 110),
@@ -213,7 +213,7 @@ pub const Point = extern struct {
         return @intCast(@popCount(self.station_mask));
     }
 
-    pub fn point(self: *const Point) lma.math(f32).ElemVec {
+    pub fn gps(self: *const Point) lma.math(f32).ElemVec {
         return .{ .elems = .{ self.latitude, self.longitude, self.altitude, 0 } };
     }
 
@@ -229,7 +229,7 @@ pub const Point = extern struct {
         .testing = testing,
     });
 
-    pub fn writeCsv(self: Point, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
+    fn writeCsv(self: Point, w: *Writer, epoch: u64, del: u8) Writer.Error!void {
         try w.print("{1d:.10}{0c}{2d:.8}{0c}{3d:.8}{0c}{4d:.3}{0c}{5d:.3}{0c}0x{6x:0>8}{0c}{7d:.2}\n", .{
             del,
             cast.to(f64, epoch) + lma.nano.fromNano(f64, self.nanosecond),
@@ -242,7 +242,7 @@ pub const Point = extern struct {
         });
     }
 
-    pub fn readCsv(self: *Point, line: []const u8, del: u8) ParseError!usize {
+    fn readCsv(self: *Point, line: []const u8, del: u8) ParseError!usize {
         var iterator = std.mem.tokenizeScalar(u8, line, del);
         const time = std.math.modf(try parse(f64, iterator.next(), .float));
         const epoch: usize = @intFromFloat(time.ipart);
@@ -300,7 +300,7 @@ pub const Point = extern struct {
         return first.nanosecond < second.nanosecond;
     }
 
-    pub fn dummyValue(rand: std.Random) Point {
+    fn dummyValue(rand: std.Random) Point {
         return .{
             .nanosecond = rand.uintLessThan(u32, lma.nano.ratio),
             .latitude = rand.float(f32) * 180 - 90,
@@ -316,6 +316,132 @@ pub const Point = extern struct {
     pub const bin = segmented.bin(@This(), .{
         .tag = "point",
     });
+
+    pub const smooth = smoothing.apply;
+
+    pub const smoothing = struct {
+        pub const Config = struct {
+            span: usize,
+            max_time: f32,
+            max_gamma: f32,
+            max_pow: f32,
+            min_pow_w: f32,
+
+            pub const default: Config = .{
+                .span = 100,
+                .max_time = 10.0 / @as(comptime_float, std.time.ms_per_s),
+                .max_gamma = 1_000.0 / lma.constants.earth.semimajor,
+                .max_pow = 10.0,
+                .min_pow_w = 0.1,
+            };
+        };
+
+        const Entry = struct {
+            time: f32,
+            alpha: f32,
+            beta: f32,
+            alt: f32,
+            dbw: f32,
+            index: u32,
+            new_alt: f32,
+        };
+
+        pub fn apply(list: *List, gpa: std.mem.Allocator, config: Config) error{OutOfMemory}!void {
+            if (list.headers.items.len == 0) return;
+            const idx0 = list.headers.items[0].start;
+
+            const min_window = config.span * 2 + 1;
+            const window_size = min_window;
+            const window_half = window_size >> 1;
+
+            var window: std.Deque(Entry) = try .initCapacity(gpa, window_size);
+            std.debug.assert(window.buffer.len == window_size);
+            defer window.deinit(gpa);
+
+            for (0..window_size) |_| {
+                window.pushBackAssumeCapacity(.{
+                    .time = -2 * config.max_time,
+                    .alpha = 0,
+                    .beta = 0,
+                    .alt = 0,
+                    .dbw = 0,
+                    .index = idx0,
+                    .new_alt = std.math.nan(f32),
+                });
+            }
+
+            for (list.headers.items) |header| {
+                std.debug.assert(window.len == window_size);
+                for (window.buffer) |*value| value.time -= 1;
+                for (header.start..header.end()) |idx| {
+                    const entry = window.popFront() orelse unreachable;
+                    const point = list.array.items[idx];
+                    window.pushBackAssumeCapacity(.{
+                        .time = lma.nano.fromNano(f32, point.nanosecond),
+                        .alpha = point.latitude * std.math.rad_per_deg,
+                        .beta = point.longitude * std.math.rad_per_deg,
+                        .alt = point.altitude,
+                        .dbw = @floatCast(point.dBW),
+                        .index = @intCast(idx),
+                        .new_alt = std.math.nan(f32),
+                    });
+
+                    std.debug.assert(window.len == window_size);
+                    const ref = window.atPtr(window_half);
+                    ref.new_alt = calculate(ref, window.buffer, config);
+                    list.array.items[entry.index].altitude = entry.new_alt;
+                }
+            }
+
+            for (0..window_size) |_| {
+                const entry = window.popFront() orelse unreachable;
+                window.pushBackAssumeCapacity(.{
+                    .time = 1.0 + 2 * config.max_time,
+                    .alpha = 0,
+                    .beta = 0,
+                    .alt = 0,
+                    .dbw = 0,
+                    .index = std.math.maxInt(u32),
+                    .new_alt = std.math.nan(f32),
+                });
+
+                std.debug.assert(window.len == window_size);
+                const ref = window.atPtr(window_half);
+                ref.new_alt = calculate(ref, window.buffer, config);
+                list.array.items[entry.index].altitude = entry.new_alt;
+            }
+        }
+
+        inline fn calculate(ref: *const Entry, entries: []const Entry, config: Config) f32 {
+            var w1: f32 = 0;
+            var wx: f32 = 0;
+            var wx2: f32 = 0;
+            var wy: f32 = 0;
+            var wxy: f32 = 0;
+
+            const ref_cos_beta = @cos(ref.beta);
+            for (entries) |entry| {
+                const x = entry.time - ref.time;
+                const y = entry.alt - ref.alt;
+                const gamma = std.math.hypot(
+                    (entry.alpha - ref.alpha) * ref_cos_beta,
+                    entry.beta - ref.beta,
+                );
+                const pow = entry.dbw - ref.dbw;
+                const w = @max(0, 1 - @abs(x) / config.max_time) *
+                    @max(0, 1 - gamma / config.max_gamma) *
+                    @max(config.min_pow_w, 1 - @abs(pow) / config.max_pow);
+
+                w1 += w;
+                wx += w * x;
+                wx2 += w * x * x;
+                wy += w * y;
+                wxy += w * x * y;
+            }
+
+            return ref.alt + if (wx2 < 1e-12) 0 else (wx2 * wy - wx * wxy) / (wx2 * w1 - wx * wx);
+        }
+    };
 
     comptime {
         std.testing.refAllDecls(@This());
@@ -361,7 +487,7 @@ pub const Clustered = extern struct {
     /// Decibels detected with base of 1mW
     dBW: f16,
 
-    pub fn point(self: *const Clustered) lma.math(f32).ElemVec {
+    pub fn gps(self: *const Clustered) lma.math(f32).ElemVec {
         return .{ .elems = .{ self.latitude, self.longitude, self.altitude, 0 } };
     }
 

@@ -170,11 +170,6 @@ pub fn runChunk(
     );
     defer gpa.free(memory_buffer);
 
-    var probe: match.probing.Probe = undefined;
-    const probe_ptr: ?*match.probing.Probe = if (root.probe_data) |*data| blk: {
-        probe = .{ .data = data };
-        break :blk &probe;
-    } else null;
     var solver: ToaSolver = .init(
         stations,
         memory_buffer,
@@ -190,7 +185,7 @@ pub fn runChunk(
                 .attempts = config.search.dfs_attempts,
                 .consensus = config.search.consensus,
             },
-            .probe = probe_ptr,
+            .probe = null,
         },
     );
 
@@ -222,9 +217,10 @@ pub fn runChunk(
         try sources.ensureTotalCapacity(gpa, size);
 
         solver.signals = signals;
-        if (probe_ptr) |ptr| {
-            ptr.current_epoch = time;
-            ptr.signals = signals;
+        if (root.probe_data) |*probe| {
+            if (probe.range.start <= time and time < probe.range.end) {
+                solver.config.probe = .{ .epoch = time, .list = probe };
+            } else solver.config.probe = null;
         }
         for (solver.memory) |*mem| mem.time -= 1;
         sources.items.len = match.process(&match_buffers, &match_corr, signals, weights, sources.allocatedSlice(), &solver);

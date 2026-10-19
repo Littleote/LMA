@@ -3,146 +3,119 @@ const lma = @import("../../lma.zig");
 const Candidate = lma.pipeline.match.Candidate;
 const Signal = lma.data.Signal;
 
-const force_probe = false;
+pub const View = struct {
+    list: *const List,
+    epoch: u64,
 
-pub const Probe = struct {
-    data: *ProbeData,
-    current_epoch: u64 = 0,
-    signals: []const []const Signal = &.{},
-    out: [lma.constants.network.max_network]Candidate = undefined,
-
-    pub fn has(self: *Probe, reference: Candidate) bool {
-        return self.data.map.contains(self.key(reference));
+    pub fn get(self: View, reference: Candidate) ?Info {
+        return self.list.map.get(.fromCandidate(self.epoch, reference));
     }
 
-    pub fn get(self: *Probe, reference: Candidate, candidates: []const Candidate) ?[]Candidate {
-        const value = self.data.map.get(self.key(reference)) orelse return null;
-        if (self.data.flags.items[value.probe_id].valid) return null;
-        const entries = self.data.getEntries(value);
-        if (entries.len < 5) return null;
-        var idx: usize = 0;
-
-        for (entries) |entry| {
-            self.out[idx] = for (candidates) |candidate| {
-                if (entry.station == candidate.station and entry.subindex == candidate.index)
-                    break candidate;
-            } else if (force_probe)
-                .{ .station = entry.station, .index = entry.subindex, .nanosecond = self.signals[entry.station][entry.subindex].nanosecond, .mask = .unset }
-            else
-                continue;
-            idx += 1;
+    pub fn candidates(self: View, info: Info, reference: []const []const Signal, buffer: []Candidate) usize {
+        const entries = info.emissions.getConst(SignalId, self.list.signal_ids.items);
+        for (entries, buffer[0..entries.len]) |entry, *out| {
+            const ref = reference[entry.station][entry.index];
+            out.* = .{
+                .nanosecond = ref.nanosecond,
+                .index = entry.index,
+                .dBm = ref.dBm,
+                .station = entry.station,
+                .mask = .unset,
+            };
         }
-
-        if (idx < 5) return null;
-        self.data.flags.items[value.probe_id].probed = true;
-        return self.out[0..idx];
+        return entries.len;
     }
 
-    pub fn mark(self: *const Probe, reference: Candidate, comptime field: enum { valid, found }) void {
-        const value = self.data.map.get(self.key(reference)) orelse return;
-        @field(self.data.flags.items[value.probe_id], @tagName(field)) = true;
-    }
+    pub fn append(self: View, entries: []const SignalId) error{OutOfMemory}!u32 {
+        try self.list.map.ensureUnusedCapacity(self.list.allocator, entries.len);
+        try self.list.signal_ids.ensureUnusedCapacity(self.list.allocator, entries.len);
 
-    inline fn key(self: *const Probe, signal: Candidate) Key {
-        return .{ .epoch = self.current_epoch, .subindex = signal.index, .station = signal.station };
+        const info: Info = .{
+            .epoch = self.epoch,
+            .emissions = .init(@intCast(self.list.signal_ids.items.len), entries.len),
+            .probe_id = self.list.next_id(),
+        };
+        try self.list.signal_ids.appendSliceAssumeCapacity(self.list.allocator, entries);
+        for (entries) |entry| {
+            try self.list.map.putAssumeCapacity(.{.fromSignalId(self.epoch, entry)}, info);
+        }
     }
 };
 
-pub const ProbeData = struct {
-    allocator: std.mem.Allocator,
-    map: std.hash_map.AutoHashMapUnmanaged(Key, Value),
-    entries: std.ArrayList(Entry),
-    flags: std.ArrayList(Flags),
-
-    pub fn init(gpa: std.mem.Allocator) ProbeData {
-        return .{ .allocator = gpa, .map = .empty, .entries = .empty, .flags = .empty };
-    }
-
-    pub fn deinit(self: *ProbeData) void {
-        self.map.deinit(self.allocator);
-        self.entries.deinit(self.allocator);
-        {
-            var valid: u32 = 0;
-            var probed: u32 = 0;
-            var found: u32 = 0;
-            var valid_not_found: u32 = 0;
-            var probed_and_found: u32 = 0;
-            for (self.flags.items) |flags| {
-                probed += if (flags.probed) 1 else 0;
-                valid += if (flags.valid) 1 else 0;
-                valid_not_found += if (flags.valid and !flags.found) 1 else 0;
-                found += if (flags.found) 1 else 0;
-                probed_and_found += if (flags.found and flags.probed) 1 else 0;
-            }
-            std.log.info("Probes tested: {d}/{d}", .{ probed, self.flags.items.len });
-            std.log.info("Valid probes: {d}/{d}", .{ valid, probed });
-            std.log.info("Required probe: {d}/{d}", .{ valid_not_found, valid });
-            std.log.info("Redundant probes: {d}/{d}", .{ probed_and_found, probed });
-            std.log.info("Total redundant probes: {d}/{d}", .{ found, self.flags.items.len });
-        }
-        self.flags.deinit(self.allocator);
-    }
-
-    pub const ParseError = error{ ReadFailed, OutOfMemory, InvalidHeader, InvalidValue, BadFile, UnsupportedVersion };
-
-    pub fn fromDat(self: *ProbeData, r: *std.Io.Reader) ParseError!void {
-        self.innerFromDat(r) catch |e| return switch (e) {
+pub const dat = struct {
+    pub fn read(list: *List, r: *std.Io.Reader) lma.data.ParseError!void {
+        innerRead(list, r) catch |e| return switch (e) {
             else => |err| err,
             error.StreamTooLong => error.BadFile,
         };
     }
 
-    fn innerFromDat(self: *ProbeData, r: *std.Io.Reader) (error{StreamTooLong} || ParseError)!void {
+    fn innerRead(list: *List, r: *std.Io.Reader) (error{StreamTooLong} || lma.data.ParseError)!void {
         var probe_id: u32 = 0;
         while (try r.takeDelimiter('\n')) |line| {
             defer probe_id += 1;
             const epoch_str, const entries = std.mem.cutScalar(u8, line, ':') orelse return error.BadFile;
             const epoch = std.fmt.parseInt(u64, epoch_str, 10) catch return error.InvalidValue;
             const entry_count: u32 = @intCast(std.mem.countScalar(u8, entries, ';') + 1);
-            const start: u32 = @intCast(self.entries.items.len);
-            var n: u32 = 0;
+            const start: u32 = @intCast(list.signal_ids.items.len);
+            var n: u8 = 0;
             var iter = std.mem.splitScalar(u8, entries, ';');
-            try self.map.ensureUnusedCapacity(self.allocator, entry_count);
-            try self.entries.ensureUnusedCapacity(self.allocator, entry_count);
+            try list.signal_ids.ensureUnusedCapacity(list.allocator, 1);
+            try list.map.ensureUnusedCapacity(list.allocator, entry_count);
+            try list.signal_ids.ensureUnusedCapacity(list.allocator, entry_count);
             while (iter.next()) |entry_str| {
                 defer n += 1;
-                const station_str, const subindex_str = std.mem.cutScalar(u8, entry_str, ',') orelse return error.BadFile;
+                const station_str, const index_str = std.mem.cutScalar(u8, entry_str, ',') orelse return error.BadFile;
                 const station = (std.fmt.parseInt(u8, station_str, 10) catch return error.InvalidValue) - 1;
-                const subindex = std.fmt.parseInt(u16, subindex_str, 10) catch return error.InvalidValue;
-                self.map.putAssumeCapacity(
-                    .{ .epoch = epoch, .subindex = subindex, .station = station },
-                    .{ .subslice = .init(start + n, entry_count - n), .probe_id = probe_id },
+                const index = std.fmt.parseInt(u16, index_str, 10) catch return error.InvalidValue;
+                list.map.putAssumeCapacity(
+                    .{ .epoch = epoch, .index = index, .station = station },
+                    .{ .epoch = epoch, .emissions = .init(start, entry_count), .probe_id = probe_id },
                 );
-                self.entries.appendAssumeCapacity(.{ .subindex = subindex, .station = station });
+                list.signal_ids.appendAssumeCapacity(.{ .index = index, .station = station, .offset = n });
             }
         }
-        try self.flags.appendNTimes(self.allocator, .{}, probe_id);
-    }
-
-    pub fn getEntries(self: *const ProbeData, value: Value) []const Entry {
-        return value.subslice.getConst(Entry, self.entries.items);
     }
 };
 
-const Key = extern struct {
+pub const List = struct {
+    allocator: std.mem.Allocator,
+    map: std.hash_map.AutoHashMapUnmanaged(Key, Info),
+    signal_ids: std.ArrayList(SignalId),
+    range: struct { start: u64, end: u64 },
+
+    pub fn init(gpa: std.mem.Allocator) List {
+        return .{ .allocator = gpa, .map = .empty, .signal_ids = .empty, .range = .{ .start = 0, .end = 86400 } };
+    }
+
+    pub fn deinit(self: *List) void {
+        self.map.deinit(self.allocator);
+        self.signal_ids.deinit(self.allocator);
+    }
+};
+
+pub const Key = extern struct {
     epoch: u64,
-    subindex: u32,
+    index: u32,
     station: u8,
+
+    fn fromCandidate(epoch: u64, candidate: Candidate) Key {
+        return .{ .epoch = epoch, .index = candidate.index, .station = candidate.station };
+    }
+
+    fn signalId(self: Key) SignalId {
+        return .{ .index = self.index, .station = self.station };
+    }
 };
 
-const Value = extern struct {
-    subslice: lma.index.SubSlice,
+pub const Info = struct {
+    epoch: u64,
     probe_id: u32,
+    emissions: lma.index.SubSlice,
 };
 
-const Entry = struct {
-    subindex: u16,
+pub const SignalId = struct {
+    index: u32,
     station: u8,
-};
-
-const Flags = packed struct(u8) {
-    probed: bool = false,
-    valid: bool = false,
-    found: bool = false,
-    padding: u5 = 0,
+    offset: u8,
 };

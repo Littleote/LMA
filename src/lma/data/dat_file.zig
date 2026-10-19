@@ -640,7 +640,7 @@ pub const output = struct {
         start_epoch: u64,
         headers: u32,
         entries: u32,
-    ) ParseError!void {
+    ) (error{StreamTooLong} || ParseError)!void {
         while (try r.takeDelimiter('\n')) |line| {
             if (std.mem.startsWith(u8, line, "*** data ***")) {
                 @branchHint(.unpredictable);

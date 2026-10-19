@@ -34,7 +34,7 @@ const Data = union(Args.Stage) {
                 for (items) |item| {
                     if (tag != .clusters or !item.cluster.isNoise()) {
                         generator.array.appendAssumeCapacity(
-                            lma.pipeline.transform.surfaceToPlane(Float, item.point(), rotation),
+                            lma.pipeline.transform.surfaceToPlane(Float, item.gps(), rotation),
                         );
                     }
                 }

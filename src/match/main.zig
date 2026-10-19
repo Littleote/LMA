@@ -26,7 +26,7 @@ pub const max_distance = 200_000.0;
 pub const global_shift: u32 = 50_000_000;
 pub const max_matches: usize = @intFromFloat(1 + @ceil(max_distance / lma.constants.c / 0.000_080));
 
-pub var probe_data: ?match.probing.ProbeData = null;
+pub var probe_data: ?match.probing.List = null;
 
 pub fn correlation_size(dist: Float, step: match.Step) u32 {
     return 1 + 4 * lma.cast.to(u32, @round(@min(max_distance, dist) / lma.constants.c / step.step));
@@ -69,7 +69,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         defer file.close(io);
         var file_reader = file.reader(io, &rw_buffer);
         probe_data = .init(gpa);
-        probe_data.?.fromDat(&file_reader.interface) catch |err| {
+        match.probing.dat.read(&probe_data.?, &file_reader.interface) catch |err| {
             probe_data.?.deinit();
             probe_data = null;
             std.log.warn("Failed to parse probe file {q}. ({})", .{ probe_file, err });
@@ -223,6 +223,13 @@ pub fn main(init: std.process.Init.Minimal) void {
     };
     var output = result.points;
     defer output.deinit();
+
+    if (options.config.smooth != .disabled) switch (options.config.smooth) {
+        .disabled => unreachable,
+        .default => lma.data.Point.smooth(&output, gpa, .default) catch {
+            std.log.warn("Failed to smooth output, not enough memory, skipping this step.", .{});
+        },
+    };
 
     for (stations.stations.items, 0..) |*station, i| {
         const correction = lma.nano.toDelta(result.stats.stations[i].calibration());

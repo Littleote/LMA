@@ -24,7 +24,7 @@ const preference: enum { max_stations, min_chi_sq } = .min_chi_sq;
 pub const Config = struct {
     beam_search: ?match.search.BeamSearch.Options = null,
     depth_first_search: ?match.search.DepthFirstSearch.Options = null,
-    probe: ?*match.probing.Probe = null,
+    probe: ?match.probing.View = null,
     max_distance: Float = 250_000,
 };
 
@@ -63,15 +63,25 @@ pub fn solve(self: *ToaSolver, reference: match.Candidate, candidates: []const m
     self.masking = masking;
     self.buffer = .at(self.stations[reference.station], c * fromNano(reference.nanosecond));
 
-    var probe_found = false;
-    defer if (probe_found) self.config.probe.?.mark(reference, .found);
+    // var probe_info: ?match.probing.Info = null;
+    // defer if (self.config.probe) |probe| {
+    //     var buffer_signal: [max_network]match.probing.SignalId = undefined;
+    //     for (0..self.buffer.len) |idx| {
+    //         buffer_signal[idx] = .{
+    //             .index = self.buffer.entries[idx].index,
+    //             .station = self.buffer.entries[idx].station,
+    //             .offset = idx,
+    //         };
+    //     }
+    //     probe.append(buffer_signal[0..self.buffer.len]);
+    // };
 
-    if (self.config.probe) |probe| skip: {
-        probe_found = probe.has(reference);
-        const set = probe.get(reference, candidates) orelse break :skip;
-        if (self.solveSet(set, candidates)) |_|
-            probe.mark(reference, .valid);
-    }
+    // if (self.config.probe) |probe| skip: {
+    //     probe_info = probe.get(reference) orelse break :skip;
+    //     var probe_candidates: [max_network]match.Candidate = undefined;
+    //     const len = probe.candidates(probe_info, self.signals, &probe_candidates);
+    //     if (self.solveSet(probe_candidates[0..len], probe_candidates[0..len])) |_| {}
+    // }
 
     if (self.config.beam_search) |*config| {
         var iter: match.search.BeamSearch = .init(reference, candidates, self.search_buffer, options, config);
@@ -95,7 +105,7 @@ pub fn solve(self: *ToaSolver, reference: match.Candidate, candidates: []const m
                 return self.sourceToPoint(&source) orelse if (early_exit) null else continue;
         }
     }
-    probe_found = false;
+    // probe_info = false;
     return null;
 }
 
@@ -104,7 +114,7 @@ pub fn solveFromPoint(self: *ToaSolver, reference: match.Candidate, base_source:
     _ = self.buffer.append(&.{
         .point = math.vector.zero,
         .time = 0,
-        // .index = reference.index,
+        .index = reference.index,
         .dBm = reference.dBm,
         .station = reference.station,
         .mask = reference.mask,
@@ -435,7 +445,7 @@ const Buffer = struct {
         point: Vec,
         time: Float,
         err: Float = std.math.inf(Float),
-        // index: u16,
+        index: u32,
         dBm: f16,
         station: u8,
         mask: match.Candidate.MaybeBit,
@@ -521,7 +531,7 @@ fn bufferFromSet(self: *ToaSolver, signals: []const match.Candidate) void {
         _ = self.buffer.append(&.{
             .point = self.stations[signal.station] - self.buffer.ref_point,
             .time = c * fromNano(signal.nanosecond) - self.buffer.ref_time,
-            // .index = signal.index,
+            .index = signal.index,
             .dBm = signal.dBm,
             .station = signal.station,
             .mask = signal.mask,
@@ -545,7 +555,7 @@ fn bufferFromSource(self: *ToaSolver, source: *const Source, candidates: []const
             .point = point,
             .time = time,
             .err = err,
-            // .index = signal.index,
+            .index = signal.index,
             .dBm = signal.dBm,
             .station = signal.station,
             .mask = signal.mask,

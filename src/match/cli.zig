@@ -143,6 +143,11 @@ pub const command: nargs.Node(Options) = .build(opt.Groups, .any(.{ .name = "mat
             .description = "Decimation window in micro seconds (us).",
             .display = "WINDOW",
         }))),
+        .smooth = .build(opt.Named, .single(.choice, .{
+            .name = "smooth",
+            .description = "Smooth the generated sources.",
+            .display = "MODE",
+        })),
     })),
 }));
 
@@ -206,6 +211,7 @@ pub const Options = struct {
         search: Search,
         chunk: time.Seconds = .{ .seconds = if (@import("builtin").single_threaded) 24 * 60 * 60 else 60 },
         decimate: ?u32,
+        smooth: enum { disabled, default } = .disabled,
         verbose: bool,
 
         pub const Correlation = struct {

@@ -1,6 +1,6 @@
 .{
     .name = .lma,
-    .version = "0.1.0",
+    .version = "0.1.1+dev1",
     .fingerprint = 0x546aaf72f19c0241,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{

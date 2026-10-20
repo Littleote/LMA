@@ -96,7 +96,7 @@ pub const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "stations" 
     ),
 }));
 
-pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
+pub fn parse(io: std.Io, dir: std.Io.Dir, gpa: std.mem.Allocator, args: Cli) !void {
     var rw_buffer: [1024]u8 = undefined;
 
     var list: Station.List = .init(gpa);
@@ -105,7 +105,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
     for (args.inputs) |file| {
         const Extensions = enum { @".csv", @".gps", @".loc" };
         const extension = std.meta.stringToEnum(Extensions, std.fs.path.extension(file)) orelse return error.InvalidExtension;
-        const input = try std.Io.Dir.cwd().openFile(io, file, .{});
+        const input = try dir.openFile(io, file, .{});
         var file_reader = input.reader(io, &rw_buffer);
         switch (extension) {
             .@".csv" => try Station.csv.read(&list, &file_reader.interface, null),
@@ -129,7 +129,7 @@ pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
         idx += 1;
     };
 
-    const output = try std.Io.Dir.cwd().createFile(io, args.output, .{});
+    const output = try dir.createFile(io, args.output, .{});
     var file_writer = output.writer(io, &rw_buffer);
     try Station.csv.write(&list, &file_writer.interface, null);
 }

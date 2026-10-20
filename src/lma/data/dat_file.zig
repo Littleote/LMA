@@ -10,7 +10,7 @@ const cast = lma.cast;
 
 /// Helper function to parse u8 slice at idx as u16 little endian
 fn toNative(bytes: []align(@alignOf(u16)) u8) []u16 {
-    std.debug.assert(bytes.len % @alignOf(u16) == 0);
+    std.debug.assert(bytes.len % @sizeOf(u16) == 0);
     return switch (builtin.target.cpu.arch.endian()) {
         .little => @ptrCast(bytes),
         .big => swap: {
@@ -29,7 +29,7 @@ test toNative {
 
 pub const SignalParser = struct {
     const Signal = data.Signal;
-    const Signals = Signal.List;
+    const List = Signal.List;
     const log = std.log.scoped(lma.log.hierarchy.signal_file);
 
     pub const Error = error{ OutOfMemory, BadFile, UnsupportedVersion };
@@ -45,12 +45,12 @@ pub const SignalParser = struct {
 
     /// Load a Time of Arrival '.dat' file from a reader
     pub fn read(
+        list: *List,
         r: *Reader,
-        signals: *Signals,
         config: Config,
     ) (error{ReadFailed} || Error)!void {
         const buffer = r.allocRemainingAlignedSentinel(
-            signals.allocator,
+            list.allocator,
             .unlimited,
             .of(u16),
             null,
@@ -58,13 +58,16 @@ pub const SignalParser = struct {
             error.OutOfMemory, error.ReadFailed => |err| return err,
             error.StreamTooLong => unreachable,
         };
-        defer signals.allocator.free(buffer);
+        defer list.allocator.free(buffer);
 
-        if (buffer.len % @alignOf(u16) != 0) return error.BadFile;
+        if (buffer.len % @sizeOf(u16) != 0) {
+            log.err("Malformed or truncated file has length 0x{x}, not a multiple of 0x{x}.", .{ buffer.len, @sizeOf(u16) });
+            return error.BadFile;
+        }
 
         const parser: SignalParser = try .init(toNative(buffer), config);
 
-        try parser.parse(signals);
+        try parser.parse(list);
     }
 
     const latest_version = 13;
@@ -91,11 +94,14 @@ pub const SignalParser = struct {
                     return error.UnsupportedVersion;
                 }
             }
-        } else return error.BadFile;
+        } else {
+            log.err("No valid initial header found.", .{});
+            return error.BadFile;
+        }
     }
 
     /// Parse the given signal dat file
-    fn parse(self: SignalParser, signals: *Signals) error{ OutOfMemory, BadFile }!void {
+    fn parse(self: SignalParser, signals: *List) error{ OutOfMemory, BadFile }!void {
         const gpa = signals.allocator;
 
         const sections = try self.parseHeaders(gpa);
@@ -559,18 +565,18 @@ pub const output = struct {
     const log = std.log.scoped(lma.log.hierarchy.points_file);
 
     pub fn read(
-        r: *Reader,
         points: *Point.List,
+        r: *Reader,
     ) ParseError!void {
-        innerRead(r, points) catch |err| return switch (err) {
+        innerRead(points, r) catch |err| return switch (err) {
             else => |new_err| new_err,
             error.StreamTooLong => error.BadFile,
         };
     }
 
     fn innerRead(
-        r: *Reader,
         points: *Point.List,
+        r: *Reader,
     ) (error{StreamTooLong} || ParseError)!void {
         var start_time: ?u64 = null;
         var header_count: ?u32 = null;
@@ -606,24 +612,24 @@ pub const output = struct {
             }
         } else {
             @branchHint(.unlikely);
-            std.log.err("Missing data section", .{});
+            log.err("Missing data section", .{});
             return error.BadFile;
         }
 
         var missing = false;
         if (start_time == null) {
             @branchHint(.unlikely);
-            std.log.err("Missing data start time", .{});
+            log.err("Missing data start time", .{});
             missing = true;
         }
         if (header_count == null) {
             @branchHint(.unlikely);
-            std.log.err("Missing number of seconds", .{});
+            log.err("Missing number of seconds", .{});
             missing = true;
         }
         if (values_count == null) {
             @branchHint(.unlikely);
-            std.log.err("Missing number of events", .{});
+            log.err("Missing number of events", .{});
             missing = true;
         }
         if (missing) {
@@ -631,12 +637,12 @@ pub const output = struct {
             return error.InvalidHeader;
         }
 
-        try parsePoints(r, points, start_time.?, header_count.? + 1, values_count.?);
+        try parsePoints(points, r, start_time.?, header_count.? + 1, values_count.?);
     }
 
     pub fn readSkipPrologue(
-        r: *Reader,
         points: *Point.List,
+        r: *Reader,
         start_epoch: u64,
         headers: u32,
         entries: u32,
@@ -648,18 +654,18 @@ pub const output = struct {
             }
         } else {
             @branchHint(.unlikely);
-            std.log.err("Missing data section", .{});
+            log.err("Missing data section", .{});
             return error.BadFile;
         }
-        parsePoints(r, points, start_epoch, headers, entries) catch |e| return switch (e) {
+        parsePoints(points, r, start_epoch, headers, entries) catch |e| return switch (e) {
             else => |err| err,
             error.StreamTooLong => error.BadFile,
         };
     }
 
     fn parsePoints(
-        r: *Reader,
         points: *Point.List,
+        r: *Reader,
         start_epoch: u64,
         headers: u32,
         entries: u32,
@@ -713,31 +719,63 @@ pub const output = struct {
             current_value.measure_error = try getFloat(f16, it.next());
             current_value.dBW = try getFloat(f16, it.next());
             current_value.station_mask = try getInt(u32, it.next(), 2, 16);
+            head.size += 1;
         } else return;
         comptime unreachable;
     }
 
     pub fn write(
-        w: *Writer,
         points: *const data.Point.List,
-        stations: *const data.Station.List,
-        statistics: []const lma.pipeline.ToaSolver.Statistics,
+        w: *Writer,
+        header: WriteHeader,
     ) Writer.Error!void {
-        // Data start time: YY/MM/DD HH:MM:SS
-        // Number of seconds analyzed: ANALYSIS_TIME
+        if (header.command) |args| {
+            // Program invocation: CLI INVOCATION
+            try w.writeAll("Program invocation:");
+            for (args) |arg| {
+                try w.print(" {s}", .{arg});
+            }
+            try w.writeByte('\n');
+        }
+        if (header.version) |version| {
+            // Program version: VERSION
+            try w.print("Program version: {s}\n", .{version});
+        }
+        // File created: FORMATTED DATE
+        if (header.date) |date| {
+            // File created: FORMATTED DATE
+            try w.print("File created: {s}\n", .{date});
+        }
+        if (header.time) |time| {
+            // Data start time: YY/MM/DD HH:MM:SS
+            try w.print(
+                "Data start time: {[YY]d:0>2}/{[MM]d:0>2}/{[DD]d:0>2} {[hh]d:0>2}:{[mm]d:0>2}:{[ss]d:0>2}\n",
+                .{
+                    .YY = @as(u8, @intCast(@mod(time.year, 100))),
+                    .MM = time.month,
+                    .DD = time.day,
+                    .hh = time.hour,
+                    .mm = time.minute,
+                    .ss = time.second,
+                },
+            );
+            // Number of seconds analyzed: ANALYSIS_TIME
+            try w.print("Number of seconds analyzed: {d}\n", .{time.analyzed});
+        }
+
         // Location: NETWORK_NAME
-        try w.print("Location: {f}\n", .{stations.fmtNetwork("UNNAMED")});
+        try w.print("Location: {f}\n", .{header.network.fmtNetwork("UNNAMED")});
 
         // Coordinate center (lat,lon,alt): LATITUDE  LONGITUDE  DUMMY_ALTITUDE
         var network_xyz = lma.math(f64).vector.zero;
-        for (stations.stations.items) |station|
+        for (header.network.stations.items) |station|
             network_xyz += lma.pipeline.transform.gpsToXYZ(
                 f64,
                 .{ .elems = .{ station.latitude, station.longitude, station.altitude, 0 } },
             ).build();
         const center = lma.pipeline.transform.xyzToSurface(
             f64,
-            .init(network_xyz / lma.math(f64).vector.splat(cast.to(f64, stations.stations.items.len))),
+            .init(network_xyz / lma.math(f64).vector.splat(cast.to(f64, header.network.stations.items.len))),
         );
         try w.print(
             "Coordinate center (lat,lon,alt): {d:.8} {d:.8} -1000.00\n",
@@ -749,11 +787,11 @@ pub const output = struct {
         // Maximum light-time across LMA (ns): DIAMETER / C
 
         // Number of stations: STATIONS_LEN
-        try w.print("Number of stations: {d}\n", .{stations.stations.items.len});
+        try w.print("Number of stations: {d}\n", .{header.network.stations.items.len});
         // Number of active stations: SIZE_UNION_SETS
         var active_count: usize = 0;
         for (0..lma.constants.network.max_network) |idx| {
-            for (statistics) |stats| {
+            for (header.stats) |stats| {
                 if (stats.stations[idx].solutions != 0) {
                     active_count += 1;
                     break;
@@ -764,10 +802,10 @@ pub const output = struct {
 
         // Active stations: LETTER_SET_1 LETTER_SET_2 ...
         try w.writeAll("Active stations:");
-        for (statistics) |stats| {
+        for (header.stats) |stats| {
             try w.writeByte(' ');
             for (stats.stations, 0..) |station, idx| {
-                if (station.solutions != 0) try w.writeByte(stations.stations.items[idx].stationLetter());
+                if (station.solutions != 0) try w.writeByte(header.network.stations.items[idx].stationLetter());
             }
         }
         try w.writeByte('\n');
@@ -781,7 +819,7 @@ pub const output = struct {
         try w.writeAll(
             "Station information: id, name, lat(d), lon(d), alt(m), delay(ns), board_rev, rec_ch\n",
         );
-        for (stations.stations.items) |station| {
+        for (header.network.stations.items) |station| {
             try w.print("Sta_info: {c}  {s: <16}  {d: >11.7}  {d: >11.7}  {d: >7.2}  {d: >3.0} {d: >1} {d: >2}\n", .{
                 station.stationLetter(),
                 station.name,
@@ -797,8 +835,8 @@ pub const output = struct {
         // Station data: id, name, win(us), data_ver, rms_error(ns), sources, %, <P/P_m>, active
         // Sta_data: LETTER  NAME  WINDOW(80)_OR_0  VERSION(12)_OR_0  RMS(40)_OR_0  SOLUTIONS  SOLUTIONS % TOTAL_SOLUTIONS  ???  ACTIVE(A)_OR_NA
         try w.writeAll("Station data: id, name, win(us), data_ver, rms_error(ns), sources, %, <P/P_m>, active\n");
-        for (statistics) |stats| {
-            for (stations.stations.items, 0..) |station, idx| {
+        for (header.stats) |stats| {
+            for (header.network.stations.items, 0..) |station, idx| {
                 const info = stats.stations[idx];
                 const active = info.solutions != 0;
                 try w.print("Sta_data: {c}  {s: <16}  {d: >4}  {d: >4}  {d: >3}  {d: >7}  {d: >4.1}  {d: >4.2}  {s: >2}\n", .{
@@ -817,7 +855,7 @@ pub const output = struct {
 
         // Station mask order: REVERSE_STATIONS_LETTER_SET
         try w.writeAll("Station mask order: ");
-        var station_iter = std.mem.reverseIterator(stations.stations.items);
+        var station_iter = std.mem.reverseIterator(header.network.stations.items);
         while (station_iter.next()) |station| {
             try w.writeByte(station.stationLetter());
         }
@@ -828,7 +866,7 @@ pub const output = struct {
         try w.writeAll("Data format: 15.9f 12.8f 13.8f 9.2f 6.2f 5.1f 10x\n");
         // Number of events: SOLUTIONS
         var solutions: usize = 0;
-        for (statistics) |stats| solutions += stats.counts.out_solutions;
+        for (header.stats) |stats| solutions += stats.counts.out_solutions;
         try w.print("Number of events: {d}\n", .{solutions});
 
         try w.writeAll("*** data ***\n");
@@ -850,6 +888,27 @@ pub const output = struct {
         try w.flush();
     }
 
+    pub const WriteHeader = struct {
+        network: *const data.Station.List,
+        stats: []const lma.pipeline.ToaSolver.Statistics,
+        time: ?Time = null,
+        date: ?[]const u8 = null,
+        version: ?[]const u8 = null,
+        command: ?[]const []const u8 = null,
+
+        pub const Time = struct {
+            year: i16,
+            month: u8,
+            day: u8,
+
+            hour: u8,
+            minute: u8,
+            second: u8,
+
+            analyzed: u32,
+        };
+    };
+
     inline fn getFloat(Float: type, s: ?[]const u8) error{ BadFile, InvalidValue }!Float {
         return std.fmt.parseFloat(Float, std.mem.trim(u8, try unwrapToken(s), " ")) catch {
             log.err("Value {q} is not a valid number", .{s.?});
@@ -866,7 +925,7 @@ pub const output = struct {
             );
             return error.InvalidValue;
         }
-        const slice_start = unwrapped.len +% @as(usize, @bitCast(start));
+        const slice_start: usize = if (start < 0) lma.index.offset(usize, unwrapped.len, start) else @intCast(start);
         return std.fmt.parseInt(Int, unwrapped[slice_start..], base) catch {
             const info = @typeInfo(Int).int;
             log.err(

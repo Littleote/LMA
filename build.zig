@@ -214,19 +214,19 @@ fn parseDemo(b: *std.Build, step: *std.Build.Step, exe: *std.Build.Step.Compile)
 
     if (stage.signals) {
         const run = b.addRunArtifact(exe);
-        run.addArgs(&.{ "signals", "-i=data/signals/" ++ date.date ++ "/sources" });
+        run.addArgs(&.{ "signals", "--path=data/signals/" ++ date.date, "-i=sources/*_*_*_" ++ date.date ++ "_" ++ date.time ++ ".dat" });
         run.addPassthruArgs();
         step.dependOn(&run.step);
     }
     if (stage.points) {
         const run = b.addRunArtifact(exe);
-        run.addArgs(&.{ "points", "-i=data/points/" ++ date.date ++ "/output", "-s=data/stations" });
+        run.addArgs(&.{ "points", "--path=data/points/" ++ date.date, "-i=output/*_" ++ date.date ++ "_" ++ date.time ++ "_*.dat*" });
         run.addPassthruArgs();
         step.dependOn(&run.step);
     }
     if (stage.clusters) {
         const run = b.addRunArtifact(exe);
-        run.addArgs(&.{ "clusters", "-i=data/lightnings/" ++ date.date ++ "/XCALMA_" ++ date.date ++ ".csv" });
+        run.addArgs(&.{ "clusters", "--path=data/lightnings/" ++ date.date, "-i=XCALMA_" ++ date.date ++ ".csv" });
         run.addPassthruArgs();
         step.dependOn(&run.step);
     }

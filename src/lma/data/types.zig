@@ -4,6 +4,7 @@ const Writer = std.Io.Writer;
 const lma = @import("../lma.zig");
 const segmented = lma.data.segmented;
 const cast = lma.cast;
+const dat_file = lma.data.dat_file;
 
 const ParseError = error{InvalidValue};
 const ParseConfig = union {
@@ -94,6 +95,11 @@ pub const Signal = extern struct {
     pub const bin = segmented.bin(@This(), .{
         .tag = "signal",
     });
+
+    // Dat format elements
+    pub const dat = struct {
+        pub const read = dat_file.SignalParser.read;
+    };
 
     pub fn decimate(list: *List, window: lma.nano.Nano) void {
         var start: u32 = 0;
@@ -316,6 +322,12 @@ pub const Point = extern struct {
     pub const bin = segmented.bin(@This(), .{
         .tag = "point",
     });
+
+    // Dat format elements
+    pub const dat = struct {
+        pub const read = dat_file.output.read;
+        pub const write = dat_file.output.write;
+    };
 
     pub const smooth = smoothing.apply;
 

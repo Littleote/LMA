@@ -11,6 +11,8 @@ const files = @import("files.zig");
 const runner = @import("runner.zig");
 const cli = @import("cli.zig");
 
+const match_info = @import("info.zon");
+
 pub const std_options: std.Options = .{
     .log_scope_levels = &.{
         .{ .level = .warn, .scope = lma.log.scopes.signal_file },
@@ -88,7 +90,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         };
         defer file.close(io);
         var file_reader = file.reader(io, &rw_buffer);
-        files.loadStations(&stations, net, &file_reader.interface) catch |err| switch (err) {
+        files.stations.readAppend(&stations, net, &file_reader.interface) catch |err| switch (err) {
             error.Logged => continue,
             error.ReadFailed => {
                 std.log.err("Failed to read station/network file {q}. ({})", .{ net, file_reader.err orelse error.Unknown });
@@ -183,20 +185,22 @@ pub fn main(init: std.process.Init.Minimal) void {
         }
     }
 
-    if (active_stations < network.min_consensus) {
+    if (active_stations < options.config.search.consensus) {
         std.log.err(
             "Insufficient loaded stations in the network ({d}/{d}). Minimum is {d}.",
-            .{ active_stations, count, network.min_consensus },
+            .{ active_stations, count, options.config.search.consensus },
         );
         std.process.exit(1);
     }
 
-    const start_time = (options.time.start orelse options.time.hour).toSeconds();
-    const end_time = switch (options.time.ending) {
+    const time_date = options.time.date;
+    const time_start = options.time.start orelse options.time.hour;
+    const second_start = time_start.toSeconds();
+    const second_end = switch (options.time.ending) {
         .end => |end| end.toSeconds(),
-        .total => |total| start_time + total.seconds,
+        .total => |total| second_start + total.seconds,
     };
-    const analysed = end_time - start_time;
+    const analysed = second_end - second_start;
 
     var out_dir: std.Io.Dir = if (options.files.out_dir) |dir| std.Io.Dir.cwd().createDirPathOpen(io, dir, .{}) catch |e| switch (e) {
         error.Canceled => unreachable,
@@ -217,7 +221,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     ) catch @panic("OOM");
     defer gpa.free(default_out_file);
 
-    const result = runner.run(io, gpa, station_points, signal_lists, options.config, .init(start_time, analysed)) catch |err| switch (err) {
+    const result = runner.run(io, gpa, station_points, signal_lists, options.config, .init(second_start, analysed)) catch |err| switch (err) {
         error.Canceled => unreachable,
         error.OutOfMemory => @panic("OOM"),
     };
@@ -241,12 +245,30 @@ pub fn main(init: std.process.Init.Minimal) void {
     else
         options.files.outputs;
 
+    const out_extra: files.points.Extra = .{ .dat = .{
+        .network = &stations,
+        .stats = (&result.stats)[0..1],
+        .time = .{
+            .year = time_date.year,
+            .month = time_date.month,
+            .day = time_date.day,
+
+            .hour = time_start.hour,
+            .minute = time_start.minute,
+            .second = time_start.second,
+
+            .analyzed = analysed,
+        },
+        .version = match_info.name ++ "-" ++ match_info.version,
+    } };
+
     for (out_files) |out| {
         const err: anyerror = skip: {
             const file = out_dir.createFile(io, out, .{}) catch |err| break :skip err;
             defer file.close(io);
             var file_writer = file.writer(io, &rw_buffer);
-            files.savePoints(&output, &stations, (&result.stats)[0..1], out, &file_writer.interface) catch |err| break :skip err;
+            //, &stations, (&result.stats)[0..1]
+            files.points.write(&output, &file_writer.interface, out, out_extra) catch |err| break :skip err;
             continue;
         };
         std.log.warn("Failed to write to file {q}. ({})", .{ out, err });
@@ -302,7 +324,8 @@ pub fn loadStation(
         if (std.mem.eql(u8, info.name, name)) {
             if (!signal_lists[idx].empty()) return error.DuplicateStation;
             const delay: u32 = lma.index.offset(u32, global_shift, info.delay);
-            try files.loadSignals(&signal_lists[idx], basename, reader);
+
+            try files.signals.read(&signal_lists[idx], basename, reader);
 
             if (opt.config.decimate) |window| {
                 const us_per_nano = @divExact(lma.nano.ratio, std.time.us_per_s);

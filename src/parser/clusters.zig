@@ -18,28 +18,23 @@ const Delimiter = enum(u8) {
 };
 
 pub const Cli = struct {
-    path: []const u8,
+    input: []const u8,
     delimiter: Delimiter,
 };
 
 pub const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "clusters" }, .{
-    .path = .build(opt.Named, .single(.string, .{ .name = "input", .description = "Input '.dat' file.", .short = .auto })),
+    .input = .build(opt.Named, .single(.string, .{ .name = "input", .description = "Input '.dat' file.", .short = .auto })),
     .delimiter = .build(opt.Named, .single(.choice, .{ .name = "delimiter", .description = "CSV file delimiter.", .default = .init(.space, null) })),
 }));
 
-pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
+pub fn parse(io: std.Io, dir: std.Io.Dir, gpa: std.mem.Allocator, args: Cli) !void {
     const delimiter = @backingInt(args.delimiter);
 
     // Input file
-    const file = try std.Io.Dir.cwd().openFile(io, args.path, .{ .mode = .read_only });
+    const file = try dir.openFile(io, args.input, .{ .mode = .read_only });
     defer file.close(io);
     var buffer: [4096]u8 = undefined;
     var file_reader = file.reader(io, &buffer);
-
-    // Open directories
-    const dir_path = std.Io.Dir.path.dirname(args.path) orelse "../";
-    var dir = try std.Io.Dir.cwd().openDir(io, dir_path, .{});
-    defer dir.close(io);
 
     // Output CSV directory
     SaveInfo.csv_dir = try dir.createDirPathOpen(io, "csv", .{});

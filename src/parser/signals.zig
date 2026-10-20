@@ -5,8 +5,6 @@ const Signal = lma.data.Signal;
 const nargs = @import("nargs");
 const opt = nargs.options;
 
-const utils = @import("utils.zig");
-
 pub const std_options: std.Options = .{
     .log_scope_levels = &.{
         .{ .level = .debug, .scope = lma.log.scopes.signal_file },
@@ -19,87 +17,98 @@ pub const Cli = struct {
         skip: bool,
     };
 
-    path: []const u8,
+    input: nargs.params.io.Glob.Pattern,
     csv: Output,
     bin: Output,
 };
 
 pub const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "signals" }, .{
-    .path = .build(opt.Named, .single(.string, .{ .name = "input", .description = "Input folder with the '.dat' files.", .short = .auto })),
+    .input = .build(opt.Named, .single(.wrap(nargs.params.io.Glob), .{ .name = "input", .description = "Input '.dat' files.", .short = .auto })),
     .csv = .build(opt.Groups, .any(.{ .name = "CSV", .show = .hidden }, .{
         .path = .build(opt.Named, .single(.string, .{
             .name = "csv",
-            .description = "Output folder for the '.csv' files (relative to input directory).",
-            .default = .init("../csv", null),
+            .description = "Output folder for the '.csv' files (relative to the given directory).",
+            .default = .init("csv", null),
         })),
         .skip = opt.flags.Flag(.{ .name = "skip-csv", .description = "Skip generating '.csv' files.", .set = .no_prefix }),
     })),
     .bin = .build(opt.Groups, .any(.{ .name = "BIN", .show = .hidden }, .{
         .path = .build(opt.Named, .single(.string, .{
             .name = "bin",
-            .description = "Output folder for the '.bin' files (relative to input directory).",
-            .default = .init("../bin", null),
+            .description = "Output folder for the '.bin' files (relative to the given directory).",
+            .default = .init("bin", null),
         })),
         .skip = opt.flags.Flag(.{ .name = "skip-bin", .description = "Skip generating '.bin' files.", .set = .no_prefix }),
     })),
 }));
 
-pub fn parse(io: std.Io, gpa: std.mem.Allocator, args: Cli) !void {
+pub fn parse(io: std.Io, cwd: std.Io.Dir, gpa: std.mem.Allocator, args: Cli) !void {
+    var rw_buffer: [1024]u8 = undefined;
+
+    var file_name: std.Io.Writer.Allocating = .init(gpa);
+    defer file_name.deinit();
+
     // Input directory
-    const dat_dir = try std.Io.Dir.cwd().openDir(io, args.path, .{ .iterate = true });
-    defer dat_dir.close(io);
+    var inputs = try args.input.iterator(io, cwd);
+    defer inputs.deinit();
 
     // Output CSV directory
-    const csv_dir: ?std.Io.Dir = if (args.csv.skip) null else try dat_dir.createDirPathOpen(io, args.csv.path, .{});
-    defer if (csv_dir) |dir| dir.close(io);
+    const csv_dir: ?std.Io.Dir = if (args.csv.skip) null else try cwd.createDirPathOpen(io, args.csv.path, .{});
+    defer if (csv_dir) |csv| csv.close(io);
 
     // Output BIN directory
-    const bin_dir: ?std.Io.Dir = if (args.bin.skip) null else try dat_dir.createDirPathOpen(io, args.bin.path, .{});
-    defer if (bin_dir) |dir| dir.close(io);
+    const bin_dir: ?std.Io.Dir = if (args.bin.skip) null else try cwd.createDirPathOpen(io, args.bin.path, .{});
+    defer if (bin_dir) |bin| bin.close(io);
 
     // Iterate for all test source files
-    var iterator = dat_dir.iterate();
-    while (try iterator.next(io)) |entry| {
-        if (!std.mem.endsWith(u8, entry.name, ".dat")) {
-            std.log.err("Unrecognized file type {q}", .{entry.name});
-            continue;
-        }
-
-        var buffer: [1024]u8 = undefined;
+    while (try inputs.next()) |entry| {
         var data: Signal.List = .init(gpa);
         defer data.deinit();
+
         {
             // Parse source file
-            const file = try dat_dir.openFile(
-                io,
-                entry.name,
-                .{ .mode = .read_only },
-            );
+            const extension = std.fs.path.extension(entry.basename);
+            const file = try entry.dir.openFile(io, entry.basename, .{ .mode = .read_only });
             defer file.close(io);
-            var file_reader = file.reader(io, &buffer);
-            try lma.data.dat_file.SignalParser.read(&file_reader.interface, &data, .{});
+            var file_reader = file.reader(io, &rw_buffer);
+            const result = if (std.ascii.eqlIgnoreCase(extension, ".dat"))
+                Signal.dat.read(&data, &file_reader.interface, .{})
+            else if (std.ascii.eqlIgnoreCase(extension, ".csv"))
+                Signal.csv.read(&data, &file_reader.interface, null)
+            else if (std.ascii.eqlIgnoreCase(extension, ".bin"))
+                Signal.bin.read(&data, &file_reader.interface)
+            else {
+                std.log.warn("Unrecognized file type {q}", .{entry.basename});
+                continue;
+            };
+
+            result catch |e| {
+                switch (e) {
+                    error.ReadFailed => std.log.warn("Failed to read signal file {q}. ({})", .{ entry.basename, file_reader.err orelse error.Unknown }),
+                    else => |err| std.log.err("Failed to parse signal file {q}. ({})", .{ entry.basename, err }),
+                }
+                continue;
+            };
         }
 
-        if (csv_dir) |dir| {
+        if (csv_dir) |out_dir| {
             // Save as CSV
-            const name = try gpa.dupe(u8, entry.name);
-            defer gpa.free(name);
-            @memcpy(name[name.len - 3 ..], "csv");
-            const csv = try dir.createFile(io, name, .{});
+            file_name.clearRetainingCapacity();
+            try file_name.writer.print("{s}.csv", .{std.fs.path.stem(entry.basename)});
+            const csv = try out_dir.createFile(io, file_name.written(), .{});
             defer csv.close(io);
-            var file_writer = csv.writer(io, &buffer);
+            var file_writer = csv.writer(io, &rw_buffer);
 
             try Signal.csv.write(&data, &file_writer.interface, null);
         }
 
-        if (bin_dir) |dir| {
+        if (bin_dir) |out_dir| {
             // Save as BIN
-            const name = try gpa.dupe(u8, entry.name);
-            defer gpa.free(name);
-            @memcpy(name[name.len - 3 ..], "bin");
-            const bin = try dir.createFile(io, name, .{});
+            file_name.clearRetainingCapacity();
+            try file_name.writer.print("{s}.bin", .{std.fs.path.stem(entry.basename)});
+            const bin = try out_dir.createFile(io, file_name.written(), .{});
             defer bin.close(io);
-            var file_writer = bin.writer(io, &buffer);
+            var file_writer = bin.writer(io, &rw_buffer);
             try Signal.bin.write(&data, &file_writer.interface);
         }
     }

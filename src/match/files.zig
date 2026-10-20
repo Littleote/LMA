@@ -14,180 +14,154 @@ pub const WriteError = error{ WriteFailed, InvalidExtension };
 
 const Compression = enum { gz, GZ, gzip, GZIP };
 
-pub fn load(
-    Type: type,
-    data: *Type,
-    Format: type,
-    functions: std.EnumArray(Format, fn (*Type, *Reader) ParseError!void),
-    file_name: []const u8,
-    r: *Reader,
-    comptime allow_compression: bool,
-) error{ ReadFailed, Logged }!void {
-    const basename = std.fs.path.basename(file_name);
-    return innerLoad(Type, data, Format, functions, basename, r, allow_compression) catch |e| switch (e) {
-        error.ReadFailed => |err| return err,
-        error.OutOfMemory => {
-            std.log.err("Ran out of memory while reading file {s}.", .{file_name});
-            @panic("OOM");
-        },
-        else => |err| {
-            std.log.err("Unable to read file {q} {s}.", .{ file_name, switch (err) {
-                error.InvalidHeader => "because of an invalid header",
-                error.InvalidValue => "because of an invalid value",
-                error.BadFile => "because the file is malformed",
-                error.UnsupportedVersion => "because the version is not supported",
-                error.InvalidExtension => "because it has an unknown file extension",
-            } });
-            return error.Logged;
-        },
-    };
+const err_msg = struct {
+    const parsing = "Failed to parse {s} file {q}. ({})";
+    const unpacking = "Failed to unpack {s} file {q}. ({})";
+    const extension = "Unrecongnized file extension {q} for {s} file {q}.";
+    const oom = "Ran out of memory while reading {s} file {s}.";
+};
+
+fn FnArgs(Fn: type, comptime start: comptime_int) type {
+    const maybe_args = @typeInfo(Fn).@"fn".param_types[start..];
+    var args: [maybe_args.len]type = undefined;
+    for (maybe_args, &args) |maybe_arg, *arg| arg.* = maybe_arg.?;
+    return @Tuple(&args);
 }
 
-pub fn innerLoad(
-    Type: type,
-    data: *Type,
-    Format: type,
-    functions: std.EnumArray(Format, fn (*Type, *Reader) ParseError!void),
-    basename: []const u8,
-    r: *Reader,
-    comptime allow_compression: bool,
-) (error{InvalidExtension} || ParseError)!void {
-    const stem, const suffix = std.mem.cutScalarLast(u8, basename, '.') orelse .{ basename, "" };
-    if (std.meta.stringToEnum(Format, suffix)) |format| {
-        switch (format) {
-            inline else => |comptime_format| {
-                const fun = comptime functions.get(comptime_format);
-                try fun(data, r);
-            },
+pub const stations = struct {
+    const file_type = "station/network";
+    pub fn readAppend(list: *Station.List, file_name: []const u8, r: *Reader) error{ Logged, ReadFailed }!void {
+        const extension = std.fs.path.extension(file_name);
+        if (std.ascii.eqlIgnoreCase(extension, ".csv"))
+            try readAppendCall(list, r, file_name, Station.csv.read, .{null})
+        else if (std.ascii.eqlIgnoreCase(extension, ".gps"))
+            try readAppendCall(list, r, file_name, Station.fromGps, .{})
+        else if (std.ascii.eqlIgnoreCase(extension, ".loc"))
+            try readAppendCall(list, r, file_name, Station.fromLoc, .{})
+        else {
+            std.log.warn(err_msg.extension, .{ extension, file_type, file_name });
+            return error.Logged;
         }
-    } else {
-        if (allow_compression) if (std.meta.stringToEnum(Compression, suffix)) |format| switch (format) {
-            .gz, .GZ, .gzip, .GZIP => {
-                var flate_buffer: [std.compress.flate.max_window_len]u8 = undefined;
-                var flate: std.compress.flate.Decompress = .init(r, .gzip, &flate_buffer);
-                return innerLoad(Type, data, Format, functions, stem, &flate.reader, false) catch |e| switch (e) {
-                    error.ReadFailed => {
-                        if (flate.err == null or flate.err.? == error.ReadFailed) return error.ReadFailed;
-                        return error.BadFile;
-                    },
-                    else => |err| return err,
-                };
+    }
+
+    fn readAppendCall(list: *Station.List, r: *Reader, file_name: []const u8, func: anytype, args: FnArgs(@TypeOf(func), 2)) error{ Logged, ReadFailed }!void {
+        @call(.auto, func, .{ list, r } ++ args) catch |e| switch (e) {
+            error.ReadFailed => |err| return err,
+            error.OutOfMemory => {
+                std.log.err(err_msg.oom, .{ file_type, file_name });
+                @panic("OOM");
+            },
+            else => |err| {
+                std.log.err(err_msg.parsing, .{ file_type, file_name, err });
+                return error.Logged;
             },
         };
-        return error.InvalidExtension;
     }
-}
+};
 
-pub fn loadStations(stations: *lma.data.Station.List, file_name: []const u8, reader: *Reader) error{ ReadFailed, Logged }!void {
-    const Enum = enum {
-        csv,
-        gps,
-        loc,
+pub const signals = struct {
+    const file_type = "signal";
+    pub fn read(list: *Signal.List, file_name: []const u8, r: *Reader) error{ Logged, ReadFailed }!void {
+        std.debug.assert(list.headers.items.len == 0);
+        std.debug.assert(list.array.items.len == 0);
 
-        pub fn fromCsv(data: *lma.data.Station.List, r: *Reader) ParseError!void {
-            try lma.data.Station.csv.read(data, r, null);
+        try innerRead(list, file_name, r, true);
+    }
+
+    fn innerRead(list: *Signal.List, file_name: []const u8, r: *Reader, comptime gzip: bool) error{ Logged, ReadFailed }!void {
+        std.debug.assert(list.headers.items.len == 0);
+        std.debug.assert(list.array.items.len == 0);
+
+        const extension = std.fs.path.extension(file_name);
+        if (gzip and
+            (std.ascii.eqlIgnoreCase(extension, ".gz") or
+                std.ascii.eqlIgnoreCase(extension, ".gzip")))
+        {
+            var gzip_buffer: [std.compress.flate.max_window_len]u8 = undefined;
+            var flate: std.compress.flate.Decompress = .init(r, .gzip, &gzip_buffer);
+
+            return innerRead(list, std.fs.path.stem(file_name), &flate.reader, false) catch |e| switch (e) {
+                error.Logged => |err| return err,
+                error.ReadFailed => {
+                    switch (flate.err.?) {
+                        error.ReadFailed => |err| return err,
+                        else => |err| {
+                            std.log.err(err_msg.unpacking, .{ file_type, file_name, err });
+                            return error.Logged;
+                        },
+                    }
+                },
+            };
+        } else if (std.ascii.eqlIgnoreCase(extension, ".dat"))
+            try readCall(list, r, file_name, Signal.dat.read, .{.{}})
+        else if (std.ascii.eqlIgnoreCase(extension, ".bin"))
+            try readCall(list, r, file_name, Signal.bin.read, .{})
+        else if (std.ascii.eqlIgnoreCase(extension, ".csv"))
+            try readCall(list, r, file_name, Signal.csv.read, .{null})
+        else {
+            std.log.warn(err_msg.extension, .{ extension, file_type, file_name });
+            return error.Logged;
         }
+    }
 
-        pub fn fromGps(data: *lma.data.Station.List, r: *Reader) ParseError!void {
-            try lma.data.Station.fromGps(data, r);
-        }
+    fn readCall(list: *Signal.List, r: *Reader, file_name: []const u8, func: anytype, args: FnArgs(@TypeOf(func), 2)) error{ Logged, ReadFailed }!void {
+        @call(.auto, func, .{ list, r } ++ args) catch |e| switch (e) {
+            error.ReadFailed => |err| return err,
+            error.OutOfMemory => {
+                std.log.err(err_msg.oom, .{ file_type, file_name });
+                @panic("OOM");
+            },
+            else => |err| {
+                std.log.err(err_msg.parsing, .{ "station/network", file_name, err });
+                return error.Logged;
+            },
+        };
+    }
+};
 
-        pub fn fromLoc(data: *lma.data.Station.List, r: *Reader) ParseError!void {
-            try lma.data.Station.fromLoc(data, r);
-        }
+pub const points = struct {
+    const file_type = "points";
+    pub fn write(list: *Point.List, w: *Writer, file_name: []const u8, extra: Extra) error{ Logged, WriteFailed }!void {
+        try innerWrite(list, w, file_name, extra, true);
+    }
 
-        pub fn unimplemented(_: *lma.data.Station.List, _: *Reader) ParseError!void {
-            @panic("Not yet implemented");
-        }
-    };
+    fn innerWrite(list: *Point.List, w: *Writer, file_name: []const u8, extra: Extra, comptime gzip: bool) error{ Logged, WriteFailed }!void {
+        const extension = std.fs.path.extension(file_name);
+        if (gzip and
+            (std.ascii.eqlIgnoreCase(extension, ".gz") or
+                std.ascii.eqlIgnoreCase(extension, ".gzip")))
+        {
+            var gzip_buffer: [std.compress.flate.max_window_len]u8 = undefined;
+            var flate: std.compress.flate.Compress = try .init(w, &gzip_buffer, .gzip, .default);
 
-    try load(
-        lma.data.Station.List,
-        stations,
-        Enum,
-        .init(.{
-            .csv = Enum.fromCsv,
-            .gps = Enum.fromGps,
-            .loc = Enum.fromLoc,
-        }),
-        file_name,
-        reader,
-        false,
-    );
-}
-
-pub fn loadSignals(signals: *Signal.List, file_name: []const u8, reader: *Reader) error{ ReadFailed, Logged }!void {
-    const Enum = enum {
-        csv,
-        bin,
-        dat,
-
-        pub fn fromCsv(data: *Signal.List, r: *Reader) ParseError!void {
-            try Signal.csv.read(data, r, null);
-        }
-
-        pub fn fromBin(data: *Signal.List, r: *Reader) ParseError!void {
-            try Signal.bin.read(data, r);
-        }
-
-        pub fn fromDat(data: *Signal.List, r: *Reader) ParseError!void {
-            try lma.data.dat_file.SignalParser.read(r, data, .{});
-        }
-    };
-
-    try load(
-        Signal.List,
-        signals,
-        Enum,
-        .init(.{
-            .csv = Enum.fromCsv,
-            .bin = Enum.fromBin,
-            .dat = Enum.fromDat,
-        }),
-        file_name,
-        reader,
-        true,
-    );
-}
-
-pub fn savePoints(data: *Point.List, aux_stations: *const Station.List, aux_statistics: []const lma.pipeline.ToaSolver.Statistics, file_name: []const u8, w: *std.Io.Writer) WriteError!void {
-    try innerSavePoints(data, aux_stations, aux_statistics, std.fs.path.basename(file_name), w, true);
-}
-
-inline fn innerSavePoints(data: *Point.List, aux_stations: *const Station.List, aux_statistics: []const lma.pipeline.ToaSolver.Statistics, basename: []const u8, w: *std.Io.Writer, comptime allow_compression: bool) WriteError!void {
-    const stem, const suffix = std.mem.cutScalarLast(u8, basename, '.') orelse .{ basename, "" };
-    const extension: Extension = .parse(suffix);
-    switch (extension) {
-        .csv => try Point.csv.write(data, w, null),
-        .bin => try Point.bin.write(data, w),
-        .dat => try lma.data.dat_file.output.write(w, data, aux_stations, aux_statistics),
-        .gz => {
-            if (!allow_compression) return error.InvalidExtension;
-            var flate_buffer: [std.compress.flate.max_window_len]u8 = undefined;
-            var flate: std.compress.flate.Compress = try .init(w, &flate_buffer, .gzip, .default);
-            try innerSavePoints(data, aux_stations, aux_statistics, stem, &flate.writer, false);
+            innerWrite(list, &flate.writer, std.fs.path.stem(file_name), extra, false) catch |e| switch (e) {
+                error.Logged => |err| return err,
+                // error.WriteFailed is always due to the backing writer
+                error.WriteFailed => return error.WriteFailed,
+            };
             try flate.finish();
             try w.flush();
-        },
-        .unknown => return error.InvalidExtension,
-    }
-}
-
-const Extension = enum {
-    csv,
-    bin,
-    dat,
-    gz,
-    unknown,
-
-    pub fn parse(extension: []const u8) Extension {
-        return map.get(extension) orelse .unknown;
+        } else if (std.ascii.eqlIgnoreCase(extension, ".dat"))
+            try writeCall(list, w, file_name, Point.dat.write, .{extra.dat})
+        else if (std.ascii.eqlIgnoreCase(extension, ".bin"))
+            try writeCall(list, w, file_name, Point.bin.write, .{})
+        else if (std.ascii.eqlIgnoreCase(extension, ".csv"))
+            try writeCall(list, w, file_name, Point.csv.write, .{null})
+        else {
+            std.log.warn(err_msg.extension, .{ extension, file_type, file_name });
+            return error.Logged;
+        }
     }
 
-    const map: std.StaticStringMap(Extension) = .initComptime(.{
-        .{ "csv", .csv },
-        .{ "bin", .bin },
-        .{ "dat", .dat },
-        .{ "gz", .gz },
-    });
+    fn writeCall(list: *Point.List, w: *Writer, file_name: []const u8, func: anytype, args: FnArgs(@TypeOf(func), 2)) error{ Logged, WriteFailed }!void {
+        _ = file_name;
+
+        @call(.auto, func, .{ list, w } ++ args) catch |e| switch (e) {
+            error.WriteFailed => |err| return err,
+        };
+    }
+
+    pub const Extra = struct {
+        dat: lma.data.dat_file.output.WriteHeader,
+    };
 };

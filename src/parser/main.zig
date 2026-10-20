@@ -11,6 +11,7 @@ const stations = @import("stations.zig");
 const parser_info = @import("info.zon");
 
 const Cli = struct {
+    path: ?[]const u8,
     command: union(enum) {
         signals: signals.Cli,
         points: points.Cli,
@@ -65,6 +66,10 @@ const Cli = struct {
 };
 
 const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "parser" }, .{
+    .path = .optional(
+        .{ .default = "Current working directory" },
+        .build(opt.Named, .single(.string, .{ .name = "path", .description = "Relative directory.", .short = .auto })),
+    ),
     .command = .build(opt.Groups, .subcommand(.{ .name = "STAGE", .greedy = false }, .{
         .signals = signals.root,
         .points = points.root,
@@ -79,10 +84,13 @@ pub fn main(init: std.process.Init) !void {
         return;
     defer options.deinit(init.gpa);
 
+    const dir: std.Io.Dir = if (options.path) |path| try .openDir(.cwd(), init.io, path, .{}) else .cwd();
+    defer dir.close(init.io);
+
     switch (options.command) {
-        .signals => |args| try signals.parse(init.io, init.gpa, args),
-        .points => |args| try points.parse(init.io, init.gpa, args),
-        .clusters => |args| try clusters.parse(init.io, init.gpa, args),
-        .stations => |args| try stations.parse(init.io, init.gpa, args),
+        .signals => |args| try signals.parse(init.io, dir, init.gpa, args),
+        .points => |args| try points.parse(init.io, dir, init.gpa, args),
+        .clusters => |args| try clusters.parse(init.io, dir, init.gpa, args),
+        .stations => |args| try stations.parse(init.io, dir, init.gpa, args),
     }
 }

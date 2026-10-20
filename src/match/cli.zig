@@ -251,14 +251,14 @@ pub const Options = struct {
 
 pub const time = struct {
     pub const Date = struct {
-        year: u16,
+        year: i16,
         month: u8,
         day: u8,
         string: [8]u8,
 
         pub fn init(string: [8]u8) error{InvalidDate}!Date {
             return .{
-                .year = std.fmt.parseInt(u16, string[0..4], 10) catch return error.InvalidDate,
+                .year = std.fmt.parseInt(i16, string[0..4], 10) catch return error.InvalidDate,
                 .month = std.fmt.parseInt(u8, string[4..6], 10) catch return error.InvalidDate,
                 .day = std.fmt.parseInt(u8, string[6..8], 10) catch return error.InvalidDate,
                 .string = string,

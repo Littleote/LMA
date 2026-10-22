@@ -41,6 +41,8 @@ pub fn main(init: std.process.Init.Minimal) void {
         _ = safe_allocator.deinit();
     };
     const gpa = if (use_safe_allocator) safe_allocator.allocator() else std.heap.smp_allocator;
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
     // Footer gets zeroed while awaiting
     // Reason still unknown
     const io_gpa = if (use_safe_allocator) std.heap.page_allocator else std.heap.smp_allocator;
@@ -210,7 +212,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         },
     } else .cwd();
 
-    const default_out_file = gpa.print(
+    const default_out_file = arena.allocator().print(
         "{f}_{s}_{s}_{d:0>4}.dat.gz",
         .{
             stations.fmtNetwork("UNNAMED"),
@@ -219,7 +221,6 @@ pub fn main(init: std.process.Init.Minimal) void {
             analysed,
         },
     ) catch @panic("OOM");
-    defer gpa.free(default_out_file);
 
     const result = runner.run(io, gpa, station_points, signal_lists, options.config, .init(second_start, analysed)) catch |err| switch (err) {
         error.Canceled => unreachable,
@@ -260,6 +261,7 @@ pub fn main(init: std.process.Init.Minimal) void {
             .analyzed = analysed,
         },
         .version = match_info.name ++ "-" ++ match_info.version,
+        .command = init.args.toSlice(arena.allocator()) catch null,
     } };
 
     for (out_files) |out| {
@@ -274,7 +276,11 @@ pub fn main(init: std.process.Init.Minimal) void {
         std.log.warn("Failed to write to file {q}. ({})", .{ out, err });
     }
 
-    std.debug.print("Total points: {d}\n", .{output.array.items.len});
+    bad_out: {
+        var stdout: std.Io.File.Writer = .initStreaming(.stdout(), io, &rw_buffer);
+        defer stdout.flush() catch {};
+        stdout.interface.print("Total points: {d}\n", .{output.array.items.len}) catch break :bad_out;
+    }
 
     if (options.files.stations_out) |stations_out| stations: {
         const file = std.Io.Dir.cwd().createFile(io, stations_out, .{}) catch |err| {

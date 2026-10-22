@@ -108,7 +108,7 @@ pub const command: nargs.Node(Options) = .build(opt.Groups, .any(.{ .name = "mat
             })),
         })),
         .search = .build(opt.Groups, .any(.{ .name = "SEARCH", .show = .hidden }, .{
-            .beam_width = .build(opt.Named, .single(.integer(.{ .max = 50 }), .{
+            .beam_width = .build(opt.Named, .single(.integer(.{ .max = 100 }), .{
                 .name = "beam-width",
                 .description = "Beam search width: Maximum number of solutions tested with this method.",
             })),

@@ -286,8 +286,9 @@ pub fn sourceToPoint(self: *ToaSolver, source: *const Source) ?Point {
     const gps = lma.pipeline.transform.xyzToGPS(f64, .init(xyz)).cast(f32);
     if (gps.z() < -1_000.0 or 20_000 < gps.z()) return null;
     const nano = lma.nano.toNano(t);
+    const dbw = source.dBW(&self.buffer);
 
-    self.timing(source);
+    self.updateStationStats(source, dbw);
     self.statistics.counts.out_solutions += 1;
     self.addSource(&.{ .point = source.point + self.buffer.ref_point, .time = source.time + self.buffer.ref_time });
 
@@ -304,7 +305,7 @@ pub fn sourceToPoint(self: *ToaSolver, source: *const Source) ?Point {
         .altitude = gps.z(),
         .station_mask = mask,
         .measure_error = @floatCast(chi_squared),
-        .dBW = @floatCast(source.dBW(&self.buffer)),
+        .dBW = @floatCast(dbw),
     };
 }
 
@@ -336,14 +337,17 @@ fn addSource(self: *ToaSolver, source: *const Source) void {
     }
 }
 
-fn timing(self: *ToaSolver, source: *const Source) void {
+fn updateStationStats(self: *ToaSolver, source: *const Source, dbw: Float) void {
     const denominator = lma.cast.to(Float, self.buffer.len - 4);
     for (self.buffer.entries[0..self.buffer.len]) |entry| {
         const delta = length(source.point - entry.point);
         const err = source.time - entry.time + delta;
         const station = &self.statistics.stations[entry.station];
+        const area = math.vector.norm2Square(entry.point - source.point);
+        const log_surface = 10.0 * @log10(4.0 * std.math.pi * area);
         station.timing_error += err / denominator;
         station.timing_weight += 1 / denominator;
+        station.log_pow_diff += (lma.cast.as(Float, entry.dBm) - 30 + log_surface) - dbw;
         station.solutions += 1;
     }
 }
@@ -397,6 +401,7 @@ pub const Statistics = struct {
     pub const Station = struct {
         timing_error: f128 = 0,
         timing_weight: f128 = 0,
+        log_pow_diff: f128 = 0,
         solutions: u32 = 0,
 
         pub fn calibration(self: Station) f32 {

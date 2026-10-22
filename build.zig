@@ -10,11 +10,13 @@ const Exe = struct {
     parser: *std.Build.Step.Compile,
     match: *std.Build.Step.Compile,
     holes: *std.Build.Step.Compile,
+    match_stats: *std.Build.Step.Compile,
 };
 
 const Demo = enum {
     parser,
     match,
+    match_param,
     holes,
 };
 
@@ -87,6 +89,18 @@ pub fn build(b: *std.Build) void {
                 .single_threaded = opt.single_threaded,
             }),
         }),
+        .match_stats = b.addExecutable(.{
+            .name = "mstats",
+            .root_module = b.createModule(.{
+                .root_source_file = .{ .cwd_relative = "src/demo/match_stats.zig" },
+                .target = opt.target,
+                .optimize = opt.optimize,
+                .imports = &.{
+                    .{ .module = nargs, .name = "nargs" },
+                },
+                .single_threaded = opt.single_threaded,
+            }),
+        }),
     };
 
     const parser_step = b.step("parser", "Parse the selected files and generate a new file in a different format.");
@@ -102,6 +116,7 @@ pub fn build(b: *std.Build) void {
     all_step.dependOn(parser_step);
     all_step.dependOn(match_step);
     all_step.dependOn(holes_step);
+    all_step.dependOn(if (emit_bin) &b.addInstallArtifact(exe.match_stats, .{}).step else &exe.match_stats.step);
 
     const install_docs = b.addInstallDirectory(.{
         .source_dir = b.addLibrary(.{ .name = "lma", .root_module = lma }).getEmittedDocs(),
@@ -137,6 +152,10 @@ pub fn build(b: *std.Build) void {
             },
             .match => {
                 matchDemo(b, demo_step, exe.match);
+                match_step.dependOn(demo_step);
+            },
+            .match_param => {
+                matchParamDemo(b, demo_step, exe.match, exe.match_stats);
                 match_step.dependOn(demo_step);
             },
             .holes => {
@@ -292,4 +311,101 @@ fn matchDemo(b: *std.Build, step: *std.Build.Step, exe: *std.Build.Step.Compile)
     });
     run.addPassthruArgs();
     step.dependOn(&run.step);
+}
+
+fn matchParamDemo(b: *std.Build, step: *std.Build.Step, exe: *std.Build.Step.Compile, stats_exe: *std.Build.Step.Compile) void {
+    const StationFile = enum { csv, gps };
+    const Variable = enum { window, dfs, beam };
+    const Config = struct {
+        name: []const u8,
+        args: []const []const u8,
+    };
+
+    var failed = false;
+    const date = DateTime.addOption(b) orelse fail: {
+        step.dependOn(&b.addFail("Missing date.").step);
+        failed = true;
+        break :fail undefined;
+    };
+    const stations = b.option(StationFile, "station", "Station data format.") orelse .gps;
+    const param = b.option(Variable, "parameter", "Parameter to test.") orelse fail: {
+        step.dependOn(&b.addFail("Missing testing parameter.").step);
+        failed = true;
+        break :fail undefined;
+    };
+    const sequential = b.option(bool, "sequential", "Guarantee that a test can only run one at at time.") orelse false;
+    if (failed) return;
+
+    const configs: std.EnumArray(Variable, []const Config) = .init(.{
+        .window = &.{
+            .{ .name = "CORR-WIN-1000MS", .args = &.{ "--correlation-window", "1" } },
+            .{ .name = "CORR-WIN-500MS", .args = &.{ "--correlation-window", "0.5" } },
+            .{ .name = "CORR-WIN-200MS", .args = &.{ "--correlation-window", "0.2" } },
+            .{ .name = "CORR-WIN-100MS", .args = &.{ "--correlation-window", "0.1" } },
+            .{ .name = "CORR-WIN-50MS", .args = &.{ "--correlation-window", "0.05" } },
+            .{ .name = "CORR-WIN-20MS", .args = &.{ "--correlation-window", "0.02" } },
+            .{ .name = "CORR-WIN-10MS", .args = &.{ "--correlation-window", "0.01" } },
+        },
+
+        .dfs = &.{
+            .{ .name = "DFS-TRIES-1", .args = &.{ "--beam-width=0", "--depth-tries=1" } },
+            .{ .name = "DFS-TRIES-2", .args = &.{ "--beam-width=0", "--depth-tries=2" } },
+            .{ .name = "DFS-TRIES-3", .args = &.{ "--beam-width=0", "--depth-tries=3" } },
+            .{ .name = "DFS-TRIES-4", .args = &.{ "--beam-width=0", "--depth-tries=4" } },
+            .{ .name = "DFS-TRIES-5", .args = &.{ "--beam-width=0", "--depth-tries=5" } },
+            .{ .name = "DFS-TRIES-6", .args = &.{ "--beam-width=0", "--depth-tries=6" } },
+            .{ .name = "DFS-TRIES-7", .args = &.{ "--beam-width=0", "--depth-tries=7" } },
+            .{ .name = "DFS-TRIES-8", .args = &.{ "--beam-width=0", "--depth-tries=8" } },
+            .{ .name = "DFS-TRIES-9", .args = &.{ "--beam-width=0", "--depth-tries=9" } },
+            .{ .name = "DFS-TRIES-10", .args = &.{ "--beam-width=0", "--depth-tries=10" } },
+        },
+
+        .beam = &.{
+            .{ .name = "BEAM_WIDTH-1", .args = &.{ "--depth-tries=0", "--beam-width=1" } },
+            .{ .name = "BEAM_WIDTH-2", .args = &.{ "--depth-tries=0", "--beam-width=2" } },
+            .{ .name = "BEAM_WIDTH-5", .args = &.{ "--depth-tries=0", "--beam-width=5" } },
+            .{ .name = "BEAM_WIDTH-10", .args = &.{ "--depth-tries=0", "--beam-width=10" } },
+            .{ .name = "BEAM_WIDTH-20", .args = &.{ "--depth-tries=0", "--beam-width=20" } },
+            .{ .name = "BEAM_WIDTH-50", .args = &.{ "--depth-tries=0", "--beam-width=50" } },
+            .{ .name = "BEAM_WIDTH-100", .args = &.{ "--depth-tries=0", "--beam-width=100" } },
+        },
+    });
+
+    const stats = b.addRunArtifact(stats_exe);
+    step.dependOn(&stats.step);
+
+    stats.addArg("--stdout");
+
+    var last_step: *std.Build.Step = &stats.step;
+    for (configs.get(param)) |config| {
+        const run = b.addRunArtifact(exe);
+        run.setName(config.name);
+        switch (stations) {
+            .csv => run.addArgs(&.{"-s=data/stations/stations.csv"}),
+            .gps => run.addArgs(&.{ "--stations", "data/stations/upc.gps", "data/stations/mcat.gps" }),
+        }
+        run.addArgs(&.{
+            "-i",        "data/signals/" ++ date.date ++ "/sources/*_*_*_" ++ date.date ++ "_" ++ date.time ++ ".dat",
+            "-o",        b.allocator.print("data/points/{s}/demo/out/{s}_{s}_{s}_0600.dat.gz", .{ date.date, config.name, date.date, date.time }) catch @panic("OOM"),
+            "-d",        &date.date,
+            "-h",        &date.time,
+            "--analyse", "10:00",
+            "--verbose",
+        });
+        run.addArgs(config.args);
+        run.addPassthruArgs();
+        stats.addFileArg2(run.captureStdOut(.{}), .{});
+        if (sequential) {
+            last_step.dependOn(&run.step);
+            last_step = &run.step;
+        }
+    }
+
+    stats.addArg("--name");
+
+    for (configs.get(param)) |config| {
+        stats.addArg(config.name);
+    }
+
+    stats.addArg(b.allocator.print("--output=data/points/{s}/demo/{s}.csv", .{ date.date, @tagName(param) }) catch @panic("OOM"));
 }

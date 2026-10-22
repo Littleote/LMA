@@ -65,12 +65,21 @@ pub fn run(
     try output.epochApplyShift({}, shiftBack);
     output.epochApplyShift({}, sortSegment) catch unreachable;
 
-    if (config.verbose) {
-        std.debug.print("{f}", .{statistics});
+    if (config.verbose) bad_out: {
+        var rw_buffer: [1024]u8 = undefined;
+        var stdout: std.Io.File.Writer = .initStreaming(.stdout(), io, &rw_buffer);
+        defer stdout.flush() catch {};
+        stdout.interface.print("{f}", .{statistics}) catch break :bad_out;
         const timer_end: std.Io.Timestamp = .now(io, .real);
         const resource_end: std.Io.Timestamp = .now(io, .cpu_process);
-        std.debug.print("Wall time: {d}s\n", .{lma.cast.to(f64, std.Io.Timestamp.durationTo(timer_start, timer_end).toNanoseconds()) / std.time.ns_per_s});
-        std.debug.print("Process time: {d}s\n", .{lma.cast.to(f64, std.Io.Timestamp.durationTo(resource_start, resource_end).toNanoseconds()) / std.time.ns_per_s});
+        stdout.interface.print(
+            "Wall time: {d}s\n",
+            .{lma.cast.to(f64, std.Io.Timestamp.durationTo(timer_start, timer_end).toNanoseconds()) / std.time.ns_per_s},
+        ) catch break :bad_out;
+        stdout.interface.print(
+            "Process time: {d}s\n",
+            .{lma.cast.to(f64, std.Io.Timestamp.durationTo(resource_start, resource_end).toNanoseconds()) / std.time.ns_per_s},
+        ) catch break :bad_out;
     }
 
     return .{ .points = output, .stats = statistics };

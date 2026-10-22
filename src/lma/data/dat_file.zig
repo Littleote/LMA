@@ -712,7 +712,7 @@ pub const output = struct {
 
             var it = std.mem.tokenizeScalar(u8, line, ' ');
 
-            current_value.station_mask = try getInt(u32, it.next(), -9, 10);
+            current_value.nanosecond = try getInt(u32, it.next(), -9, 10);
             current_value.latitude = try getFloat(f32, it.next());
             current_value.longitude = try getFloat(f32, it.next());
             current_value.altitude = try getFloat(f32, it.next());
@@ -833,12 +833,13 @@ pub const output = struct {
         }
 
         // Station data: id, name, win(us), data_ver, rms_error(ns), sources, %, <P/P_m>, active
-        // Sta_data: LETTER  NAME  WINDOW(80)_OR_0  VERSION(12)_OR_0  RMS(40)_OR_0  SOLUTIONS  SOLUTIONS % TOTAL_SOLUTIONS  ???  ACTIVE(A)_OR_NA
+        // Sta_data: LETTER  NAME  WINDOW(80)_OR_0  VERSION(12)_OR_0  RMS(40)_OR_0  SOLUTIONS  SOLUTIONS % TOTAL_SOLUTIONS  MEAN ARITHMETIC POWER ERROR  ACTIVE(A)_OR_NA
         try w.writeAll("Station data: id, name, win(us), data_ver, rms_error(ns), sources, %, <P/P_m>, active\n");
         for (header.stats) |stats| {
             for (header.network.stations.items, 0..) |station, idx| {
                 const info = stats.stations[idx];
                 const active = info.solutions != 0;
+                const pow_delta: f64 = std.math.pow(f64, 10.0, @floatCast(info.log_pow_diff / cast.to(f128, @max(1, stats.counts.out_solutions)) / 10.0));
                 try w.print("Sta_data: {c}  {s: <16}  {d: >4}  {d: >4}  {d: >3}  {d: >7}  {d: >4.1}  {d: >4.2}  {s: >2}\n", .{
                     station.stationLetter(),
                     station.name,
@@ -847,7 +848,7 @@ pub const output = struct {
                     lma.pipeline.ToaSolver.rms * std.time.ns_per_s,
                     info.solutions,
                     100 * cast.to(f32, info.solutions) / cast.to(f32, @max(1, stats.counts.out_solutions)),
-                    @as(f32, if (active) 1.0 else 0.0),
+                    @as(f32, if (active) @floatCast(pow_delta) else 0.0),
                     if (active) "A" else "NA",
                 });
             }

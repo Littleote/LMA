@@ -269,7 +269,6 @@ pub fn main(init: std.process.Init.Minimal) void {
             const file = out_dir.createFile(io, out, .{}) catch |err| break :skip err;
             defer file.close(io);
             var file_writer = file.writer(io, &rw_buffer);
-            //, &stations, (&result.stats)[0..1]
             files.points.write(&output, &file_writer.interface, out, out_extra) catch |err| break :skip err;
             continue;
         };

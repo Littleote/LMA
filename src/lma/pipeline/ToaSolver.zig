@@ -121,7 +121,7 @@ pub fn solveFromPoint(self: *ToaSolver, reference: match.Candidate, base_source:
     });
 
     const xyz = base_source.point - self.buffer.ref_point;
-    self.statistics.counts.buffer_source += 1;
+    self.statistics.counts.buffer_source +|= 1;
     self.bufferFromSource(&.{ .point = xyz, .time = -length(xyz) }, candidates, 500);
     if (self.buffer.len < min_consensus) return null;
 
@@ -132,7 +132,7 @@ pub fn solveFromPoint(self: *ToaSolver, reference: match.Candidate, base_source:
 
 pub fn solveSet(self: *ToaSolver, matched: []const match.Candidate, candidates: []const match.Candidate) ?Source {
     self.buffer.clear();
-    self.statistics.counts.buffer_set += 1;
+    self.statistics.counts.buffer_set +|= 1;
     self.bufferFromSet(matched);
 
     const initial = self.initialSolution() orelse return null;
@@ -143,7 +143,7 @@ pub fn solveSet(self: *ToaSolver, matched: []const match.Candidate, candidates: 
 fn initialSolution(self: *ToaSolver) ?Source {
     if (self.buffer.len < min_consensus) return null;
 
-    self.statistics.counts.solve_linear += 1;
+    self.statistics.counts.solve_linear +|= 1;
     var source = solveLinear(&self.buffer);
 
     // Assert the solution is reasonable
@@ -164,7 +164,7 @@ fn initialSolution(self: *ToaSolver) ?Source {
     };
 
     // Clean solution
-    self.statistics.counts.solve_quadratic += 1;
+    self.statistics.counts.solve_quadratic +|= 1;
     source = solveLeastSquares(&self.buffer, &source, .{ .termination = .{ .max_iterations = 5 } });
     // Assert the solution is reasonable
     {
@@ -178,7 +178,7 @@ fn initialSolution(self: *ToaSolver) ?Source {
         if (max_error > 500) return null;
     }
 
-    self.statistics.counts.out_initial += 1;
+    self.statistics.counts.out_initial +|= 1;
     return source;
 }
 
@@ -189,7 +189,7 @@ fn refinedSolution(self: *ToaSolver, input: *const Source) ?Source {
     while (self.buffer.len >= min_consensus) {
 
         // Solve quadratic optimization with L-M
-        self.statistics.counts.solve_quadratic += 1;
+        self.statistics.counts.solve_quadratic +|= 1;
         source = solveLeastSquares(&self.buffer, input, .{ .termination = .{ .max_iterations = 100 } });
 
         // Assert the solution is reasonable
@@ -216,7 +216,7 @@ fn refinedSolution(self: *ToaSolver, input: *const Source) ?Source {
                     self.buffer.len -= 1;
                     defer self.buffer.len += 1;
 
-                    self.statistics.counts.solve_quadratic += 1;
+                    self.statistics.counts.solve_quadratic +|= 1;
                     break :blk solveLeastSquares(&self.buffer, input, .{ .termination = .{ .max_iterations = 100 } });
                 };
 
@@ -236,7 +236,7 @@ fn refinedSolution(self: *ToaSolver, input: *const Source) ?Source {
             }
         },
     }
-    self.statistics.counts.out_refined += 1;
+    self.statistics.counts.out_refined +|= 1;
     return source;
 }
 
@@ -289,7 +289,7 @@ pub fn sourceToPoint(self: *ToaSolver, source: *const Source) ?Point {
     const dbw = source.dBW(&self.buffer);
 
     self.updateStationStats(source, dbw);
-    self.statistics.counts.out_solutions += 1;
+    self.statistics.counts.out_solutions +|= 1;
     self.addSource(&.{ .point = source.point + self.buffer.ref_point, .time = source.time + self.buffer.ref_time });
 
     var mask: u32 = 0;
@@ -348,7 +348,7 @@ fn updateStationStats(self: *ToaSolver, source: *const Source, dbw: Float) void 
         station.timing_error += err / denominator;
         station.timing_weight += 1 / denominator;
         station.log_pow_diff += (lma.cast.as(Float, entry.dBm) - 30 + log_surface) - dbw;
-        station.solutions += 1;
+        station.solutions +|= 1;
     }
 }
 
@@ -389,20 +389,20 @@ pub const Source = struct {
 
 pub const Statistics = struct {
     pub const Counts = struct {
-        buffer_set: u32 = 0,
-        buffer_source: u32 = 0,
-        solve_linear: u32 = 0,
-        solve_quadratic: u32 = 0,
-        out_initial: u32 = 0,
-        out_refined: u32 = 0,
-        out_solutions: u32 = 0,
+        buffer_set: u64 = 0,
+        buffer_source: u64 = 0,
+        solve_linear: u64 = 0,
+        solve_quadratic: u64 = 0,
+        out_initial: u64 = 0,
+        out_refined: u64 = 0,
+        out_solutions: u64 = 0,
     };
 
     pub const Station = struct {
         timing_error: f128 = 0,
         timing_weight: f128 = 0,
         log_pow_diff: f128 = 0,
-        solutions: u32 = 0,
+        solutions: u64 = 0,
 
         pub fn calibration(self: Station) f32 {
             const constant = -2.0 / c;
@@ -412,8 +412,13 @@ pub const Statistics = struct {
         }
 
         pub fn add(self: *Station, other: Station) void {
-            inline for (comptime @typeInfo(Station).@"struct".field_names) |name| {
-                @field(self, name) += @field(other, name);
+            const info = @typeInfo(Station).@"struct";
+            inline for (info.field_names, info.field_types) |name, ty| {
+                switch (@typeInfo(ty)) {
+                    .int => @field(self, name) +|= @field(other, name),
+                    .float => @field(self, name) += @field(other, name),
+                    else => @compileError("Invalid type: " ++ @typeName(ty)),
+                }
             }
         }
     };
@@ -422,8 +427,8 @@ pub const Statistics = struct {
     stations: [max_network]Station = @splat(.{}),
 
     pub fn add(self: *Statistics, other: *const Statistics) void {
-        inline for (comptime @typeInfo(Counts).@"struct".field_names) |name| {
-            @field(self.counts, name) += @field(other.counts, name);
+        inline for (@typeInfo(Counts).@"struct".field_names) |name| {
+            @field(self.counts, name) +|= @field(other.counts, name);
         }
         for (&self.stations, other.stations) |*lhs, rhs| {
             lhs.add(rhs);
@@ -431,14 +436,23 @@ pub const Statistics = struct {
     }
 
     pub fn format(self: *const Statistics, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        inline for (comptime @typeInfo(Counts).@"struct".field_names) |name| {
-            try w.print("Variable {s} = {d}\n", .{ name, @field(self.counts, name) });
+        inline for (@typeInfo(Counts).@"struct".field_names) |name| {
+            try w.print("Variable {s} = ", .{name});
+            const value = @field(self.counts, name);
+            if (value == std.math.maxInt(@TypeOf(value)))
+                try w.writeAll("Overflow")
+            else
+                try w.printInt(value, 10, .lower, .{});
+            try w.writeByte('\n');
         }
         {
-            try w.print("Station {s: >2}: {s: >12.2} {s: >9}\n", .{ "ID", "Calibration", "Solutions" });
+            try w.print("Station {s: >2}: {s: >12.2} {s: >12.2} {s: >9}\n", .{ "ID", "Time calib.", "Power calib.", "Solutions" });
             for (self.stations, 1..) |station, idx| {
-                try w.print("Station {d: >2}: {d: >12.2} {d: >9}\n", .{
-                    idx, station.calibration() * std.time.ns_per_s, station.solutions,
+                try w.print("Station {d: >2}: {d: >12.2} {d: >12.2} {d: >9}\n", .{
+                    idx,
+                    station.calibration() * std.time.ns_per_s,
+                    std.math.pow(f64, 10.0, @floatCast(station.log_pow_diff / @as(f128, @max(1, station.solutions)) / 10.0)),
+                    station.solutions,
                 });
             }
         }

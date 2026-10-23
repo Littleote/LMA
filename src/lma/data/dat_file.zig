@@ -839,7 +839,7 @@ pub const output = struct {
             for (header.network.stations.items, 0..) |station, idx| {
                 const info = stats.stations[idx];
                 const active = info.solutions != 0;
-                const pow_delta: f64 = std.math.pow(f64, 10.0, @floatCast(info.log_pow_diff / cast.to(f128, @max(1, stats.counts.out_solutions)) / 10.0));
+                const pow_delta = std.math.pow(f64, 10.0, @floatCast(info.log_pow_diff / @as(f128, @max(1, info.solutions)) / 10.0));
                 try w.print("Sta_data: {c}  {s: <16}  {d: >4}  {d: >4}  {d: >3}  {d: >7}  {d: >4.1}  {d: >4.2}  {s: >2}\n", .{
                     station.stationLetter(),
                     station.name,

@@ -61,7 +61,6 @@ pub const command: nargs.Node(Options) = .build(opt.Groups, .any(.{ .name = "mat
             .name = "stations-out",
             .description = "File to output station data with updated delays. Accepts \".csv\".",
             .display = "FILE",
-            .short = .auto,
         }))),
         .inputs = .build(opt.Named, .variable(.wrap(nargs.params.io.Glob), .{ .min = 1 }, .{
             .name = "input",
@@ -99,7 +98,7 @@ pub const command: nargs.Node(Options) = .build(opt.Groups, .any(.{ .name = "mat
         .correlation = .build(opt.Groups, .any(.{ .name = "CORRELATION", .show = .hidden }, .{
             .weights = .build(opt.Named, .single(.choice, .{
                 .name = "correlation-weight",
-                .description = "Value to use to compute the correlation input weights",
+                .description = "Value to use as weights when computing the cross-correlation",
                 .display = "WEIGHT",
             })),
             .window = .build(opt.Named, .single(.floating(.{ .min = .closed(0.001), .max = .closed(1) }), .{
@@ -108,15 +107,15 @@ pub const command: nargs.Node(Options) = .build(opt.Groups, .any(.{ .name = "mat
             })),
         })),
         .search = .build(opt.Groups, .any(.{ .name = "SEARCH", .show = .hidden }, .{
-            .beam_width = .build(opt.Named, .single(.integer(.{ .max = 100 }), .{
+            .beam_width = .build(opt.Named, .single(.integer(.{ .min_str = "0 (disabled)", .max = 1_000 }), .{
                 .name = "beam-width",
                 .description = "Beam search width: Maximum number of solutions tested with this method.",
             })),
-            .dfs_attempts = .build(opt.Named, .single(.integer(.{ .max = 50 }), .{
+            .dfs_attempts = .build(opt.Named, .single(.integer(.{ .min_str = "0 (disabled)", .max = 50 }), .{
                 .name = "depth-tries",
                 .description = "Depth first search attempts: Number of tries to find promising combinations at each depth.",
             })),
-            .memory = .build(opt.Named, .single(.integer(.{ .max = 20 }), .{
+            .memory = .build(opt.Named, .single(.integer(.{ .min_str = "0 (disabled)", .max = 50 }), .{
                 .name = "memory",
                 .description = "Number of solutions saved to check for new nearby solutions.",
             })),

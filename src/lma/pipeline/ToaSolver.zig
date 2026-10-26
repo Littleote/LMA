@@ -21,6 +21,9 @@ const min_consensus = lma.constants.network.min_consensus;
 const early_exit = false;
 const preference: enum { max_stations, min_chi_sq } = .min_chi_sq;
 
+const memory_near = 1_000;
+const memory_far = 2_000;
+
 pub const Config = struct {
     beam_search: ?match.search.BeamSearch.Options = null,
     depth_first_search: ?match.search.DepthFirstSearch.Options = null,
@@ -126,7 +129,7 @@ pub fn solveFromPoint(self: *ToaSolver, reference: match.Candidate, base_source:
     if (self.buffer.len < min_consensus) return null;
 
     const initial: Source = .{ .point = xyz, .time = -length(xyz) };
-    self.bufferFromSource(&initial, candidates, 2_000);
+    self.bufferFromSource(&initial, candidates, memory_far);
     return self.refinedSolution(&initial) orelse return null;
 }
 
@@ -311,8 +314,7 @@ pub fn sourceToPoint(self: *ToaSolver, source: *const Source) ?Point {
 
 fn addSource(self: *ToaSolver, source: *const Source) void {
     if (self.memory.len <= 1) {
-        if (self.memory.len == 1)
-            self.memory[0] = source.*;
+        if (self.memory.len == 1) self.memory[0] = source.*;
         return;
     }
     var old: usize = 0;
@@ -330,8 +332,8 @@ fn addSource(self: *ToaSolver, source: *const Source) void {
             dist = new_dist;
         }
     }
-    if (dist < 500) {
-        self.memory[near] = source.*;
+    if (dist < memory_near) {
+        self.memory[near].time = source.time;
     } else {
         self.memory[old] = source.*;
     }

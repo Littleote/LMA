@@ -174,7 +174,7 @@ const root: nargs.Node(Cli) = .build(opt.Groups, .any(.{ .name = "holes" }, .{
         .short = .auto,
         .default = .init("", "None"),
         .alternatives = &.{
-            .shortcut("cat-map", "data/map/comarques-compressed.geojson", "Catalonia map"),
+            .shortcut("cat-map", "data/map/divisions-comarques-5000.geojson", "Catalonia map"),
             .shortcut("val-map", "data/map/comarques-cv.geojson", "Valencia map"),
         },
     })),

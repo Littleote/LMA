@@ -91,14 +91,14 @@ pub fn main(init: std.process.Init) !void {
                     std.log.err("unexpected line:\n{q}", .{line});
                     return error.ParseFailed;
                 };
-                try out.interface.print(", {s}", .{variable});
+                try out.interface.print(", {s}", .{std.mem.trim(u8, variable, " ")});
             }
             if (std.mem.find(u8, line, " time:") != null) {
                 _, const variable = std.mem.cutScalarLast(u8, line, ':') orelse {
                     std.log.err("unexpected line:\n{q}", .{line});
                     return error.ParseFailed;
                 };
-                try out.interface.print(", {s}", .{variable});
+                try out.interface.print(", {s}", .{std.mem.trim(u8, variable, " s")});
             }
         }
         try out.interface.writeByte('\n');

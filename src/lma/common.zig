@@ -11,7 +11,7 @@ pub const nano = struct {
 
     inline fn toFixed(Int: type, second: anytype) Int {
         std.debug.assert(std.math.isFinite(second));
-        return @intFromFloat(@round(second * ratio));
+        return @round(second * ratio);
     }
 
     pub inline fn toDelta(second: anytype) Delta {
@@ -59,7 +59,8 @@ pub const cast = struct {
                 else => @compileError("Unable to cast from " ++ @tagName(input_type) ++ " to " ++ @tagName(output_type)),
             },
             .float => switch (output_type) {
-                .int => @intFromFloat(value),
+                // TODO: Safety check for non exact float values
+                .int => @round(value),
                 .float => @floatCast(value),
                 else => @compileError("Unable to cast from " ++ @tagName(input_type) ++ " to " ++ @tagName(output_type)),
             },

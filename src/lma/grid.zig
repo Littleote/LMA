@@ -97,7 +97,7 @@ pub const Bounds = struct {
                 .shape => |shape| shape,
                 .step => |step| blk: {
                     const shape: math(Float).ElemVec = .init(size / step + vector.splat(1));
-                    break :blk .init(@intFromFloat(@round(shape.at(.y))), @intFromFloat(@round(shape.at(.x))));
+                    break :blk .init(@round(shape.at(.y)), @round(shape.at(.x)));
                 },
             };
             const count: Vec = vector.vec2(@floatFromInt(shape.columns - 1), @floatFromInt(shape.rows - 1));
@@ -159,8 +159,8 @@ pub const Bounds = struct {
                 for (points) |x| {
                     const frac: math(Float).ElemVec = .init((x - bounds.origin) / bounds.step);
                     if (frac.x() < 0 or frac.y() < 0) continue;
-                    const row: usize = @intFromFloat(@round(frac.y()));
-                    const col: usize = @intFromFloat(@round(frac.x()));
+                    const row: usize = @round(frac.y());
+                    const col: usize = @round(frac.x());
                     if (shape.rows <= row + 1 or shape.columns <= col + 1) continue;
                     const weight: struct { x: Float, y: Float } = .{ .x = @mod(frac.x(), 1), .y = @mod(frac.y(), 1) };
                     const idx = shape.ravel(row, col);

@@ -64,7 +64,7 @@ pub const shiny16: [16]Color = .{
 };
 
 fn clamp(val: f32) u8 {
-    return @intFromFloat(@min(@max(@round(255 * val), 0), 255));
+    return @round(@min(@max(255 * val, 0), 255));
 }
 fn get(val: usize) f32 {
     return @as(f32, val) / 255;

@@ -95,7 +95,7 @@ pub fn parse(io: std.Io, dir: std.Io.Dir, gpa: std.mem.Allocator, args: Cli) !vo
     while (try file_reader.interface.takeDelimiter('\n')) |line| {
         var iterator = std.mem.tokenizeScalar(u8, line, delimiter);
         const time = std.math.modf(try std.fmt.parseFloat(f64, iterator.next().?));
-        const second: u64 = @intFromFloat(time.ipart);
+        const second: u64 = @trunc(time.ipart);
 
         if (second != last_second) {
             @branchHint(.unlikely);
@@ -120,7 +120,7 @@ pub fn parse(io: std.Io, dir: std.Io.Dir, gpa: std.mem.Allocator, args: Cli) !vo
             last_header = &data.headers.items[data.headers.items.len - 1];
         }
         try data.array.append(gpa, .{
-            .nanosecond = @intFromFloat(@round(4 * 1_000_000_000 * (time.fpart))),
+            .nanosecond = @round(4 * std.time.ns_per_s * (time.fpart)),
             .longitude = try std.fmt.parseFloat(f32, iterator.next().?),
             .latitude = try std.fmt.parseFloat(f32, iterator.next().?),
             .altitude = try std.fmt.parseFloat(f32, iterator.next().?),

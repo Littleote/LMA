@@ -130,48 +130,48 @@ pub fn runChunk(
     const weights: [][]Float = weight_buffer[0..count];
 
     // Stack and heap allocate cross-correlation buffer
-    const step: match.Step = comptime .fromStep(0.000_004_000);
-    var corr_size: usize = 0;
+    const step: match.correlation.Step = comptime .fromStep(0.000_004_000);
+    var correlation_buffer_size: usize = 0;
     for (0..count) |row| {
         if (full_signals[row].empty()) continue;
         for (0..row) |col| {
             if (full_signals[col].empty()) continue;
             const dist = distance_matrix[shape.ravel(row, col)];
-            corr_size += 2 * root.correlation_size(dist, step);
+            correlation_buffer_size += 2 * root.correlation_size(dist, step);
         }
     }
 
-    var aux_corr_buffer: [root.correlation_size(root.max_distance, step)]Float = undefined;
-    var corr_matrix_buffer: [matrix_size]lma.index.SubSlice = @splat(.init(0, 0));
-    const corr_matrix: []lma.index.SubSlice = corr_matrix_buffer[0..shape.size];
-    const corr_buffer = try gpa.alloc(Float, corr_size);
-    defer gpa.free(corr_buffer);
+    var aux_correlation_buffer: [root.correlation_size(root.max_distance, step)]Float = undefined;
+    var pair_slices_buffer: [matrix_size]lma.index.SubSlice = @splat(.init(0, 0));
+    const pair_slices: []lma.index.SubSlice = pair_slices_buffer[0..shape.size];
+    const loglikelihood_buffer = try gpa.alloc(Float, correlation_buffer_size);
+    defer gpa.free(loglikelihood_buffer);
 
-    var corr_start: u32 = 0;
+    var pair_start: u32 = 0;
     for (0..count) |row| {
         if (full_signals[row].empty()) continue;
         for (0..row) |col| {
             if (full_signals[col].empty()) continue;
             const dist = distance_matrix[shape.ravel(row, col)];
             const size = root.correlation_size(dist, step);
-            corr_matrix_buffer[shape.ravel(row, col)] = .init(corr_start, size);
-            corr_start += size;
-            corr_matrix_buffer[shape.ravel(col, row)] = .init(corr_start, size);
-            corr_start += size;
+            pair_slices_buffer[shape.ravel(row, col)] = .init(pair_start, size);
+            pair_start += size;
+            pair_slices_buffer[shape.ravel(col, row)] = .init(pair_start, size);
+            pair_start += size;
         }
     }
 
     var sources: std.ArrayList(Point) = .empty;
     defer sources.deinit(gpa);
 
-    const work_buffer = try gpa.alloc(
+    const search_scratch_buffer = try gpa.alloc(
         Float,
         @max(
             (network.max_network * root.max_matches + network.max_consensus) * config.search.beam_width * 2,
             network.max_network * root.max_matches * network.max_consensus,
         ),
     );
-    defer gpa.free(work_buffer);
+    defer gpa.free(search_scratch_buffer);
 
     const memory_buffer = try gpa.alloc(
         ToaSolver.Source,
@@ -179,34 +179,38 @@ pub fn runChunk(
     );
     defer gpa.free(memory_buffer);
 
-    var solver: ToaSolver = .init(
-        stations,
-        memory_buffer,
-        work_buffer,
-        .{
-            .beam_search = if (config.search.beam_width == 0) null else .{
-                .loglikelihood = @log(config.search.probability),
-                .width = config.search.beam_width,
-                .consensus = config.search.consensus,
-            },
-            .depth_first_search = if (config.search.dfs_attempts == 0) null else .{
-                .loglikelihood = @log(config.search.probability),
-                .attempts = config.search.dfs_attempts,
-                .consensus = config.search.consensus,
-            },
-            .probe = null,
-        },
-    );
+    var dispatch: Dispatch = .{
+        .solver = .init(
+            stations,
+            memory_buffer,
+            .{},
+        ),
 
-    var match_buffers: match.Buffers = try .init(gpa, @intCast(count), root.max_matches);
+        .search_buffer = search_scratch_buffer,
+        .beam_search = if (config.search.beam_width == 0) null else .{
+            .loglikelihood = @log(config.search.probability),
+            .width = config.search.beam_width,
+            .consensus = config.search.consensus,
+        },
+        .depth_first_search = if (config.search.dfs_attempts == 0) null else .{
+            .loglikelihood = @log(config.search.probability),
+            .attempts = config.search.dfs_attempts,
+            .consensus = config.search.consensus,
+        },
+
+        .sources = .empty,
+    };
+    defer dispatch.sources.deinit(gpa);
+
+    var match_buffers: match.correlation.Buffers = try .init(gpa, @intCast(count), root.max_matches);
     defer match_buffers.deinit(gpa);
-    var match_corr: match.Correlation = .{
+    var match_info: match.correlation.Info = .{
         .step = step,
         .shape = shape,
-        .corr_matrix = corr_matrix,
+        .pair_slice = pair_slices,
         .time_matrix = time_matrix,
-        .corr_buffer = corr_buffer,
-        .aux_buffer = &aux_corr_buffer,
+        .loglikelihood = loglikelihood_buffer,
+        .aux_buffer = &aux_correlation_buffer,
         .window_size = lma.nano.toNano(@min(1, 2 * config.correlation.window)),
         .refresh_rate = lma.nano.toNano(config.correlation.window),
     };
@@ -222,25 +226,91 @@ pub fn runChunk(
             size += signal.len;
         }
 
-        sources.clearRetainingCapacity();
-        try sources.ensureTotalCapacity(gpa, size);
+        dispatch.sources.clearRetainingCapacity();
+        try dispatch.sources.ensureTotalCapacity(gpa, size);
 
-        solver.signals = signals;
+        dispatch.signals = signals;
         if (root.probe_data) |*probe| {
-            if (probe.range.start <= time and time < probe.range.end) {
-                solver.config.probe = .{ .epoch = time, .list = probe };
-            } else solver.config.probe = null;
+            if (probe.range) |range| {
+                if (range.start <= time and time < range.end) {
+                    dispatch.probe = .{ .epoch = time, .list = probe };
+                } else dispatch.probe = null;
+            } else {
+                dispatch.probe = null;
+            }
         }
-        for (solver.memory) |*mem| mem.time -= 1;
-        sources.items.len = match.process(&match_buffers, &match_corr, signals, weights, sources.allocatedSlice(), &solver);
+        for (dispatch.solver.memory) |*mem| mem.time -= 1;
+        match.correlation.process(&match_info, &match_buffers, signals, weights, &dispatch, Dispatch.dispatch);
 
-        try output.headers.append(gpa, .init(@intCast(output.array.items.len), @intCast(sources.items.len)));
-        try output.array.appendSlice(gpa, sources.items);
+        try output.headers.append(gpa, .init(@intCast(output.array.items.len), @intCast(dispatch.sources.items.len)));
+        try output.array.appendSlice(gpa, dispatch.sources.items);
     }
 
     try io.checkCancel();
-    return .{ .points = output, .stats = solver.statistics };
+    return .{ .points = output, .stats = dispatch.solver.statistics };
 }
+
+const Dispatch = struct {
+    solver: ToaSolver,
+    probe: ?match.probing.View = null,
+
+    search_buffer: []match.Float,
+    depth_first_search: ?match.search.DepthFirstSearch.Options,
+    beam_search: ?match.search.BeamSearch.Options,
+
+    signals: []const []const Signal = &.{},
+    sources: std.ArrayList(Point),
+
+    fn dispatch(
+        context: *Dispatch,
+        reference: match.Candidate,
+        candidates: []const match.Candidate,
+        mask: []match.Candidate.Mask,
+        info: *const match.correlation.Info,
+    ) void {
+        const solver: *ToaSolver = &context.solver;
+
+        solver.buffer = .at(solver.stations[reference.station], ToaSolver.c * lma.nano.fromNano(ToaSolver.Float, reference.nanosecond));
+
+        const found: bool = blk: {
+            for (solver.memory) |prev_source| {
+                if (context.solve(solver.solveFromPoint(reference, &prev_source, candidates), mask)) break :blk true;
+            }
+
+            if (context.depth_first_search) |*config| {
+                var iter: match.search.DepthFirstSearch = .init(reference, candidates, context.search_buffer, info, config);
+
+                while (iter.next()) |set| {
+                    if (context.solve(solver.solveSet(set, candidates), mask)) break :blk true;
+                }
+            }
+
+            if (context.beam_search) |*config| {
+                var iter: match.search.BeamSearch = .init(reference, candidates, context.search_buffer, info, config);
+
+                while (iter.next()) |set| {
+                    if (context.solve(solver.solveSet(set, candidates), mask)) break :blk true;
+                }
+            }
+            break :blk false;
+        };
+
+        _ = found;
+    }
+
+    fn solve(context: *Dispatch, maybe_source: ?ToaSolver.Source, masking: []match.Candidate.Mask) bool {
+        if (maybe_source) |source| {
+            if (context.solver.sourceToPoint(&source)) |point| {
+                context.sources.appendAssumeCapacity(point);
+                for (context.solver.buffer.entries[0..context.solver.buffer.len]) |entry| {
+                    masking[entry.station] |= entry.mask.getMask();
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+};
 
 fn cutoffTime(time: u32, point: Point) bool {
     return time > point.nanosecond;

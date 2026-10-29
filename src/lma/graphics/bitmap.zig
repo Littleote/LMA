@@ -61,7 +61,7 @@ pub fn floatToBMP(
     for (0..shape.rows) |row| {
         const start = shape.ravel(row, 0);
         for (values[start..][0..shape.columns]) |value| {
-            try w.writeByte(@intFromFloat(@round(std.math.clamp(255.0 * value, 0, 255.0))));
+            try w.writeByte(@round(std.math.clamp(255.0 * value, 0, 255.0)));
         }
         std.debug.assert(pad == try w.splatByte(0, pad));
     }

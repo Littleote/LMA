@@ -59,7 +59,7 @@ pub const Signal = extern struct {
     fn readCsv(self: *Signal, line: []const u8, del: u8) ParseError!usize {
         var iterator = std.mem.tokenizeScalar(u8, line, del);
         const time = std.math.modf(try parse(f64, iterator.next(), .float));
-        const epoch: usize = @intFromFloat(time.ipart);
+        const epoch: usize = @trunc(time.ipart);
         const nano: u32 = lma.nano.toNano(time.fpart);
         const decibels = try parse(f16, iterator.next(), .float);
         self.* = .{
@@ -251,7 +251,7 @@ pub const Point = extern struct {
     fn readCsv(self: *Point, line: []const u8, del: u8) ParseError!usize {
         var iterator = std.mem.tokenizeScalar(u8, line, del);
         const time = std.math.modf(try parse(f64, iterator.next(), .float));
-        const epoch: usize = @intFromFloat(time.ipart);
+        const epoch: usize = @trunc(time.ipart);
         const nano: u32 = lma.nano.toNano(time.fpart);
         const lat = try parse(f32, iterator.next(), .float);
         const lon = try parse(f32, iterator.next(), .float);
@@ -529,7 +529,7 @@ pub const Clustered = extern struct {
     pub fn readCsv(self: *Clustered, line: []const u8, del: u8) ParseError!usize {
         var iterator = std.mem.tokenizeScalar(u8, line, del);
         const time = std.math.modf(try parse(f64, iterator.next(), .float));
-        const epoch: usize = @intFromFloat(time.ipart);
+        const epoch: usize = @trunc(time.ipart);
         const nano: u32 = lma.nano.toNano(time.fpart);
         const lat = try parse(f32, iterator.next(), .float);
         const lon = try parse(f32, iterator.next(), .float);

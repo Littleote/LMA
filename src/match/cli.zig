@@ -214,7 +214,7 @@ pub const Options = struct {
         verbose: bool,
 
         pub const Correlation = struct {
-            weights: lma.pipeline.match.Weights = .@"const+decibels",
+            weights: lma.pipeline.match.correlation.Weights = .@"const+decibels",
             window: f32 = 0.1,
         };
 

@@ -130,8 +130,8 @@ pub fn makeImages(
     const density = try arena.alloc(Float, shape.size);
     // Gaussian arrays to smooth data
     const step_km_inverse: math.ElemVec = .init(math.vector.vec2(1_000, 1_000) / config.bounds.step);
-    const conv_h = try arena.alloc(Float, @intFromFloat(1 + 2 * @round(step_km_inverse.x())));
-    const conv_v = try arena.alloc(Float, @intFromFloat(1 + 2 * @round(step_km_inverse.y())));
+    const conv_h = try arena.alloc(Float, 1 + 2 * @as(usize, @round(step_km_inverse.x())));
+    const conv_v = try arena.alloc(Float, 1 + 2 * @as(usize, @round(step_km_inverse.y())));
     // Scores running mean buffer and total
     var scores: lma.grid.apply(Float).Window = try .init(arena, shape, 5);
     const scoring = try arena.alloc(Float, shape.size);
@@ -220,7 +220,7 @@ pub fn makeImages(
             @memcpy(contour, scoring_threshold);
             lma.grid.apply(Float).morph(shape, contour, aux, .init(3, 3), .dilate);
             for (density, image, config.overlay, contour, scoring_threshold) |in, *out, over, c, b| {
-                out.* = if (c > b) 249 else if (over != 0) over else @intFromFloat(@min(@round(239.0 * in), 239.0));
+                out.* = if (c > b) 249 else if (over != 0) over else @round(@min(239.0 * in, 239.0));
             }
 
             const time = @divFloor(config.generator.epoch, config.snap);

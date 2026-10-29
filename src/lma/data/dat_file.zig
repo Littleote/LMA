@@ -528,9 +528,9 @@ pub const SignalParser = struct {
         }
 
         fn nanosecond(self: @This(), factor: f64) error{NextSecond}!lma.nano.Nano {
-            const nano_float = @round(4 * cast.to(f64, self.nano_x40()) * factor);
-            if (nano_float > 4_000_000_000) return error.NextSecond;
-            return @intFromFloat(nano_float);
+            const nano: u64 = @round(4 * cast.to(f64, self.nano_x40()) * factor);
+            if (nano > 4_000_000_000) return error.NextSecond;
+            return @intCast(nano);
         }
 
         fn above(self: @This()) u16 {

@@ -25,28 +25,24 @@ const memory_near = 1_000;
 const memory_far = 2_000;
 
 pub const Config = struct {
-    beam_search: ?match.search.BeamSearch.Options = null,
-    depth_first_search: ?match.search.DepthFirstSearch.Options = null,
-    probe: ?match.probing.View = null,
     max_distance: Float = 250_000,
+    // ADD ENFORCED MIN CONSENSUS
 };
 
-pub fn init(stations: []const Vec, memory_buffer: []Source, search_buffer: []MatchFloat, config: Config) ToaSolver {
+pub fn init(stations: []const Vec, memory_buffer: []Source, config: Config) ToaSolver {
     @memset(memory_buffer, .{ .point = math.vector.zero, .time = -std.math.inf(Float) });
     return .{
         .stations = stations,
         .memory = memory_buffer,
-        .search_buffer = search_buffer,
         .config = config,
     };
 }
 
 stations: []const Vec,
 buffer: Buffer = .empty,
-signals: []const []const Signal = &.{},
-masking: []match.Candidate.Mask = &.{},
+// MOVE TO CONTEXT OR TO CONFIG
+// MAYBE MOVE BEHAVIOUR TO TYPE
 memory: []Source,
-search_buffer: []MatchFloat,
 statistics: Statistics = .{},
 config: Config,
 
@@ -61,56 +57,6 @@ inline fn space_time(space: Vec, time: Float) Vec {
 pub const c = lma.constants.c / lma.constants.refractive_index.airRange(1_000, 8_000);
 pub const rms = 0.000_000_070;
 pub const max_chi_sq = 1.5;
-
-pub fn solve(self: *ToaSolver, reference: match.Candidate, candidates: []const match.Candidate, masking: []match.Candidate.Mask, options: *const match.Correlation) ?Point {
-    self.masking = masking;
-    self.buffer = .at(self.stations[reference.station], c * fromNano(reference.nanosecond));
-
-    // var probe_info: ?match.probing.Info = null;
-    // defer if (self.config.probe) |probe| {
-    //     var buffer_signal: [max_network]match.probing.SignalId = undefined;
-    //     for (0..self.buffer.len) |idx| {
-    //         buffer_signal[idx] = .{
-    //             .index = self.buffer.entries[idx].index,
-    //             .station = self.buffer.entries[idx].station,
-    //             .offset = idx,
-    //         };
-    //     }
-    //     probe.append(buffer_signal[0..self.buffer.len]);
-    // };
-
-    // if (self.config.probe) |probe| skip: {
-    //     probe_info = probe.get(reference) orelse break :skip;
-    //     var probe_candidates: [max_network]match.Candidate = undefined;
-    //     const len = probe.candidates(probe_info, self.signals, &probe_candidates);
-    //     if (self.solveSet(probe_candidates[0..len], probe_candidates[0..len])) |_| {}
-    // }
-
-    if (self.config.beam_search) |*config| {
-        var iter: match.search.BeamSearch = .init(reference, candidates, self.search_buffer, options, config);
-
-        while (iter.next()) |set| {
-            if (self.solveSet(set, candidates)) |source|
-                return self.sourceToPoint(&source) orelse if (early_exit) null else continue;
-        }
-    }
-
-    for (self.memory) |prev_source| {
-        if (self.solveFromPoint(reference, &prev_source, candidates)) |source|
-            return self.sourceToPoint(&source) orelse if (early_exit) null else continue;
-    }
-
-    if (self.config.depth_first_search) |*config| {
-        var iter: match.search.DepthFirstSearch = .init(reference, candidates, self.search_buffer, options, config);
-
-        while (iter.next()) |set| {
-            if (self.solveSet(set, candidates)) |source|
-                return self.sourceToPoint(&source) orelse if (early_exit) null else continue;
-        }
-    }
-    // probe_info = false;
-    return null;
-}
 
 pub fn solveFromPoint(self: *ToaSolver, reference: match.Candidate, base_source: *const Source, candidates: []const match.Candidate) ?Source {
     self.buffer.clear();
@@ -298,7 +244,6 @@ pub fn sourceToPoint(self: *ToaSolver, source: *const Source) ?Point {
     var mask: u32 = 0;
     for (self.buffer.entries[0..self.buffer.len]) |entry| {
         mask |= @as(u32, 1) << @intCast(entry.station);
-        self.masking[entry.station] |= entry.mask.getMask();
     }
 
     return .{
@@ -670,8 +615,8 @@ pub const least_squares = struct {
         };
 
         max_iterations: usize = 1_000,
-        min_gradient: Float = std.math.floatEpsAt(Float, 1),
-        min_improvement: Float = std.math.floatEpsAt(Float, 1),
+        min_gradient: Float = 100 * std.math.floatEpsAt(Float, 1),
+        min_improvement: Float = 100 * std.math.floatEpsAt(Float, 1),
         termination: ?*Reason = null,
 
         pub fn setTermination(self: *const Termination, reason: Reason) void {

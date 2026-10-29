@@ -26,11 +26,11 @@ pub const math = lma.math(Precise);
 
 pub const max_distance = 200_000.0;
 pub const global_shift: u32 = 50_000_000;
-pub const max_matches: usize = @intFromFloat(1 + @ceil(max_distance / lma.constants.c / 0.000_080));
+pub const max_matches: usize = @ceil(1 + max_distance / lma.constants.c / 0.000_080);
 
 pub var probe_data: ?match.probing.List = null;
 
-pub fn correlation_size(dist: Float, step: match.Step) u32 {
+pub fn correlation_size(dist: Float, step: match.correlation.Step) u32 {
     return 1 + 4 * lma.cast.to(u32, @round(@min(max_distance, dist) / lma.constants.c / step.step));
 }
 

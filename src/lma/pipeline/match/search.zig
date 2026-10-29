@@ -1,8 +1,9 @@
 const std = @import("std");
+
 const lma = @import("../../lma.zig");
 const match = lma.pipeline.match;
 
-const Correlation = match.Correlation;
+const Info = match.correlation.Info;
 const Candidate = match.Candidate;
 const Float = match.Float;
 
@@ -12,22 +13,22 @@ pub fn updateLoglikelihood(
     reference: Candidate,
     candidates: []const Candidate,
     loglikelihoods: []Float,
-    correlation: *const Correlation,
+    info: *const Info,
 ) void {
     const bad = comptime -std.math.inf(Float);
     for (candidates, loglikelihoods[0..candidates.len]) |candidate, *total| {
         if (!std.math.isFinite(total.*)) continue;
         total.* += blk: {
             if (reference.station == candidate.station) break :blk bad;
-            const idx = correlation.shape.ravel(reference.station, candidate.station);
-            const max_time = correlation.time_matrix[idx];
-            const sub_slice = correlation.corr_matrix[idx];
+            const idx = info.shape.ravel(reference.station, candidate.station);
+            const max_time = info.time_matrix[idx];
+            const sub_slice = info.pair_slice[idx];
 
             const delta: i32 = @bitCast(reference.nanosecond -% candidate.nanosecond);
             if (@abs(delta) > max_time) break :blk bad;
-            const offset_round = sub_slice.size << (correlation.step.shift - 1);
-            const offset = (offset_round +% @as(u32, @bitCast(delta))) >> correlation.step.shift;
-            break :blk if (offset < sub_slice.size) correlation.corr_buffer[sub_slice.start + offset] else bad;
+            const offset_round = sub_slice.size << (info.step.shift - 1);
+            const offset = (offset_round +% @as(u32, @bitCast(delta))) >> info.step.shift;
+            break :blk if (offset < sub_slice.size) info.loglikelihood[sub_slice.start + offset] else bad;
         };
     }
 }
@@ -60,7 +61,7 @@ pub const BeamSearch = struct {
         return (candidates + max_consensus - 1) * (width * 2);
     }
 
-    pub fn init(initial: Candidate, candidates: []const Candidate, buffer: []Float, corr: *const Correlation, options: *const Options) BeamSearch {
+    pub fn init(initial: Candidate, candidates: []const Candidate, buffer: []Float, corr: *const Info, options: *const Options) BeamSearch {
         const chunk = candidates.len;
         const width = options.width;
         std.debug.assert(buffer.len >= buffer_size(chunk, width));
@@ -154,10 +155,10 @@ pub const DepthFirstSearch = struct {
     out: [max_consensus]Candidate,
     frames: [max_consensus - 1]Frame,
     max_depth: u16,
-    corr: *const Correlation,
+    corr: *const Info,
     options: *const Options,
 
-    pub fn init(seed: Candidate, candidates: []const Candidate, buffer: []Float, corr: *const Correlation, options: *const Options) DepthFirstSearch {
+    pub fn init(seed: Candidate, candidates: []const Candidate, buffer: []Float, corr: *const Info, options: *const Options) DepthFirstSearch {
         std.debug.assert(buffer.len >= candidates.len * options.consensus);
         std.debug.assert(max_consensus >= options.consensus);
 

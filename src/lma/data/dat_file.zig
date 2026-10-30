@@ -32,6 +32,10 @@ pub const SignalParser = struct {
     const List = Signal.List;
     const log = std.log.scoped(lma.log.hierarchy.signal_file);
 
+    buffer: []const u16,
+    version: u16,
+    config: Config,
+
     pub const Error = error{ OutOfMemory, BadFile, UnsupportedVersion };
 
     pub const Config = struct {};
@@ -42,6 +46,31 @@ pub const SignalParser = struct {
         epoch: u64,
         correction: i16 = 0,
     };
+
+    const Station = struct {
+        station_id: ?lma.data.Station.Id,
+        network_id: lma.data.Station.Id,
+
+        const unknown: Station = .{
+            .station_id = null,
+            .network_id = @fromBackingInt(0),
+        };
+
+        pub fn format(self: Station, w: *Writer) Writer.Error!void {
+            const letter: u8 = if (self.station_id) |id| lma.data.Station.idToLetter(id) else '?';
+            const net: u8 = @backingInt(self.network_id);
+
+            try w.print("{c}-{d}", .{ letter, net });
+        }
+    };
+
+    fn formatEpochFn(epoch: u64, w: *Writer) Writer.Error!void {
+        try w.print("{d:0>2}:{d:0>2}:{d:0>2}", .{ (epoch / 3600) % 24, (epoch / 60) % 60, epoch % 60 });
+    }
+
+    fn formatEpoch(epoch: u64) std.fmt.Alt(u64, formatEpochFn) {
+        return .{ .data = epoch };
+    }
 
     /// Load a Time of Arrival '.dat' file from a reader
     pub fn read(
@@ -72,10 +101,6 @@ pub const SignalParser = struct {
 
     const latest_version = 13;
     const supported_versions = [_]u16{12};
-
-    buffer: []const u16,
-    version: u16,
-    config: Config,
 
     /// Initialize the parser constants for the given file
     fn init(buffer: []const u16, config: Config) Error!SignalParser {
@@ -125,8 +150,8 @@ pub const SignalParser = struct {
             if (section.epoch < epoch or end_epoch <= section.epoch) {
                 @branchHint(.cold);
                 log.warn(
-                    "Header {d} followed by header {d}. Ignoring latest section with header {d}.",
-                    .{ epoch - 1, section.epoch, section.epoch },
+                    "Header {f} of station {f} followed by header {f}. Ignoring latest section with header {f}.",
+                    .{ formatEpoch(epoch - 1), self.station_id(), formatEpoch(section.epoch), formatEpoch(section.epoch) },
                 );
                 continue;
             }
@@ -203,16 +228,16 @@ pub const SignalParser = struct {
                     error.DivisionByZero => unreachable,
                     error.UnexpectedRemainder => {
                         log.warn(
-                            "Header {f} missaligned. Discarding its corresponding section {d}.",
-                            .{ header, header.epoch() },
+                            "Header {f} of station {f} missaligned. Discarding its corresponding section {f}.",
+                            .{ header, self.station_id(), formatEpoch(header.epoch()) },
                         );
                         return null;
                     },
                 };
                 if (packets != header.reportedPackets()) {
                     log.info(
-                        "Expecting {d} duplicate packets in section {d}",
-                        .{ packets -| header.reportedPackets(), header.epoch() },
+                        "Expecting {d} duplicate packets in section {f} of station {f}.",
+                        .{ packets -| header.reportedPackets(), formatEpoch(header.epoch()), self.station_id() },
                     );
                 }
                 return header.parseHeader(block_start, packets);
@@ -237,8 +262,8 @@ pub const SignalParser = struct {
                     signal.* = packet.buildSignal(factor) catch |err| switch (err) {
                         error.NextSecond => {
                             log.warn(
-                                "Invalid time in packet {f}, discarding the {d} remaining packets of section {d}.",
-                                .{ packet, out.len - idx, section.epoch },
+                                "Invalid time in packet {f} of station {f}, discarding the {d} remaining packets of section {f}.",
+                                .{ packet, self.station_id(), out.len - idx, formatEpoch(section.epoch) },
                             );
                             return @intCast(idx);
                         },
@@ -344,6 +369,17 @@ pub const SignalParser = struct {
         };
     }
 
+    fn station_id(self: SignalParser) Station {
+        return switch (self.version) {
+            inline 12 => |version| blk: {
+                const Header = Headers[version];
+                const header: Header = .initRaw(self.buffer[0..Header.len]);
+                break :blk header.station();
+            },
+            else => unreachable,
+        };
+    }
+
     test "supported_versions" {
         inline for (supported_versions) |version| {
             const Header = Headers[version];
@@ -383,6 +419,13 @@ pub const SignalParser = struct {
                 return @as(u32, value._2.second) +
                     @as(u32, value._2.minute) * std.time.s_per_min +
                     @as(u32, value._3.hour) * std.time.s_per_hour;
+            }
+
+            fn headerStation(value: T) Station {
+                return .{
+                    .station_id = @fromBackingInt(value._5.station_id),
+                    .network_id = @fromBackingInt(value._5.network_id),
+                };
             }
 
             fn format(value: T, w: *Writer) Writer.Error!void {
@@ -503,6 +546,7 @@ pub const SignalParser = struct {
         pub const format = mixin.format;
         const initRaw = mixin.fromBytesW;
         const epoch = mixin.headerEpoch;
+        const station = mixin.headerStation;
         const len = mixin.len;
     };
 

@@ -16,11 +16,17 @@ const Float = match.Float;
 pub fn run(
     io: std.Io,
     gpa: std.mem.Allocator,
-    stations: []math.Vec,
+    stations: lma.data.Station.List,
     signals: []const Signal.List,
     config: cli.Options.Config,
     span: lma.index.SubSlice,
 ) RunError!RunReturn {
+    var station_points_buffer: [network.max_network]math.Vec = undefined;
+    const station_points: []math.Vec = station_points_buffer[0..stations.stations.items.len];
+    for (stations.stations.items, station_points) |station, *station_point| {
+        station_point.* = lma.pipeline.transform.gpsToXYZ(ToaSolver.Float, station.point()).build();
+    }
+
     // Verbose timing start total and per process
     const timer_start: std.Io.Timestamp = .now(io, .real);
     const resource_start: std.Io.Timestamp = .now(io, .cpu_process);
@@ -38,7 +44,7 @@ pub fn run(
         futures[worker] = io.async(runChunk, .{
             io,
             gpa,
-            stations,
+            station_points,
             signals,
             config,
             .initRange(work_start, @min(work_start + work, span.end())),
@@ -69,7 +75,7 @@ pub fn run(
         var rw_buffer: [1024]u8 = undefined;
         var stdout: std.Io.File.Writer = .initStreaming(.stdout(), io, &rw_buffer);
         defer stdout.flush() catch {};
-        stdout.interface.print("{f}", .{statistics}) catch break :bad_out;
+        stdout.interface.print("{f}", .{statistics.formatWithStations(&stations)}) catch break :bad_out;
         const timer_end: std.Io.Timestamp = .now(io, .real);
         const resource_end: std.Io.Timestamp = .now(io, .cpu_process);
         stdout.interface.print(

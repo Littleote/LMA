@@ -122,11 +122,8 @@ pub fn main(init: std.process.Init.Minimal) void {
 
     var delay_buffer: [network.max_network]lma.nano.Nano = undefined;
     const delays: []lma.nano.Nano = delay_buffer[0..count];
-    var station_points_buffer: [network.max_network]math.Vec = undefined;
-    const station_points: []math.Vec = station_points_buffer[0..count];
-    for (stations.stations.items, station_points, delays) |station, *station_point, *delay| {
+    for (stations.stations.items, delays) |station, *delay| {
         delay.* = global_shift - @as(u32, @bitCast(station.delay));
-        station_point.* = lma.pipeline.transform.gpsToXYZ(Precise, station.point()).build();
     }
 
     // Load signals
@@ -223,7 +220,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         },
     ) catch @panic("OOM");
 
-    const result = runner.run(io, gpa, station_points, signal_lists, options.config, .init(second_start, analysed)) catch |err| switch (err) {
+    const result = runner.run(io, gpa, stations, signal_lists, options.config, .init(second_start, analysed)) catch |err| switch (err) {
         error.Canceled => unreachable,
         error.OutOfMemory => @panic("OOM"),
     };

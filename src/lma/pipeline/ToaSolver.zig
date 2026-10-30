@@ -335,6 +335,9 @@ pub const Source = struct {
 };
 
 pub const Statistics = struct {
+    counts: Counts = .{},
+    stations: [max_network]Station = @splat(.{}),
+
     pub const Counts = struct {
         buffer_set: u64 = 0,
         buffer_source: u64 = 0,
@@ -370,9 +373,6 @@ pub const Statistics = struct {
         }
     };
 
-    counts: Counts = .{},
-    stations: [max_network]Station = @splat(.{}),
-
     pub fn add(self: *Statistics, other: *const Statistics) void {
         inline for (@typeInfo(Counts).@"struct".field_names) |name| {
             @field(self.counts, name) +|= @field(other.counts, name);
@@ -382,28 +382,44 @@ pub const Statistics = struct {
         }
     }
 
-    pub fn format(self: *const Statistics, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        inline for (@typeInfo(Counts).@"struct".field_names) |name| {
-            try w.print("Variable {s} = ", .{name});
-            const value = @field(self.counts, name);
-            if (value == std.math.maxInt(@TypeOf(value)))
-                try w.writeAll("Overflow")
-            else
-                try w.printInt(value, 10, .lower, .{});
-            try w.writeByte('\n');
-        }
-        {
-            try w.print("Station {s: >2}: {s: >12.2} {s: >12.2} {s: >9}\n", .{ "ID", "Time calib.", "Power calib.", "Solutions" });
-            for (self.stations, 1..) |station, idx| {
-                try w.print("Station {d: >2}: {d: >12.2} {d: >12.2} {d: >9}\n", .{
-                    idx,
-                    station.calibration() * std.time.ns_per_s,
-                    std.math.pow(f64, 10.0, @floatCast(station.log_pow_diff / @as(f128, @max(1, station.solutions)) / 10.0)),
-                    station.solutions,
-                });
+    pub fn formatWithStations(self: *const Statistics, list: *const lma.data.Station.List) Fmt {
+        return .{ .stats = self, .list = list };
+    }
+
+    const Fmt = struct {
+        stats: *const Statistics,
+        list: *const lma.data.Station.List,
+
+        pub fn format(self: Fmt, w: *std.Io.Writer) std.Io.Writer.Error!void {
+            inline for (@typeInfo(Counts).@"struct".field_names) |name| {
+                try w.print("Variable {s} = ", .{name});
+                const value = @field(self.stats.counts, name);
+                if (value == std.math.maxInt(@TypeOf(value)))
+                    try w.writeAll("Overflow")
+                else
+                    try w.printInt(value, 10, .lower, .{});
+                try w.writeByte('\n');
+            }
+
+            try w.print(
+                "Station {s: >2}-{s: <3}: {s: >12.2} {s: >12.2} {s: >9} {s}\n",
+                .{ "ID", "NET", "Time calib.", "Power calib.", "Solutions", "Name" },
+            );
+            for (self.list.stations.items, self.stats.stations[0..self.list.stations.items.len]) |station, stats| {
+                try w.print(
+                    "Station {c: >2}-{d: <3}: {d: >12.2} {d: >12.2} {d: >9} {s}\n",
+                    .{
+                        lma.data.Station.idToLetter(station.station_id),
+                        @backingInt(station.network_id),
+                        stats.calibration() * std.time.ns_per_s,
+                        std.math.pow(f64, 10.0, @floatCast(stats.log_pow_diff / @as(f128, @max(1, stats.solutions)) / 10.0)),
+                        stats.solutions,
+                        station.name,
+                    },
+                );
             }
         }
-    }
+    };
 };
 
 const Buffer = struct {

@@ -109,7 +109,7 @@ pub fn parse(io: std.Io, dir: std.Io.Dir, gpa: std.mem.Allocator, args: Cli) !vo
         var file_reader = input.reader(io, &rw_buffer);
         switch (extension) {
             .@".csv" => try Station.csv.read(&list, &file_reader.interface, null),
-            .@".gps" => try Station.fromGps(&list, &file_reader.interface),
+            .@".gps" => try Station.gps.read(&list, &file_reader.interface, null),
             .@".loc" => try Station.fromLoc(&list, &file_reader.interface),
         }
     }

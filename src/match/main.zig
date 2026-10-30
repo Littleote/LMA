@@ -85,6 +85,7 @@ pub fn main(init: std.process.Init.Minimal) void {
     // Load stations
     var stations: lma.data.Station.List = .init(gpa);
     defer stations.deinit();
+    const station_version = options.time.date.string ++ ".".* ++ options.time.hour.string;
     for (options.files.stations) |net| {
         const file = std.Io.Dir.cwd().openFile(io, net, .{}) catch |err| {
             std.log.err("Unable to open station file {q}. ({})", .{ net, err });
@@ -92,7 +93,7 @@ pub fn main(init: std.process.Init.Minimal) void {
         };
         defer file.close(io);
         var file_reader = file.reader(io, &rw_buffer);
-        files.stations.readAppend(&stations, net, &file_reader.interface) catch |err| switch (err) {
+        files.stations.readAppend(&stations, net, &file_reader.interface, &station_version) catch |err| switch (err) {
             error.Logged => continue,
             error.ReadFailed => {
                 std.log.err("Failed to read station/network file {q}. ({})", .{ net, file_reader.err orelse error.Unknown });

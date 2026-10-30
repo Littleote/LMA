@@ -30,12 +30,12 @@ fn FnArgs(Fn: type, comptime start: comptime_int) type {
 
 pub const stations = struct {
     const file_type = "station/network";
-    pub fn readAppend(list: *Station.List, file_name: []const u8, r: *Reader) error{ Logged, ReadFailed }!void {
+    pub fn readAppend(list: *Station.List, file_name: []const u8, r: *Reader, date: []const u8) error{ Logged, ReadFailed }!void {
         const extension = std.fs.path.extension(file_name);
         if (std.ascii.eqlIgnoreCase(extension, ".csv"))
             try readAppendCall(list, r, file_name, Station.csv.read, .{null})
         else if (std.ascii.eqlIgnoreCase(extension, ".gps"))
-            try readAppendCall(list, r, file_name, Station.fromGps, .{})
+            try readAppendCall(list, r, file_name, Station.gps.read, .{date})
         else if (std.ascii.eqlIgnoreCase(extension, ".loc"))
             try readAppendCall(list, r, file_name, Station.fromLoc, .{})
         else {
